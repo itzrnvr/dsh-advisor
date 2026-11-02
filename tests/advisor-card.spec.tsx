@@ -341,7 +341,7 @@ describe('AdvisorCard registration (plugins.bundle.config)', () => {
     // `cannot get property "remote.llm" without inject` at card load.
     expect(inject).toEqual([
       'slots', 'locale', 'connection', 'settingsSchema', 'remote',
-      'remote.llm', 'remote.settings', 'remote.session',
+      'remote.llm', 'remote.settings', 'remote.session', 'uiConversation',
     ])
   })
 

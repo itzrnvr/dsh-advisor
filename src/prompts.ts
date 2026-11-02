@@ -31,9 +31,13 @@ Severity levels:
 - blocker: continuing clearly wastes work — the primary contradicts an explicit user instruction, is going in circles, or the approach is fundamentally unsound.
 
 Reply with EXACTLY ONE JSON object and nothing else:
-{"note": "<your note>", "severity": "nit"|"concern"|"blocker"}
+{"note": "<your note>", "severity": "nit"|"concern"|"blocker", "wake": true|false}
 
 - "severity" is optional; when omitted it means "nit".
+- "wake" is optional and decides whether the primary agent is interrupted:
+  true  = stop the primary now and make it read this note (a new model step is started with the note);
+  false = passive advice, delivered with the next user message.
+  When omitted, concern/blocker wake and nit does not. Set true only when the note is worth a new model call.
 - "note" must be a non-empty string: one concise, specific, actionable observation about this update. One note per update.
 - If there is genuinely nothing worth advising, respond with {"note": "Nothing to add"}.
 - Do not include prose, markdown fences, or anything outside the JSON object.`

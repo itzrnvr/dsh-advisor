@@ -182,8 +182,10 @@ export class AdvisorDelivery {
    *
    * Resolves the primary agent via the map, falling back to the registry; a
    * missing agent drops the note with a log (advisory only — never throw,
-   * never stall). nit → inject; concern/blocker → steer, unless the
-   * immuneTurns fence is armed, in which case they downgrade to inject.
+   * never stall). The reviewer decides the channel via `wake` (fork addition):
+   * omitted → concern/blocker steer, nit injects; `wake: true` steers any
+   * severity, `wake: false` injects any severity. A steer is downgraded to
+   * inject while the immuneTurns fence is armed.
    *
    * @returns the channel delivered on, or `undefined` when dropped (no agent).
    */
@@ -198,7 +200,10 @@ export class AdvisorDelivery {
     }
     const message = buildAdvisorMessage(note)
     const cooldown = this.cooldown.get(sessionId) ?? 0
-    if (isInterrupting(note.severity) && cooldown <= 0) {
+    // Fork addition: the reviewer model decides whether to wake the primary
+    // (`wake`); severity is the default when the model omits it.
+    const wake = note.wake ?? isInterrupting(note.severity)
+    if (wake && cooldown <= 0) {
       // A real steer delivery arms the fence (spec §6). Armed before the call:
       // a failed steer delivery still counts as an attempted interrupt, keeping
       // a throwing agent out of the noise loop — and a downgraded or dropped

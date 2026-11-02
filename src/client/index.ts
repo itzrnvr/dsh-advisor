@@ -57,9 +57,7 @@ import { AdvisorSessionAction } from './advisor-session.tsx'
 import { AdvisorSessionModelController, AdvisorSettingsStore, refreshIfLoaded } from './advisor-store.ts'
 import { NextPromptOverlay } from './next-prompt-overlay.tsx'
 import { AdvisorSuggestionController } from './next-prompt-store.ts'
-import { AdvisorNotesDock } from './advisor-notes.tsx'
-import { AdvisorNotesController, advisorNotesControllerFor } from './advisor-notes-store.ts'
-import { AdvisorTurnTail } from './advisor-turn-tail.tsx'
+import { installAdvisorNoteNode } from './advisor-note-node.tsx'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { en, zh, type AdvisorKey } from './locales.ts'
 
@@ -118,7 +116,7 @@ export { refreshIfLoaded } from './advisor-store.ts'
  * the `connection.rpc` gateway channel. Reference shape:
  * ../deepseek-harness/packages/client/ui-settings-models/src/client/index.ts.
  */
-export const inject = ['slots', 'locale', 'connection', 'settingsSchema', 'remote', 'remote.llm', 'remote.settings', 'remote.session']
+export const inject = ['slots', 'locale', 'connection', 'settingsSchema', 'remote', 'remote.llm', 'remote.settings', 'remote.session', 'uiConversation']
 
 /**
  * Register the Advisor card once the `plugins.bundle.config` declaration is on
@@ -137,6 +135,12 @@ export function apply(ctx: ClientContext): void {
   // `remote.session` namespaces are declared in `inject` per the rc.1
   // dotted-namespace contract).
   const controller = new AdvisorSettingsStore(ctx.remote, connection.rpc, ctx.settingsSchema)
+
+  // Fork addition: advisor notes become first-class chat rows. The Event
+  // definition claims the advisor-source user/message events exclusively
+  // (the default classifier would build a hidden Context row) and the
+  // keyed chat-node slot renders the note in place.
+  installAdvisorNoteNode(ctx)
 
   // B2: the session action's refresh-signal epoch — bumped by every pushed
   // invalidation / connection reset / window focus that already coalesces
@@ -308,52 +312,5 @@ export function apply(ctx: ClientContext): void {
       },
     }, NextPromptOverlay)
 
-    // Fork addition: the Advisor notes strip — the SAME dock list slot, one
-    // more cell (distinct id). It surfaces the notes the reviewer actually
-    // delivered (which the stock chat view does not render in the stream) +
-    // click-to-expand history; read-only over `/api/advisor/notes` with a
-    // short idle poll. No runtime props needed (unlike the tip, it never
-    // reads the composer input machine).
-    yield ctx.slots.register({
-      name: 'conversation.composer.dock',
-      id: `${BUNDLE_NAME}#notes`,
-      locale: NS,
-      inject: (sessionId: string) => {
-        const notesController = advisorNotesControllerFor(sessionId, connection.rpc)
-        return {
-          sessionId,
-          controller: notesController,
-          hooks: {
-            snapshot: notesController.store,
-          },
-        }
-      },
-    }, AdvisorNotesDock)
-  })
-
-  // Fork addition: inline advice at the end of each completed Turn. The chat
-  // slot contract lives in the shipped chat package (not a plugin peer), so
-  // this registration is intentionally untyped here; the runtime contract is
-  // the owner props { turn, seq, openFile } plus the standard session props.
-  // Notes are attributed to the turn by the host (`AdvisorNoteView.turn`), so
-  // the entry renders only the notes for that turn and null otherwise.
-  ;(ctx.slots as any).inject('conversation.chat.turnTail', function* (tctx: any) {
-    // Host compositions pass the slot-scoped context; simple harnesses call
-    // the factory with no argument, so fall back to the root slot registry.
-    const slotApi = tctx?.slots ?? ctx.slots
-    yield (slotApi as any).register({
-      name: 'conversation.chat.turnTail',
-      id: `${BUNDLE_NAME}#turn-tail`,
-      order: 10,
-      locale: NS,
-      inject: (sessionId: string) => {
-        const notesController = advisorNotesControllerFor(sessionId, connection.rpc)
-        return {
-          sessionId,
-          controller: notesController,
-          hooks: { snapshot: notesController.store },
-        }
-      },
-    }, AdvisorTurnTail)
   })
 }

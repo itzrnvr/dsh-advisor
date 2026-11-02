@@ -1,0 +1,58 @@
+/* Advisor note chat row (fork addition) — a first-class message row in the
+ * chat list. A quiet, indented card with a severity dot as the only colour;
+ * it sits at the event's natural position, between the surrounding rows. */
+
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  box-sizing: border-box;
+  margin: 6px 0;
+  padding: 6px 10px 6px 12px;
+  border-left: 2px solid var(--dsw-alias-border-l2, rgba(128, 128, 128, 0.35));
+  border-radius: var(--dsw-radius-md, 8px);
+  background: var(--dsw-alias-bg-subtle, rgba(128, 128, 128, 0.05));
+  font-size: 12.5px;
+  line-height: 19px;
+  color: var(--dsw-alias-label-secondary, inherit);
+}
+
+.dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  transform: translateY(-1px);
+}
+
+.nit {
+  color: var(--dsw-alias-label-caption, #6b7280);
+}
+
+.concern {
+  color: #d97706;
+}
+
+.blocker {
+  color: #dc2626;
+}
+
+.label {
+  flex: none;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary, inherit);
+}
+
+.severity {
+  flex: none;
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

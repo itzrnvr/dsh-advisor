@@ -83,6 +83,8 @@ export type AdviceSeverity = 'nit' | 'concern' | 'blocker'
 export interface AdviceNote {
   readonly note: string
   readonly severity: AdviceSeverity
+  /** Optional reviewer decision to wake the primary agent (fork addition). */
+  readonly wake?: boolean
 }
 
 /**
@@ -277,12 +279,14 @@ export function extractAdviceNote(reply: string): AdviceNote | undefined {
     const note = record.note
     if (typeof note !== 'string' || note.trim().length === 0) continue // KD-2: drop empty note
     const severity = record.severity
+    const wake = record.wake === true ? true : record.wake === false ? false : undefined
     const trimmed = note.trim()
     return {
       note: trimmed.length > ADVISOR_NOTE_MAX_CHARS
         ? `${trimmed.slice(0, ADVISOR_NOTE_MAX_CHARS - 1)}…`
         : trimmed,
       severity: severity === 'concern' || severity === 'blocker' ? severity : 'nit',
+      ...(wake === undefined ? {} : { wake }),
     }
   }
   return undefined
