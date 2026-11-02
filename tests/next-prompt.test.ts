@@ -330,7 +330,7 @@ describe('arm/consume (contract 2)', () => {
     const textOf = (options: GenerateOptions): string => {
       const block = options.messages[0]!.content[0]!
       const raw = block.type === 'text' ? block.text : ''
-      return raw.replace(/^(Reviewer|Prediction) task:[^\n]*\n\n/, '')
+      return raw.replace(/\n\n---\n(Reviewer|Prediction) task:[\s\S]*$/, '')
     }
     expect(textOf(llm.calls[0]!)).toBe('turn one update')
     expect(textOf(llm.calls[1]!)).toBe('turn two update')

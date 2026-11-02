@@ -943,7 +943,10 @@ export class AdvisorRuntime {
       // session id.
       sessionId: this.sessionId,
       messages: [createUserMessage({
-        content: [{ type: 'text', text: `${ADVISOR_TASK_REMINDER}\n\n${delta.markdown}` }],
+        // Task reminder AFTER the delta: the last instruction wins, and
+        // "above" points at the transcript. A prefix reminder was followed
+        // unreliably on code-heavy deltas (the model continued the code).
+        content: [{ type: 'text', text: `${delta.markdown}\n\n---\n${ADVISOR_TASK_REMINDER}` }],
         source: { kind: 'user' },
       })],
       // Reasoning effort (plan dsh-advisor-reasoning-effort RD-1/RD-2): the

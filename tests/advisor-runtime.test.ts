@@ -328,7 +328,7 @@ describe('AdvisorRuntime — drain calls llm.stream once per delta with expected
     const textOf = (options: GenerateOptions): string => {
       const block = options.messages[0]!.content[0]!
       const raw = block.type === 'text' ? block.text : ''
-      return raw.replace(/^(Reviewer|Prediction) task:[^\n]*\n\n/, '')
+      return raw.replace(/\n\n---\n(Reviewer|Prediction) task:[\s\S]*$/, '')
     }
     expect(textOf(llm.calls[0]!)).toBe('update one')
     expect(textOf(llm.calls[1]!)).toBe('update two')
@@ -1176,7 +1176,7 @@ describe('AdvisorRuntime — bounded backlog drop-newest (spec §6)', () => {
   const textOf = (options: GenerateOptions): string => {
     const block = options.messages[0]!.content[0]!
     const raw = block.type === 'text' ? block.text : ''
-    return raw.replace(/^(Reviewer|Prediction) task:[^\n]*\n\n/, '')
+    return raw.replace(/\n\n---\n(Reviewer|Prediction) task:[\s\S]*$/, '')
   }
 
   it('drops the newest delta when the backlog is full, while a delta is in flight', async () => {
