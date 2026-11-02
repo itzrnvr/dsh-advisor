@@ -45,7 +45,7 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
     expect(unwrapAdvisorConfig(Config({}))).toEqual({
       systemPrompt: '',
       immuneTurns: 3,
-      maxDeltaMessages: 60,
+      maxDeltaMessages: 0,
       callTimeoutMinutes: 10, mainSessionOnly: true,
       proseFallback: false,
       nextPrompt: true,
@@ -82,7 +82,7 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
   })
 
   it('treats null as absent (schemastery nullable input → default)', () => {
-    expect(unwrapAdvisorConfig(Config({ maxDeltaMessages: null })).maxDeltaMessages).toBe(60)
+    expect(unwrapAdvisorConfig(Config({ maxDeltaMessages: null })).maxDeltaMessages).toBe(0)
   })
 
   it('enforces integer ≥ 0 bounds; 0 = unbounded is allowed', () => {
@@ -104,7 +104,7 @@ describe('explicit model gate (S4 / spec §5.2)', () => {
     expect(resolved.disabledReason).toBeTruthy()
     expect(resolved.systemPrompt).toBe('')
     expect(resolved.immuneTurns).toBe(3)
-    expect(resolved.maxDeltaMessages).toBe(60)
+    expect(resolved.maxDeltaMessages).toBe(0)
   })
 
   it('resolves to disabled-with-reason when only provider is set', () => {
@@ -245,7 +245,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
       provider: 'p',
       systemPrompt: '',
       immuneTurns: 3,
-      maxDeltaMessages: 60,
+      maxDeltaMessages: 0,
       callTimeoutMinutes: 10, mainSessionOnly: true,
       proseFallback: false,
       nextPrompt: true,
@@ -265,7 +265,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
       provider: 'p',
       systemPrompt: '',
       immuneTurns: 3,
-      maxDeltaMessages: 60,
+      maxDeltaMessages: 0,
       callTimeoutMinutes: 10, mainSessionOnly: true,
       proseFallback: false,
       nextPrompt: true,

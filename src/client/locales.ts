@@ -82,6 +82,10 @@ export const en = {
   defaultEnabledHint: 'New sessions start with the advisor on; turn it off to make the advisor opt-in per session (enable with /advisor on).',
   mainSessionOnly: 'Main session only',
   mainSessionOnlyHint: 'Review the top-level conversation only — skip subagent sessions.',
+  unlimitedDelta: 'No message limit',
+  unlimitedDeltaHint: 'Send the whole delta window to the reviewer (0 = unlimited). Uncheck to cap it at 60 messages.',
+  notesTitle: 'Advisor',
+  notesDismiss: 'Dismiss advisor notes',
 }
 
 /** The settings.advisor namespace key union. */
@@ -146,4 +150,8 @@ export const zh: typeof en = {
   defaultEnabledHint: '新会话默认开启顾问；关闭后改为按会话手动启用（用 /advisor on）。',
   mainSessionOnly: '仅主会话',
   mainSessionOnlyHint: '只审阅顶层会话，跳过子代理会话。',
+  unlimitedDelta: '不限制消息数',
+  unlimitedDeltaHint: '把完整 delta 窗口发给审阅模型（0 = 无限制）。取消勾选则限制为 60 条消息。',
+  notesTitle: '顾问',
+  notesDismiss: '关闭顾问建议',
 }

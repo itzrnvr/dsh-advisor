@@ -48,7 +48,7 @@ Edit the `config` of the `advisor` row in your profile's patch layer (`~/.dsh/pr
     model: deepseek-flash        # REQUIRED (non-empty); fallback: deepseek-v4-flash (or another V4 id) until the gateway enables the V41 route
     systemPrompt: ""             # optional; "" = built-in reviewer prompt
     immuneTurns: 3               # int ≥ 0, default 3 — cooldown after a delivered steer
-    maxDeltaMessages: 60         # int ≥ 0, default 60 — delta window; 0 = unbounded
+    maxDeltaMessages: 0          # int ≥ 0, default 0 = unbounded (fork default) — delta window
     callTimeoutMinutes: 10       # int 1–60, default 10 — reviewer call timeout in MINUTES (fork addition)
     mainSessionOnly: true        # boolean, default true — review the top-level session only; false also reviews subagent sessions (fork addition)
     proseFallback: false         # boolean, default false — deliver a frame-less prose reply as a nit note (opt-in)

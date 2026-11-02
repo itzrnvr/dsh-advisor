@@ -57,6 +57,8 @@ import { AdvisorSessionAction } from './advisor-session.tsx'
 import { AdvisorSessionModelController, AdvisorSettingsStore, refreshIfLoaded } from './advisor-store.ts'
 import { NextPromptOverlay } from './next-prompt-overlay.tsx'
 import { AdvisorSuggestionController } from './next-prompt-store.ts'
+import { AdvisorNotesDock } from './advisor-notes.tsx'
+import { AdvisorNotesController } from './advisor-notes-store.ts'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { en, zh, type AdvisorKey } from './locales.ts'
 
@@ -72,6 +74,8 @@ export type {
 export type {
   AdvisorSuggestionController, AdvisorSuggestionState,
 } from './next-prompt-store.ts'
+export type { AdvisorNotesController, AdvisorNotesState, AdvisorNote } from './advisor-notes-store.ts'
+export type { AdvisorNotesInjected, AdvisorNotesProps } from './advisor-notes.tsx'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -302,5 +306,27 @@ export function apply(ctx: ClientContext): void {
         }
       },
     }, NextPromptOverlay)
+
+    // Fork addition: the Advisor notes strip — the SAME dock list slot, one
+    // more cell (distinct id). It surfaces the notes the reviewer actually
+    // delivered (which the stock chat view does not render in the stream) +
+    // click-to-expand history; read-only over `/api/advisor/notes` with a
+    // short idle poll. No runtime props needed (unlike the tip, it never
+    // reads the composer input machine).
+    yield ctx.slots.register({
+      name: 'conversation.composer.dock',
+      id: `${BUNDLE_NAME}#notes`,
+      locale: NS,
+      inject: (sessionId: string) => {
+        const notesController = new AdvisorNotesController(sessionId, connection.rpc)
+        return {
+          sessionId,
+          controller: notesController,
+          hooks: {
+            snapshot: notesController.store,
+          },
+        }
+      },
+    }, AdvisorNotesDock)
   })
 }

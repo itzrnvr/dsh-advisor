@@ -24,7 +24,7 @@
 | `model` | string（可选） | 未设置 | 模型 id。**必须（非空）** —— 见 [显式模型门禁](#显式模型门禁s4)。 |
 | `systemPrompt` | string | `""` | 覆盖内置评审 prompt（严重度定义 + JSON-frame 输出契约，`src/prompts.ts` `DEFAULT_ADVISOR_SYSTEM_PROMPT`）。`""` = 用内置。 |
 | `immuneTurns` | number（整数 ≥ 0） | `3` | 冷却步数：实际 steer 过一次 concern/blocker 后，接下来 N 个完成的 stepped 主 turn 必须走完，另一条打断性 note 才可再次 steer；窗口内的 note 降级为 inject。 |
-| `maxDeltaMessages` | number（整数 ≥ 0） | `60` | 有界的 advisor 输入窗口。超过 N 的 delta 以 `… <earlier messages omitted>` 标记截断；`0` = 无上限。 |
+| `maxDeltaMessages` | number（整数 ≥ 0） | `0` | advisor 输入窗口。超过 N 的 delta 以 `… <earlier messages omitted>` 标记截断；`0` = 无上限（fork 默认不限，卡片提供“不限制消息数”开关）。 |
 | `callTimeoutMinutes` | number（整数 1–60） | `10` | 单次审阅模型调用的整次超时（分钟，fork 新增）。超时按 transient 处理：重试一次后丢弃该 delta；改值会重建该会话的 runtime 以生效。默认 10 分钟，取代上游固定 60 秒。 |
 | `mainSessionOnly` | boolean | `true` | 仅审阅顶层会话（fork 新增）：为 `true` 时跳过 `header.delegationDepth > 0` 的子代理会话（不建 runtime、不预测下一提示）；设为 `false` 可同时审阅子代理。 |
 | `proseFallback` | boolean | `false` | Opt-in 散文容错（issue #102）：开启后，未产出有效 note（无可解析 JSON 帧，或帧的 note 为空/非法）但正文非空的回复经清理（trim → 剥外围 markdown 围栏 → 768 字符截断）作为 `severity: 'nit'` 的 note 走正常 guard/投递管线。可用的帧 note 始终优先；默认关闭时同样回复仍被丢弃。 |
@@ -44,7 +44,7 @@
     model: deepseek-flash       # 必填（非空）；网关未开放 V41 路由时回退 deepseek-v4-flash（或其它 V4 id）
     systemPrompt: ""            # 可选；"" = 内置评审 prompt
     immuneTurns: 3              # 整数 ≥ 0，默认 3 —— 打断性送达后的冷却步数
-    maxDeltaMessages: 60        # 整数 ≥ 0，默认 60 —— delta 窗口；0 = 无上限
+    maxDeltaMessages: 0         # 整数 ≥ 0，默认 0 = 无上限（fork 默认）—— delta 窗口
     callTimeoutMinutes: 10      # 整数 1–60，默认 10 —— 审阅调用超时（分钟，fork 新增）
     mainSessionOnly: true       # 布尔，默认 true —— 只审阅顶层会话（fork 新增）
     proseFallback: false        # 布尔，默认 false —— 无有效 note（含帧 note 为空/非法）时将散文回复作为 nit note 投递（opt-in）

@@ -3,7 +3,7 @@
  *
  * The exported schemastery `Config` schema is what the cordis Loader uses to
  * validate the plugin row config: it applies defaults (`immuneTurns` 3,
- * `maxDeltaMessages` 60, `systemPrompt` "", `proseFallback` false,
+ * `maxDeltaMessages` 0 (unbounded; fork default), `systemPrompt` "", `proseFallback` false,
  * `nextPrompt` true, `defaultEnabled` true) and enforces types/bounds
  * (integers ≥ 0).
  * `reasoningEffort` has NO default — an absent value means
@@ -51,7 +51,7 @@ export interface AdvisorConfig {
   readonly systemPrompt: string
   /** Cooldown after a delivered interrupt; integer ≥ 0, default 3. */
   readonly immuneTurns: number
-  /** Delta window; integer ≥ 0, default 60, 0 = unbounded (KD-3). */
+  /** Delta window; integer ≥ 0, default 0 = unbounded (KD-3; fork default). */
   readonly maxDeltaMessages: number
   /**
    * Reviewer call timeout in MINUTES (integer ≥ 1, default 10). Bounds one
@@ -236,7 +236,9 @@ export const Config = z.object({
   model: z.string().volatile(),
   systemPrompt: z.string().default('').volatile(),
   immuneTurns: z.number().step(1).min(0).default(3).volatile(),
-  maxDeltaMessages: z.number().step(1).min(0).default(60).volatile(),
+  // 0 = unbounded (fork change: the full delta by default; the card also
+  // exposes an explicit "no limit" toggle).
+  maxDeltaMessages: z.number().step(1).min(0).default(0).volatile(),
   // Reviewer call timeout in minutes (default 10). A slow reasoning model on
   // a large delta needs far more than the historical fixed 60 s; this is a
   // runtime construction constant (index.ts passes callTimeoutMs), so a

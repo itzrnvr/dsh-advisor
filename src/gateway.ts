@@ -278,8 +278,49 @@ export type AdvisorSuggestionErrorTag =
  * and side-effect-free.
  */
 export type AdvisorSuggestionRpcResult =
-  | { readonly suggestion: string | null }
-  | { readonly error: { readonly tag: AdvisorSuggestionErrorTag; readonly message: string } }
+| { readonly suggestion: string | null }
+| { readonly error: { readonly tag: AdvisorSuggestionErrorTag; readonly message: string } }
+
+/**
+ * Fork addition — one delivered advice note, as the session UI shows it.
+ * READ-ONLY snapshot of what the reviewer actually said in this session.
+ */
+export interface AdvisorNoteView {
+  /** Epoch-ms when the note was accepted for delivery. */
+  readonly at: number
+  /** Severity the reviewer assigned (invalid/absent normalized to nit upstream). */
+  readonly severity: 'nit' | 'concern' | 'blocker'
+  /** The note body (already capped by the runtime). */
+  readonly text: string
+  /** Delivery channel: non-waking inject or waking steer. */
+  readonly channel: 'inject' | 'steer'
+}
+
+/**
+ * Fork addition — plugin-domain tags for the READ-ONLY notes query
+ * (`advisor/notes`), carried in RETURNED DATA like the other tags.
+ */
+export type AdvisorNotesErrorTag =
+  | 'advisor/rejected'
+  | 'advisor/unavailable'
+
+/** One `advisor/notes` result: recent notes for the session plus the live gate/route state. */
+export type AdvisorNotesRpcResult =
+  | {
+      readonly notes: readonly AdvisorNoteView[]
+      readonly enabled: boolean
+      readonly runtimeStatus: string
+      readonly provider?: string
+      readonly model?: string
+      readonly lastActivityAt?: number
+    }
+  | { readonly error: { readonly tag: AdvisorNotesErrorTag; readonly message: string } }
+
+/** The elected owner's notes face — implemented by the wiring in `src/index.ts`. */
+export interface AdvisorNotesFace {
+  /** Recent delivered notes for one session (oldest → newest) plus live status. */
+  getNotes(sessionId: string): AdvisorNotesRpcResult
+}
 
 /**
  * The elected owner's suggestion face — implemented by the wiring
@@ -341,6 +382,8 @@ export class AdvisorConfigGateway extends TypertRemoteService {
    * and stays inert.
    */
   private readonly suggestionFace: () => AdvisorSuggestionFace | undefined
+  /** Fork addition: the elected owner's delivered-notes face (lazy, like suggestionFace). */
+  private readonly notesFace: () => AdvisorNotesFace | undefined
 
   /**
    * @param ctx - owning context (the plugin fiber's ctx inside `apply`).
@@ -366,6 +409,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     resolveModelInfo?: AdvisorModelInfoResolver,
     logger?: AdvisorGatewayLogger,
     suggestionFace: () => AdvisorSuggestionFace | undefined = () => undefined,
+    notesFace: () => AdvisorNotesFace | undefined = () => undefined,
   ) {
     super(ctx, 'advisor')
     this.bridge = bridge
@@ -373,6 +417,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     this.resolveModelInfo = resolveModelInfo
     this.logger = logger
     this.suggestionFace = suggestionFace
+    this.notesFace = notesFace
     // The settings service is optional (no settings → entry fallback). The
     // inject child activates only when a settings service is composed, mirroring
     // installAdvisorSettings' conditional child; the returned disposer mirrors
@@ -480,6 +525,29 @@ export class AdvisorConfigGateway extends TypertRemoteService {
       }
     }
     return face.getSuggestion(sessionId)
+  }
+
+  /**
+   * Fork addition — the READ-ONLY delivered-notes query (`/api/advisor/notes`,
+   * args `{ sessionId }`): what the reviewer actually said in this session plus
+   * the live switch/route state, for the in-chat Advisor strip. Idempotent and
+   * side-effect-free; malformed requests answer `advisor/rejected`, a gateway
+   * without an elected owner answers `advisor/unavailable`.
+   */
+  getNotes(sessionId: string): AdvisorNotesRpcResult {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      return { error: { tag: 'advisor/rejected', message: 'advisor: getNotes requires a non-empty sessionId' } }
+    }
+    const face = this.notesFace()
+    if (face === undefined) {
+      return {
+        error: {
+          tag: 'advisor/unavailable',
+          message: 'advisor: the notes surface is not owned by this gateway — no elected owner on this fiber',
+        },
+      }
+    }
+    return face.getNotes(sessionId)
   }
 
   /**
@@ -639,7 +707,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
         enabled: false,
         systemPrompt: raw?.systemPrompt ?? '',
         immuneTurns: raw?.immuneTurns ?? 3,
-        maxDeltaMessages: raw?.maxDeltaMessages ?? 60,
+        maxDeltaMessages: raw?.maxDeltaMessages ?? 0,
         callTimeoutMinutes: raw?.callTimeoutMinutes ?? 10,
         proseFallback: raw?.proseFallback,
         // The resolver never ran on this arm, so the RD-1 empty = automatic
@@ -800,6 +868,21 @@ export function advisorTypertContribution(): TypertContribution {
         namespace: 'advisor',
         method: 'suggestion',
         implementation: 'getSuggestion',
+        invocation: { kind: 'direct' },
+        parameters: [
+          { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },
+        ],
+        result: { mode: 'src-json' },
+      },
+      // Fork addition — the read-only delivered-notes query. Same explicit
+      // registration and direct/src-json dispatch shape; payload stays one
+      // plain-object `args` keyed by parameter name.
+      {
+        id: 'dsh-advisor#advisor/notes',
+        service: 'advisor',
+        namespace: 'advisor',
+        method: 'notes',
+        implementation: 'getNotes',
         invocation: { kind: 'direct' },
         parameters: [
           { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },

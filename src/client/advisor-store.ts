@@ -310,7 +310,7 @@ export interface AdvisorSettingsState {
 
 /** The schema-defaulted advisor config used when no config resolves. */
 function defaultDraft(): AdvisorDraft {
-  return { systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, callTimeoutMinutes: 10, mainSessionOnly: true }
+  return { systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 0, callTimeoutMinutes: 10, mainSessionOnly: true }
 }
 
 /** A non-empty string field (whitespace-only reads as absent, mirroring the hard gate). */
@@ -334,7 +334,7 @@ function draftOfConfig(config: AdvisorConfigView | undefined): AdvisorDraft {
     model: stringField(config?.model),
     systemPrompt: typeof config?.systemPrompt === 'string' ? config.systemPrompt : '',
     immuneTurns: numberField(config?.immuneTurns, 3),
-    maxDeltaMessages: numberField(config?.maxDeltaMessages, 60),
+    maxDeltaMessages: numberField(config?.maxDeltaMessages, 0),
     // Reviewer call deadline (fork addition): the seed shows the effective
     // value; an omitted containment wire reads the schema default (10).
     callTimeoutMinutes: numberField(config?.callTimeoutMinutes, 10),

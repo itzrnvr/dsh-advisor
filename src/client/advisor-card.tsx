@@ -435,6 +435,23 @@ export function AdvisorCard(props: AdvisorCardProps): ReactNode {
           />
           <p className={styles['hint']}>{t('mainSessionOnlyHint')}</p>
         </div>
+        <div className={styles['field']}>
+          <label htmlFor="advisor-unlimited-delta" className={styles['fieldLabel']}>{t('unlimitedDelta')}</label>
+          {/* Fork addition: 0 = unbounded — the reviewer receives the whole
+              rendered delta. Unchecking restores the 60-message cap. */}
+          <input
+            id="advisor-unlimited-delta"
+            aria-label={t('unlimitedDelta')}
+            className={styles['checkboxInput']}
+            type="checkbox"
+            checked={(draft.maxDeltaMessages ?? 0) === 0}
+            disabled={busy}
+            onChange={(event) => {
+              controller.setMaxDeltaMessages(event.target.checked ? 0 : 60)
+            }}
+          />
+          <p className={styles['hint']}>{t('unlimitedDeltaHint')}</p>
+        </div>
         <div className={styles['numberFields']}>
           <div className={styles['field']}>
             <label htmlFor="advisor-immune-turns" className={styles['fieldLabel']}>{t('immuneTurns')}</label>

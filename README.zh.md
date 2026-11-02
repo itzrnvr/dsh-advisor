@@ -48,7 +48,7 @@ dsh plugin --profile web update dsh-advisor@latest   # 更新 —— 同一个 -
     model: deepseek-flash        # 必填（非空）；网关未开放 V41 路由时回退 deepseek-v4-flash（或其它 V4 id）
     systemPrompt: ""             # 可选；"" = 内置评审 prompt
     immuneTurns: 3               # 整数 ≥ 0，默认 3 —— 打断性送达后的冷却步数
-    maxDeltaMessages: 60         # 整数 ≥ 0，默认 60 —— delta 窗口；0 = 无上限
+    maxDeltaMessages: 0          # 整数 ≥ 0，默认 0 = 无上限（fork 默认）—— delta 窗口
     callTimeoutMinutes: 10       # 整数 1–60，默认 10 —— 审阅调用超时（分钟，fork 新增）
     mainSessionOnly: true        # 布尔，默认 true —— 只审阅顶层会话；false 时也审阅子代理会话（fork 新增）
     proseFallback: false         # 布尔，默认 false —— 无 JSON 帧时将散文回复作为 nit note 投递（opt-in）

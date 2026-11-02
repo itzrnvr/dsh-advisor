@@ -61,7 +61,7 @@ import { resolveAdvisorConfig } from './config.js'
 import type { AdvisorConfig, ResolvedAdvisorConfig } from './config.js'
 import { installAdvisorSettings } from './settings.js'
 import { AdvisorConfigGateway, advisorSessionError, advisorTypertContribution } from './gateway.js'
-import type { AdvisorSessionGatewayFace, AdvisorSessionRpcResult, AdvisorSuggestionFace } from './gateway.js'
+import type { AdvisorNotesFace, AdvisorNoteView, AdvisorSessionGatewayFace, AdvisorSessionRpcResult, AdvisorSuggestionFace } from './gateway.js'
 import { SessionTranscriptObserver } from './transcript.js'
 import type { Delta } from './transcript.js'
 import { AdvisorRuntime } from './advisor-runtime.js'
@@ -223,9 +223,11 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     ((ctx as unknown as { root?: { get?: (k: string) => unknown } }).root?.get?.('llm') as typeof ctx.llm) ?? ctx.llm
   let sessionControl: AdvisorSessionGatewayFace | undefined
   let suggestionControl: AdvisorSuggestionFace | undefined
+  // Fork addition: the delivered-notes face served to the in-chat Advisor strip.
+  let notesControl: AdvisorNotesFace | undefined
   try {
     new AdvisorConfigGateway(ctx, bridge, () => sessionControl, (provider, model, signal) =>
-      appRootLlm().resolveModelInfo(provider, model, signal), ctx.logger('advisor'), () => suggestionControl)
+      appRootLlm().resolveModelInfo(provider, model, signal), ctx.logger('advisor'), () => suggestionControl, () => notesControl)
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
     ctx.logger('advisor').debug('advisor gateway already registered — no gateway on this fiber (multi-fiber dedupe)')
@@ -272,7 +274,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       enabled: false,
       systemPrompt: raw?.systemPrompt ?? '',
       immuneTurns: raw?.immuneTurns ?? 3,
-      maxDeltaMessages: raw?.maxDeltaMessages ?? 60,
+      maxDeltaMessages: raw?.maxDeltaMessages ?? 0,
       callTimeoutMinutes: raw?.callTimeoutMinutes ?? 10,
       // T1 (plan dsh-advisor-next-prompt-n12): the resolved contract types
       // nextPrompt as a plain boolean — an absent raw key means the schema
@@ -438,6 +440,14 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   })
 
   const runtimes = new Map<string, AdvisorRuntime>()
+  /**
+   * Fork addition: the last delivered advice notes per session, for the
+   * in-chat Advisor strip (`/api/advisor/notes`). Bounded per session so a
+   * long-running chat cannot accumulate unbounded history in memory; cleared
+   * with the session (agent/session disposed).
+   */
+  const adviceLog = new Map<string, AdvisorNoteView[]>()
+  const ADVICE_LOG_MAX = 30
   // Next-prompt predictor (plan dsh-advisor-next-prompt-n12, T1): one per
   // fiber, next to the runtimes map. The gate re-reads the resolver SSOT on
   // every arm/fire through the SESSION-SCOPED effective config (I-000024 —
@@ -553,6 +563,18 @@ export function apply(ctx: Context, config: AdvisorConfig) {
           severity: note.severity,
           channel,
         })
+        // Fork addition: keep the note for the session's in-chat Advisor strip.
+        // `channel === undefined` means the delivery was dropped (no live agent),
+        // so only an actually delivered note is recorded.
+        if (channel !== undefined) {
+          const entry: AdvisorNoteView = { at: Date.now(), severity: note.severity, text: note.note, channel }
+          const log = adviceLog.get(sessionId)
+          if (log === undefined) adviceLog.set(sessionId, [entry])
+          else {
+            log.push(entry)
+            if (log.length > ADVICE_LOG_MAX) log.splice(0, log.length - ADVICE_LOG_MAX)
+          }
+        }
       },
     })
     runtimes.set(sessionId, runtime)
@@ -716,6 +738,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     delivery.unregisterAgent(agent.id)
     overrides.clear(agent.id)
     suggestions.disposeSession(agent.id)
+    adviceLog.delete(agent.id)
   }, { global: true })
   ctx.on('session/disposed', (session: Session) => {
     observer.disposeSession(session.id)
@@ -723,6 +746,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     delivery.unregisterAgent(session.id)
     overrides.clear(session.id)
     suggestions.disposeSession(session.id)
+    adviceLog.delete(session.id)
   }, { global: true })
 
   // T1-settings live re-apply: construction-time latches (immuneTurns on the
@@ -1131,6 +1155,25 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   // unit-tested in tests/gateway-suggestion.test.ts; read-only: the face
   // never mutates manager state.
   suggestionControl = advisorSuggestionFace(effectiveConfig, suggestions)
+
+  // Fork addition — the delivered-notes face for `/api/advisor/notes` (the
+  // in-chat Advisor strip). Reads the SAME session-scoped effective config the
+  // runtime gate uses, plus the live runtime status, and returns only
+  // defined keys (the wire validator rejects present-as-undefined values).
+  notesControl = {
+    getNotes: (sessionId) => {
+      const effective = effectiveConfig(sessionId)
+      const runtime = runtimes.get(sessionId)
+      return {
+        notes: adviceLog.get(sessionId) ?? [],
+        enabled: effective.enabled,
+        runtimeStatus: runtime?.status() ?? 'disabled',
+        ...(effective.provider === undefined ? {} : { provider: effective.provider }),
+        ...(effective.model === undefined ? {} : { model: effective.model }),
+        ...(runtime?.lastActivity === undefined ? {} : { lastActivityAt: runtime.lastActivity }),
+      }
+    },
+  }
 
   // T7: the command child activates ONLY when a command registry is composed
   // (conditional child activation — `commands` must NOT join the top-level
