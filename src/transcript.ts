@@ -96,6 +96,15 @@ export const DEFAULT_MAX_DELTA_MESSAGES = 60
 /** Marker line prepended when a rendered delta omits earlier messages (KD-3). */
 export const TRUNCATION_MARKER = '… <earlier messages omitted>'
 
+/**
+ * Hard character budget for one rendered delta (fork addition). The message
+ * window can be unlimited, but a compaction replay would otherwise render the
+ * whole session — observed live at ~1.8M chars / ~450k tokens, which stalls
+ * or times out reviews. Keep the tail and mark the cut; normal turns are far
+ * below this.
+ */
+const MAX_DELTA_CHARS = 200_000
+
 const SESSION_UPDATE_HEADING = '### Session update'
 
 // ---------------------------------------------------------------------------
@@ -404,11 +413,24 @@ export class DeltaRenderer {
   }
 
   private render(messages: readonly Message[], omitted: boolean): Delta | undefined {
-    if (messages.length === 0) return undefined
+    // System/developer messages are instructions, not work product: never
+    // review them back to the reviewer (fork addition — a replayed system
+    // prompt showed up as an "agent" message and inflated the delta).
+    const work = messages.filter((message) => message.role !== 'system' && message.role !== 'developer')
+    if (work.length === 0) return undefined
     const lines: string[] = [SESSION_UPDATE_HEADING]
     if (omitted) lines.push(TRUNCATION_MARKER)
-    for (const message of messages) lines.push(renderMessage(message))
-    return { markdown: lines.join('\n\n'), willContinue: false }
+    for (const message of work) lines.push(renderMessage(message))
+    const rendered = lines.join('\n\n')
+    if (rendered.length <= MAX_DELTA_CHARS) return { markdown: rendered, willContinue: false }
+    // Keep the most recent content; cut at a message boundary when possible.
+    const tail = rendered.slice(rendered.length - MAX_DELTA_CHARS)
+    const boundary = tail.indexOf('\n\n')
+    const body = boundary >= 0 ? tail.slice(boundary + 2) : tail
+    return {
+      markdown: body.startsWith(TRUNCATION_MARKER) ? body : `${SESSION_UPDATE_HEADING}\n\n${TRUNCATION_MARKER}\n\n${body}`,
+      willContinue: false,
+    }
   }
 }
 
