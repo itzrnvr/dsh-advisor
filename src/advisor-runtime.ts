@@ -200,7 +200,7 @@ export interface AdvisorRuntimeOptions {
  * injected into the primary session is bounded here. Latency stays bounded
  * by the 60 s call deadline (`callTimeoutMs`).
  */
-export const ADVISOR_NOTE_MAX_CHARS = 768
+export const ADVISOR_NOTE_MAX_CHARS = 4_000
 
 const DEFAULT_RETRY_BACKOFF_MS = 1_000
 const DEFAULT_MAX_QUEUED = 32

@@ -10,8 +10,15 @@
  * its reminders: register an EXCLUSIVE conversation Event definition that
  * claims the advisor-source events (so the hidden context fold never builds)
  * and publish a visible node with our own kind, then render that kind in the
- * keyed `conversation.chat.node` slot. The note then appears as a normal row
- * in the chat list, in place.
+ * keyed `conversation.chat.node` slot.
+ *
+ * ORDER: the inbox (agent.inject / agent.steer) is drained at the next
+ * pre-step boundary, so the note's `user/message` event is written inside the
+ * NEXT turn, after the user's new message. Rendering it at its raw event seq
+ * puts it after that prompt. The node is re-anchored a hair before the next
+ * turn starts instead, which places the row at the end of the turn it
+ * reviewed. The body renders the note in full (no line clamp; the extraction
+ * bound is 4 000 chars, raised from the upstream 768).
  */
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
@@ -19,6 +26,7 @@ import type { ReactNode } from 'react'
 import type { AdvisorKey } from './locales.ts'
 import { en } from './locales.ts'
 import styles from './advisor-note-node.module.css'
+import { reviewedAnchor } from './advisor-note-anchor.ts'
 
 /** Our chat node kind (a plugin-owned key in `conversation.chat.node`). */
 export const ADVISOR_NOTE_NODE_KIND = 'dsh-advisor:note'
@@ -75,8 +83,8 @@ export interface AdvisorNoteRowProps {
 }
 
 /**
- * Render one advisor note as a chat message row: a severity dot + label and
- * the note text, in place in the conversation flow.
+ * Render one advisor note as a readable chat row: a header with the severity
+ * marker, label and time, then the full note body (wrapped, never clamped).
  * @param props - the chat node renderer props (node data + locale seat).
  * @returns the row, or null for a node without data.
  */
@@ -84,12 +92,18 @@ export function AdvisorNoteRow(props: AdvisorNoteRowProps): ReactNode {
   const data = props.node?.data
   if (data === undefined) return null
   const t = props.t ?? ((key: AdvisorKey) => en[key])
+  const at = new Date(data.at)
   return (
-    <section className={styles['row']} data-advisor-note="">
-      <span className={`${styles['dot']} ${styles[data.severity]}`} aria-hidden="true" />
-      <span className={styles['label']}>{t('notesTitle')}</span>
-      <span className={styles['severity']}>{data.severity}</span>
-      <span className={styles['text']}>{data.text}</span>
+    <section className={`${styles['row']} ${styles[data.severity]}`} data-advisor-note="">
+      <div className={styles['head']}>
+        <span className={styles['dot']} aria-hidden="true" />
+        <span className={styles['label']}>{t('notesTitle')}</span>
+        <span className={styles['pill']}>{data.severity}</span>
+        <time className={styles['time']} dateTime={at.toISOString()}>
+          {at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        </time>
+      </div>
+      <p className={styles['text']}>{data.text}</p>
     </section>
   )
 }
@@ -137,7 +151,7 @@ export function installAdvisorNoteNode(ctx: ClientContext): void {
         kind: ADVISOR_NOTE_NODE_KIND,
         id: context.id,
         target: 'chat',
-        anchorSeq: context.start.event.seq,
+        anchorSeq: reviewedAnchor(context.start.event.seq, context.start.location),
         location: context.start.location,
         visibility: 'visible',
         data: context.state,
