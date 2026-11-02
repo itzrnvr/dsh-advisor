@@ -448,6 +448,46 @@ export function apply(ctx: Context, config: AdvisorConfig) {
    */
   const adviceLog = new Map<string, AdvisorNoteView[]>()
   const ADVICE_LOG_MAX = 30
+  /**
+   * Seed the delivered-notes log from the session log the first time a
+   * session runtime is built (fork addition): advisor notes are committed
+   * to the session as `source.kind: 'advisor'` user messages, so a plugin
+   * reload can rehydrate the in-chat strip with the notes the user already
+   * received instead of starting empty. Best-effort and defensive: any
+   * unexpected event shape is skipped, and an existing log is left alone.
+   */
+  const seedAdviceLog = (sessionId: string): void => {
+    if (adviceLog.has(sessionId)) return
+    const session = ctx.agents.get(sessionId as SessionId)?.session
+    if (session === undefined || typeof session.snapshotEvents !== 'function') return
+    const seeded: AdvisorNoteView[] = []
+    for (const event of session.snapshotEvents()) {
+      if (event.type !== 'user/message') continue
+      const message = (event as unknown as {
+        data?: {
+          message?: {
+            source?: { kind?: string }
+            content?: readonly { type?: string; text?: string }[]
+          }
+        }
+        time?: number
+      }).data?.message
+      if (message === undefined || message.source?.kind !== 'advisor') continue
+      const text = (message.content ?? [])
+        .filter((block) => block.type === 'text' && typeof block.text === 'string')
+        .map((block) => block.text as string)
+        .join('\n')
+      const match = /^\[advisor:(nit|concern|blocker)\]\s*([\s\S]*)$/.exec(text)
+      if (match === null || match[2].trim().length === 0) continue
+      seeded.push({
+        at: (event as unknown as { time?: number }).time ?? Date.now(),
+        severity: match[1] as 'nit' | 'concern' | 'blocker',
+        text: match[2].trim(),
+        channel: 'inject',
+      })
+    }
+    adviceLog.set(sessionId, seeded.slice(-ADVICE_LOG_MAX))
+  }
   // Next-prompt predictor (plan dsh-advisor-next-prompt-n12, T1): one per
   // fiber, next to the runtimes map. The gate re-reads the resolver SSOT on
   // every arm/fire through the SESSION-SCOPED effective config (I-000024 —
@@ -526,6 +566,9 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     let runtime = runtimes.get(sessionId)
     if (runtime !== undefined) return runtime
     const effective = effectiveConfig(sessionId)
+    // Fork addition: rehydrate the in-chat notes from this session's already
+    // committed advisor messages (once per session).
+    seedAdviceLog(sessionId)
     // The re-resolved config guarantees provider + model when enabled — the
     // runtime is only constructed behind the gate.
     if (!effective.enabled) return undefined
