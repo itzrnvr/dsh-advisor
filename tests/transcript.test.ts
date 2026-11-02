@@ -1099,3 +1099,46 @@ describe('SessionTranscriptObserver — next-prompt trigger hooks (dsh-advisor-n
     expect(starts).toEqual(['s1', 's1', 's1'])
   })
 })
+
+// ---------------------------------------------------------------------------
+// Fork addition: the rendered delta has a hard safety budget and never carries
+// instruction (system/developer) messages — the two causes of the live
+// 1.8M-char / ~450k-token reviewer prompt.
+// ---------------------------------------------------------------------------
+
+describe('delta safety budget and instruction exclusion (fork addition)', () => {
+  it('caps one rendered delta at 200k chars, keeping the tail', () => {
+    const renderer = new DeltaRenderer({ maxDeltaMessages: 0 })
+    const big = `HEAD-${'x'.repeat(250_000)}-TAIL`
+    const delta = renderer.update(buildEvents([userMessage(big)]))
+    expect(delta).toBeDefined()
+    expect(delta!.markdown.length).toBeLessThanOrEqual(200_100)
+    expect(delta!.markdown).toContain(TRUNCATION_MARKER)
+    expect(delta!.markdown).toContain('-TAIL')
+    expect(delta!.markdown).not.toContain('HEAD-')
+  })
+
+  it('never renders system/developer instruction messages', () => {
+    const renderer = new DeltaRenderer({ maxDeltaMessages: 0 })
+    const secret = 'SECRET-INSTRUCTIONS-MUST-NOT-BE-REVIEWED'
+    const events = buildEvents([
+      {
+        type: 'system/message',
+        data: {
+          message: {
+            id: MessageId('sys-1'),
+            role: 'system',
+            content: [text(secret)],
+            source: { kind: 'system' },
+          },
+        },
+        surfaceOp: 'append',
+      },
+      userMessage('real work'),
+    ])
+    const delta = renderer.update(events)
+    expect(delta).toBeDefined()
+    expect(delta!.markdown).toContain('real work')
+    expect(delta!.markdown).not.toContain(secret)
+  })
+})

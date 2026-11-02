@@ -19,8 +19,8 @@
 import { useEffect, type ReactNode } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { AdvisorNotesController, AdvisorNotesState } from './advisor-notes-store.ts'
+import { AdvisorNoteRow } from './advisor-note-node.tsx'
 import type { AdvisorKey } from './locales.ts'
-import styles from './advisor-turn-tail.module.css'
 
 /** Injected dependencies (one face per session scope binding). */
 export interface AdvisorTurnTailInjected {
@@ -72,19 +72,15 @@ export function AdvisorTurnTail(props: AdvisorTurnTailProps): ReactNode {
   const notes = state.notes.filter((note) => note.turn === turn.turn)
   if (state.status !== 'ready' || notes.length === 0) return null
 
+  // Reuse the same collapsible note card as a chat row; the turn-tail seat
+  // guarantees the note renders at the end of the turn it reviewed (the chat
+  // node seat could not: the inbox commits the note inside the NEXT turn, and
+  // the flow groups nodes by their turn location, not by anchorSeq alone).
   return (
-    <div className={styles['wrap']} data-advisor-turn-tail="">
-      <div className={styles['head']}>
-        <span className={styles['glyph']} aria-hidden="true">✦</span>
-        <span className={styles['title']}>{t('notesTitle')}</span>
-      </div>
+    <>
       {notes.map((note, index) => (
-        <div key={`${note.at}-${index}`} className={styles['row']}>
-          <span className={`${styles['dot']} ${styles[note.severity]}`} aria-hidden="true" />
-          <span className={styles['severity']}>{note.severity}</span>
-          <span className={styles['text']}>{note.text}</span>
-        </div>
+        <AdvisorNoteRow key={`${note.at}-${index}`} node={{ data: note }} t={t} />
       ))}
-    </div>
+    </>
   )
 }

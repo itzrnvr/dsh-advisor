@@ -57,7 +57,8 @@ import { AdvisorSessionAction } from './advisor-session.tsx'
 import { AdvisorSessionModelController, AdvisorSettingsStore, refreshIfLoaded } from './advisor-store.ts'
 import { NextPromptOverlay } from './next-prompt-overlay.tsx'
 import { AdvisorSuggestionController } from './next-prompt-store.ts'
-import { installAdvisorNoteNode } from './advisor-note-node.tsx'
+import { AdvisorTurnTail } from './advisor-turn-tail.tsx'
+import { advisorNotesControllerFor } from './advisor-notes-store.ts'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { en, zh, type AdvisorKey } from './locales.ts'
 
@@ -74,7 +75,6 @@ export type {
   AdvisorSuggestionController, AdvisorSuggestionState,
 } from './next-prompt-store.ts'
 export type { AdvisorNotesController, AdvisorNotesState, AdvisorNote } from './advisor-notes-store.ts'
-export type { AdvisorNotesInjected, AdvisorNotesProps } from './advisor-notes.tsx'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -116,7 +116,7 @@ export { refreshIfLoaded } from './advisor-store.ts'
  * the `connection.rpc` gateway channel. Reference shape:
  * ../deepseek-harness/packages/client/ui-settings-models/src/client/index.ts.
  */
-export const inject = ['slots', 'locale', 'connection', 'settingsSchema', 'remote', 'remote.llm', 'remote.settings', 'remote.session', 'uiConversation']
+export const inject = ['slots', 'locale', 'connection', 'settingsSchema', 'remote', 'remote.llm', 'remote.settings', 'remote.session']
 
 /**
  * Register the Advisor card once the `plugins.bundle.config` declaration is on
@@ -136,11 +136,6 @@ export function apply(ctx: ClientContext): void {
   // dotted-namespace contract).
   const controller = new AdvisorSettingsStore(ctx.remote, connection.rpc, ctx.settingsSchema)
 
-  // Fork addition: advisor notes become first-class chat rows. The Event
-  // definition claims the advisor-source user/message events exclusively
-  // (the default classifier would build a hidden Context row) and the
-  // keyed chat-node slot renders the note in place.
-  installAdvisorNoteNode(ctx)
 
   // B2: the session action's refresh-signal epoch — bumped by every pushed
   // invalidation / connection reset / window focus that already coalesces
@@ -312,5 +307,29 @@ export function apply(ctx: ClientContext): void {
       },
     }, NextPromptOverlay)
 
+  })
+
+  // Fork addition: advisor notes render inline at the END OF THE TURN THEY
+  // REVIEWED. The chat-node seat could not guarantee that: the inbox commits
+  // a note inside the NEXT turn and the flow groups nodes by their turn
+  // location (not anchorSeq), so the note landed after the new user message.
+  // The turn-tail seat lives inside the reviewed turn's own layout.
+  // Mirrors the known-good composer-dock registration above: a generator
+  // passed to inject, yielding the disposer from the ROOT slot registry.
+  ctx.slots.inject('conversation.chat.turnTail' as never, function* () {
+    yield (ctx.slots as any).register({
+      name: 'conversation.chat.turnTail',
+      id: `${BUNDLE_NAME}#turn-tail`,
+      order: 10,
+      locale: NS,
+      inject: (sessionId: string) => {
+        const notesController = advisorNotesControllerFor(sessionId, connection.rpc)
+        return {
+          sessionId,
+          controller: notesController,
+          hooks: { snapshot: notesController.store },
+        }
+      },
+    }, AdvisorTurnTail)
   })
 }
