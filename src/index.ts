@@ -273,6 +273,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       systemPrompt: raw?.systemPrompt ?? '',
       immuneTurns: raw?.immuneTurns ?? 3,
       maxDeltaMessages: raw?.maxDeltaMessages ?? 60,
+      callTimeoutMinutes: raw?.callTimeoutMinutes ?? 10,
       // T1 (plan dsh-advisor-next-prompt-n12): the resolved contract types
       // nextPrompt as a plain boolean — an absent raw key means the schema
       // default (true; enabled:false already blocks every prediction call).
@@ -462,6 +463,9 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       effective.systemPrompt,
       globalResolved.proseFallback ?? false,
       globalResolved.reasoningEffort ?? '',
+      // Call timeout (minutes) is a runtime-construction constant too: an edit
+      // must rebuild the session runtime so the new deadline takes effect.
+      globalResolved.callTimeoutMinutes ?? 10,
       // `nextPrompt` is deliberately ABSENT (plan dsh-advisor-next-prompt-n12,
       // T1 — config-key checklist seam 6): a `nextPrompt`-only edit must not
       // rebuild review runtimes. The prediction gate reads it live on every
@@ -506,6 +510,9 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // Plan dsh-advisor-reasoning-effort (RD-1/RD-2): absent/empty = the
       // smallest effort the resolved model declares.
       reasoningEffort: globalResolved.reasoningEffort,
+      // Reviewer call deadline (fork addition): minutes → ms. Replaces the
+      // upstream hard-coded 60 s so slow max-effort reviewers can finish.
+      callTimeoutMs: (globalResolved.callTimeoutMinutes ?? 10) * 60_000,
       llm: appRootLlm(),
       onNote: (note: AdviceNote) => {
         // Accepted notes only — the runtime's emission guard (T5) already
@@ -948,6 +955,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
         model: resolved.model,
         immuneTurns: resolved.immuneTurns,
         maxDeltaMessages: resolved.maxDeltaMessages,
+        callTimeoutMinutes: resolved.callTimeoutMinutes,
         // qc1 S-1 / FW-1b R-1: the issue-#102 keys ride the same resolved
         // source the renderer reads. Present on the normal path (the schema
         // default fills false on the Loader resolution), absent on the S1

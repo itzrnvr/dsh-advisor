@@ -99,6 +99,8 @@ export interface AdvisorConfigView {
   immuneTurns: number
   /** Delta window; integer ≥ 0, 0 = unbounded. */
   maxDeltaMessages: number
+  /** Reviewer call timeout in minutes (integer ≥ 1, default 10); bounds one advisor model call. */
+  callTimeoutMinutes?: number
   /**
    * Opt-in prose fallback switch (KD-I2, issue #102). Absent on plain-object
    * entries → the runtime default false, mirroring src/config.ts.
@@ -197,6 +199,8 @@ export interface AdvisorDraft {
   immuneTurns?: number
   /** Delta window; integer ≥ 0, default 60, 0 = unbounded. Cleared input → undefined (left unchanged on apply). */
   maxDeltaMessages?: number
+  /** Reviewer call timeout in minutes (integer ≥ 1, default 10). Cleared input → undefined (left unchanged on apply). */
+  callTimeoutMinutes?: number
   /** Opt-in prose fallback (KD-I2, issue #102); default false. */
   proseFallback?: boolean
   /**
@@ -302,7 +306,7 @@ export interface AdvisorSettingsState {
 
 /** The schema-defaulted advisor config used when no config resolves. */
 function defaultDraft(): AdvisorDraft {
-  return { systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 }
+  return { systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, callTimeoutMinutes: 10 }
 }
 
 /** A non-empty string field (whitespace-only reads as absent, mirroring the hard gate). */
@@ -327,6 +331,9 @@ function draftOfConfig(config: AdvisorConfigView | undefined): AdvisorDraft {
     systemPrompt: typeof config?.systemPrompt === 'string' ? config.systemPrompt : '',
     immuneTurns: numberField(config?.immuneTurns, 3),
     maxDeltaMessages: numberField(config?.maxDeltaMessages, 60),
+    // Reviewer call deadline (fork addition): the seed shows the effective
+    // value; an omitted containment wire reads the schema default (10).
+    callTimeoutMinutes: numberField(config?.callTimeoutMinutes, 10),
     // The scalar fields show the effective values: the gateway returns the
     // resolved config, so the wire carries both keys whenever the resolver
     // defined them (the schema default fills false on the normal path); this
@@ -830,6 +837,15 @@ export class AdvisorSettingsStore {
     this.setField('maxDeltaMessages', this.clampInt(value, this.store.getSnapshot().draft.maxDeltaMessages ?? 0))
   }
 
+  /** Set the reviewer call timeout in minutes (int 1..60; undefined clears → omitted from patch). */
+  setCallTimeoutMinutes(value: number | undefined): void {
+    if (value === undefined) {
+      this.clearField('callTimeoutMinutes')
+      return
+    }
+    this.setField('callTimeoutMinutes', this.clampInt(value, this.store.getSnapshot().draft.callTimeoutMinutes ?? 10, 1, 60))
+  }
+
   /** Set the opt-in prose fallback (KD-I2, issue #102). */
   setProseFallback(value: boolean): void {
     this.setField('proseFallback', value)
@@ -972,7 +988,7 @@ export class AdvisorSettingsStore {
    */
   private patchFor(draft: AdvisorDraft): Record<string, unknown> {
     const patch: Record<string, unknown> = {}
-    const always = ['systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'proseFallback', 'nextPrompt', 'defaultEnabled'] as const
+    const always = ['systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'callTimeoutMinutes', 'proseFallback', 'nextPrompt', 'defaultEnabled'] as const
     for (const key of always) {
       const next = draft[key]
       // A cleared number input (undefined) means "leave the stored value

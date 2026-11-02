@@ -270,6 +270,7 @@ describe('providers join (KD-S2 configured determination)', () => {
       systemPrompt: '',
       immuneTurns: 3,
       maxDeltaMessages: 60,
+      callTimeoutMinutes: 10,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -972,14 +973,14 @@ describe('gateway availability (KD-G5 — advisorPresent)', () => {
     expect(state.advisorPresent).toBe(false)
     // The pristine (unseeded) draft stays the schema defaults — NOT marked
     // seeded, so the next successful load can still seed.
-    expect(state.draft).toEqual({ systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 })
+    expect(state.draft).toEqual({ systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, callTimeoutMinutes: 10 })
     // Gateway recovers: the next load seeds the ACTUAL config.
     await store.load()
     state = store.store.getSnapshot()
     expect(state.advisorPresent).toBe(true)
     expect(state.draft).toEqual({
       provider: 'deepseek-official', model: 'ds-a',
-      systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20,
+      systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20, callTimeoutMinutes: 10,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -1027,7 +1028,7 @@ describe('discard (card draft rewind — T2 store add, T3 review)', () => {
     // The draft is exactly the seed again — every edited key rewound.
     expect(draftOf(store)).toEqual({
       provider: 'deepseek-official', model: 'ds-a',
-      systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20,
+      systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20, callTimeoutMinutes: 10,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -1054,7 +1055,7 @@ describe('discard (card draft rewind — T2 store add, T3 review)', () => {
     // The empty apply leaves the rewound draft untouched (no re-seed, no re-write).
     expect(draftOf(store)).toEqual({
       provider: 'deepseek-official', model: 'ds-a',
-      systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60,
+      systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, callTimeoutMinutes: 10,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -1122,12 +1123,12 @@ describe('discard (card draft rewind — T2 store add, T3 review)', () => {
     // The rewind target is the default (failed-get) seed — the effective
     // defaults view, still inventing NO provider/model (the gate/wipe hazard
     // this pin guards); the recovery below must still seed the REAL config.
-    expect(draftOf(store)).toEqual({ systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, proseFallback: false, nextPrompt: true, defaultEnabled: true })
+    expect(draftOf(store)).toEqual({ systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, callTimeoutMinutes: 10, proseFallback: false, nextPrompt: true, defaultEnabled: true })
     await store.load()
     expect(store.store.getSnapshot().advisorPresent).toBe(true)
     expect(draftOf(store)).toEqual({
       provider: 'deepseek-official', model: 'ds-a',
-      systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20,
+      systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20, callTimeoutMinutes: 10,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,

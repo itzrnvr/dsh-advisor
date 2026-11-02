@@ -54,6 +54,13 @@ export interface AdvisorConfig {
   /** Delta window; integer ≥ 0, default 60, 0 = unbounded (KD-3). */
   readonly maxDeltaMessages: number
   /**
+   * Reviewer call timeout in MINUTES (integer ≥ 1, default 10). Bounds one
+   * advisor `llm.stream` call: a provider stream that has not finished by
+   * then is aborted, retried once, and dropped (KD-5). 10 minutes keeps
+   * max-effort reasoning models from being cut off at the old fixed 60 s.
+   */
+  readonly callTimeoutMinutes?: number
+  /**
    * Opt-in prose fallback (KD-I2, issue #102): when true, a reply with no
    * parseable JSON frame but non-empty text is delivered as a `nit` note
    * (trimmed, surrounding fence stripped, capped at the note-char bound)
@@ -123,6 +130,12 @@ export interface ResolvedAdvisorConfig {
   readonly systemPrompt: string
   readonly immuneTurns: number
   readonly maxDeltaMessages: number
+  /** Reviewer call timeout in minutes (integer ≥ 1, default 10) — the value
+  /** Reviewer call timeout in minutes (integer ≥ 1, default 10) — the value
+   * threaded into the per-session runtime's `callTimeoutMs`. Optional on the
+   * resolved contract like `proseFallback`: consumers apply the 10-minute
+   * default when a plain-object config omits it. */
+  readonly callTimeoutMinutes?: number
   /** Prose fallback switch (KD-I2); absent on plain-object entries → runtime default false. */
   readonly proseFallback?: boolean
   /**
@@ -158,6 +171,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'systemPrompt',
   'immuneTurns',
   'maxDeltaMessages',
+  'callTimeoutMinutes',
   'proseFallback',
   'reasoningEffort',
   'nextPrompt',
@@ -217,6 +231,11 @@ export const Config = z.object({
   systemPrompt: z.string().default('').volatile(),
   immuneTurns: z.number().step(1).min(0).default(3).volatile(),
   maxDeltaMessages: z.number().step(1).min(0).default(60).volatile(),
+  // Reviewer call timeout in minutes (default 10). A slow reasoning model on
+  // a large delta needs far more than the historical fixed 60 s; this is a
+  // runtime construction constant (index.ts passes callTimeoutMs), so a
+  // committed edit rebuilds the session's runtime via its signature.
+  callTimeoutMinutes: z.number().step(1).min(1).max(60).default(10).volatile(),
   proseFallback: z.boolean().default(false).volatile(),
   // No default (RD-1): an absent value means automatic, and schemastery's
   // `default()` would persist a concrete effort as the "unconfigured" value.
@@ -257,6 +276,8 @@ export interface VolatileAdvisorConfig {
   readonly systemPrompt: unknown
   readonly immuneTurns: unknown
   readonly maxDeltaMessages: unknown
+  /** Optional like {@link AdvisorConfig.proseFallback}: plain entries may omit it; the Loader path always carries it. */
+  readonly callTimeoutMinutes?: unknown
   /** Optional like {@link AdvisorConfig.proseFallback}: plain entries may omit it; the Loader path always carries it. */
   readonly proseFallback?: unknown
   /** Optional like {@link AdvisorConfig.reasoningEffort}: plain entries may omit it; the Loader path always carries it. */
@@ -316,7 +337,7 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
   // The raw side is loose on purpose: the schema-removed `enabled` and
   // `maxTokens` are not VolatileAdvisorConfig members but can arrive on any
   // plain entry — the cast widens only to let the destructure strip them.
-  const { enabled, provider, model, systemPrompt, immuneTurns, maxDeltaMessages, proseFallback, reasoningEffort, nextPrompt, defaultEnabled, maxTokens, ...rest } =
+  const { enabled, provider, model, systemPrompt, immuneTurns, maxDeltaMessages, callTimeoutMinutes, proseFallback, reasoningEffort, nextPrompt, defaultEnabled, maxTokens, ...rest } =
     raw as VolatileAdvisorConfig & { readonly enabled?: unknown; readonly maxTokens?: unknown }
   return {
     ...rest,
@@ -325,6 +346,7 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
     systemPrompt: unwrapReference<string>(systemPrompt),
     immuneTurns: unwrapReference<number>(immuneTurns),
     maxDeltaMessages: unwrapReference<number>(maxDeltaMessages),
+    callTimeoutMinutes: unwrapReference<number | undefined>(callTimeoutMinutes),
     proseFallback: unwrapReference<boolean | undefined>(proseFallback),
     reasoningEffort: normalizeReasoningEffort(unwrapReference<unknown>(reasoningEffort)),
     nextPrompt: unwrapReference<boolean>(nextPrompt),
@@ -368,6 +390,7 @@ export function resolveAdvisorConfig(raw: unknown): ResolvedAdvisorConfig {
   if (missing.length === 0) {
     return {
       ...normalized,
+      callTimeoutMinutes: normalized.callTimeoutMinutes ?? 10,
       enabled: true,
       nextPrompt: normalized.nextPrompt ?? true,
       // GitHub issue #124: `defaultEnabled` is a plain boolean on EVERY
@@ -385,6 +408,7 @@ export function resolveAdvisorConfig(raw: unknown): ResolvedAdvisorConfig {
   // `defaultEnabled` (issue #124) on this disabled-with-reason arm.
   return {
     ...normalized,
+    callTimeoutMinutes: normalized.callTimeoutMinutes ?? 10,
     enabled: false,
     nextPrompt: normalized.nextPrompt ?? true,
     defaultEnabled: normalized.defaultEnabled ?? true,

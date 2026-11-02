@@ -49,6 +49,7 @@ Edit the `config` of the `advisor` row in your profile's patch layer (`~/.dsh/pr
     systemPrompt: ""             # optional; "" = built-in reviewer prompt
     immuneTurns: 3               # int ≥ 0, default 3 — cooldown after a delivered steer
     maxDeltaMessages: 60         # int ≥ 0, default 60 — delta window; 0 = unbounded
+    callTimeoutMinutes: 10       # int 1–60, default 10 — reviewer call timeout in MINUTES (fork addition)
     proseFallback: false         # boolean, default false — deliver a frame-less prose reply as a nit note (opt-in)
     reasoningEffort: ""          # optional; absent/"" = automatic — the smallest thinking effort the selected model declares (values: that model's declared effort ids)
     nextPrompt: true             # boolean, default true — predict the next prompt and show it as a tip below the web composer (web GUI only)

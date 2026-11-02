@@ -69,6 +69,7 @@ describe('plain-value entry (integration harness form, behavior identical to tod
       systemPrompt: '',
       immuneTurns: 5,
       maxDeltaMessages: 60,
+      callTimeoutMinutes: 10,
       proseFallback: false,
     })
   })

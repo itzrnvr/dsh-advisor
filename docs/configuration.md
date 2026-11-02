@@ -25,12 +25,13 @@
 | `systemPrompt` | string | `""` | 覆盖内置评审 prompt（严重度定义 + JSON-frame 输出契约，`src/prompts.ts` `DEFAULT_ADVISOR_SYSTEM_PROMPT`）。`""` = 用内置。 |
 | `immuneTurns` | number（整数 ≥ 0） | `3` | 冷却步数：实际 steer 过一次 concern/blocker 后，接下来 N 个完成的 stepped 主 turn 必须走完，另一条打断性 note 才可再次 steer；窗口内的 note 降级为 inject。 |
 | `maxDeltaMessages` | number（整数 ≥ 0） | `60` | 有界的 advisor 输入窗口。超过 N 的 delta 以 `… <earlier messages omitted>` 标记截断；`0` = 无上限。 |
+| `callTimeoutMinutes` | number（整数 1–60） | `10` | 单次审阅模型调用的整次超时（分钟，fork 新增）。超时按 transient 处理：重试一次后丢弃该 delta；改值会重建该会话的 runtime 以生效。默认 10 分钟，取代上游固定 60 秒。 |
 | `proseFallback` | boolean | `false` | Opt-in 散文容错（issue #102）：开启后，未产出有效 note（无可解析 JSON 帧，或帧的 note 为空/非法）但正文非空的回复经清理（trim → 剥外围 markdown 围栏 → 768 字符截断）作为 `severity: 'nit'` 的 note 走正常 guard/投递管线。可用的帧 note 始终优先；默认关闭时同样回复仍被丢弃。 |
 | `nextPrompt` | boolean | `true` | 下一提示预测开关（plan dsh-advisor-next-prompt-n12）：每个完成的 turn 后预测用户可能的下一提示，作为 composer 下方提示条显示。**仅 web 配置面**（web 卡片可编辑；`/advisor config` 回读与 TUI 分节不包含该键）。 |
 | `defaultEnabled` | boolean | `true` | 新会话默认开关（GitHub issue #124）：默认 `true` 时，没有显式会话 override 的会话在 pair 门禁通过后即开启（与旧行为逐字节一致）。设为 `false` 时，这类会话解析为 **disabled-by-default**（带 `disabled by default — enable it for this session with /advisor on` 原因），直到 `/advisor on` 写入该会话的显式 override。S4 显式模型门禁仍然优先——缺 `provider`/`model` 时依旧报告门禁原因；`/advisor model set|reset` 从不改变该开关。 |
 | `reasoningEffort` | string（可选） | 未设置 | 思考权重（reasoning effort）档位 id——取值是**所选模型 adapter 声明**的档位（2026-10-18 新增；spec §5.1）。**未设置或为空 = 自动**：运行时发送该模型声明的**最小**档位（`efforts[0]`，dsh-llm 按由小到大排序）；模型未声明任何推理元数据时该项整体不发送（不会用 `'off'` 硬编码兜底）。非空值裁剪后须与某个已声明档位精确匹配；未声明的 id（如换模型后的残留）回退到最小已声明档位，且**每个 runtime 只警告一次**——未声明的 id **绝不**发送（宿主会以 `UNSUPPORTED_REASONING_EFFORT` 拒绝）。 |
 
-> 默认值即 `Config` schema 的默认值（`z.string().default('')`、`z.number().step(1).min(0).default(3)` / `.default(60)`、`z.boolean().default(false)` 与 `z.boolean().default(true)`，`src/config.ts`）：`proseFallback` 默认 `false`，`nextPrompt` 与 `defaultEnabled` 默认 `true`。`provider` / `model` 在 schema 上没有默认值 —— 保持可选是为了让缺 pair 的配置能通过 Loader 校验、再由门禁解析为 disabled-with-reason（而不是加载失败）。`enabled` 键已移除（2026-09-26）——宿主 UI 的插件行开关即总开关；存储值中残留的 `enabled:` 会被静默忽略（2026-09-27 裁决：接受但剥离，永不读取、永不回写）。**`maxTokens` 键已移除（2026-10-18 用户裁决）**：模型侧 token 预算整体取消——OpenAI 兼容 API 上 `max_tokens` 把 reasoning 与正文一并计入，思考型模型会间歇性把预算耗尽、正文为空（空回复 → `EMPTY_RESPONSE` → 被误判 transient → 静默丢 delta）。advisor 调用现在**不发送** `maxTokens`（adapter/模型默认生效）；存量 profile 里的 `maxTokens:` 行与 `enabled:` 同样被静默忽略。输出上限由抽取侧 `ADVISOR_NOTE_MAX_CHARS`（768 字符）承担，延迟由 60s 调用 deadline 承担。`proseFallback` 为 2026-09-29 新增（issue #102）。`reasoningEffort`（2026-10-18）同样**没有** schema 默认值——`z.string().volatile()`，缺省/空即自动（见上表），不参与 pair 门禁。`defaultEnabled` 为 2026-10-21 新增（GitHub issue #124）——新键，不在 `LEGACY_KEYS` 中，近似拼写（如 `defaultEnableds`）按未知键严格拒绝。
+> 默认值即 `Config` schema 的默认值（`z.string().default('')`、`z.number().step(1).min(0).default(3)` / `.default(60)`、`z.boolean().default(false)` 与 `z.boolean().default(true)`，`src/config.ts`）：`proseFallback` 默认 `false`，`nextPrompt` 与 `defaultEnabled` 默认 `true`。`provider` / `model` 在 schema 上没有默认值 —— 保持可选是为了让缺 pair 的配置能通过 Loader 校验、再由门禁解析为 disabled-with-reason（而不是加载失败）。`enabled` 键已移除（2026-09-26）——宿主 UI 的插件行开关即总开关；存储值中残留的 `enabled:` 会被静默忽略（2026-09-27 裁决：接受但剥离，永不读取、永不回写）。**`maxTokens` 键已移除（2026-10-18 用户裁决）**：模型侧 token 预算整体取消——OpenAI 兼容 API 上 `max_tokens` 把 reasoning 与正文一并计入，思考型模型会间歇性把预算耗尽、正文为空（空回复 → `EMPTY_RESPONSE` → 被误判 transient → 静默丢 delta）。advisor 调用现在**不发送** `maxTokens`（adapter/模型默认生效）；存量 profile 里的 `maxTokens:` 行与 `enabled:` 同样被静默忽略。输出上限由抽取侧 `ADVISOR_NOTE_MAX_CHARS`（768 字符）承担，延迟由 callTimeoutMinutes（默认 10 分钟）调用 deadline 承担。`proseFallback` 为 2026-09-29 新增（issue #102）。`reasoningEffort`（2026-10-18）同样**没有** schema 默认值——`z.string().volatile()`，缺省/空即自动（见上表），不参与 pair 门禁。`defaultEnabled` 为 2026-10-21 新增（GitHub issue #124）——新键，不在 `LEGACY_KEYS` 中，近似拼写（如 `defaultEnableds`）按未知键严格拒绝。
 
 ### 示例 YAML
 
@@ -43,6 +44,7 @@
     systemPrompt: ""            # 可选；"" = 内置评审 prompt
     immuneTurns: 3              # 整数 ≥ 0，默认 3 —— 打断性送达后的冷却步数
     maxDeltaMessages: 60        # 整数 ≥ 0，默认 60 —— delta 窗口；0 = 无上限
+    callTimeoutMinutes: 10      # 整数 1–60，默认 10 —— 审阅调用超时（分钟，fork 新增）
     proseFallback: false        # 布尔，默认 false —— 无有效 note（含帧 note 为空/非法）时将散文回复作为 nit note 投递（opt-in）
     nextPrompt: true            # 布尔，默认 true —— 下一提示预测（仅 web 卡片）
     defaultEnabled: true        # 布尔，默认 true —— 新会话默认开启；false = 按会话手动启用（/advisor on）

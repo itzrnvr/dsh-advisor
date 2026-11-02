@@ -482,6 +482,8 @@ export interface AdvisorComposedConfig {
   readonly immuneTurns: number
   /** Delta window; 0 = unbounded (KD-3). */
   readonly maxDeltaMessages: number
+  /** Reviewer call timeout in minutes (fork addition; integer ≥ 1, default 10). */
+  readonly callTimeoutMinutes?: number
   /**
    * Opt-in prose fallback switch (KD-I2, issue #102). Present when the
    * composed read carries the key; absent on a fallback-shaped read — the
@@ -554,6 +556,7 @@ export function advisorConfigText(config: AdvisorComposedConfig): string {
   }
   lines.push(`immuneTurns: ${config.immuneTurns}`)
   lines.push(`maxDeltaMessages: ${config.maxDeltaMessages === 0 ? 'unbounded' : config.maxDeltaMessages}`)
+  lines.push(`callTimeoutMinutes: ${config.callTimeoutMinutes ?? 10}`)
   // The issue-#102 keys (qc1 S-1) render only when the composed read carries
   // them: a fallback-shaped read omits the optional keys, and inventing a
   // default marker there would misreport a store whose real values differ —

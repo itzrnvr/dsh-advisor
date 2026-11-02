@@ -336,6 +336,7 @@ export class NextPromptManager {
         systemPrompt: '',
         immuneTurns: 0,
         maxDeltaMessages: 60,
+        callTimeoutMinutes: 10,
         nextPrompt: false,
         // Fail-closed placeholder (GitHub issue #124 adds the plain-boolean
         // field): the disabled gate already blocks every prediction, so the

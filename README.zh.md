@@ -49,6 +49,7 @@ dsh plugin --profile web update dsh-advisor@latest   # 更新 —— 同一个 -
     systemPrompt: ""             # 可选；"" = 内置评审 prompt
     immuneTurns: 3               # 整数 ≥ 0，默认 3 —— 打断性送达后的冷却步数
     maxDeltaMessages: 60         # 整数 ≥ 0，默认 60 —— delta 窗口；0 = 无上限
+    callTimeoutMinutes: 10       # 整数 1–60，默认 10 —— 审阅调用超时（分钟，fork 新增）
     proseFallback: false         # 布尔，默认 false —— 无 JSON 帧时将散文回复作为 nit note 投递（opt-in）
     reasoningEffort: ""          # 可选；缺省/"" = 自动 —— 所选模型声明的最小思考权重（取值：该模型声明的 effort id）
     nextPrompt: true             # 布尔，默认 true —— 每个已完成 turn 后预测下一提示，并以提示条形式显示在 web composer 下方（仅 web GUI）

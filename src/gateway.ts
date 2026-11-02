@@ -640,6 +640,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
         systemPrompt: raw?.systemPrompt ?? '',
         immuneTurns: raw?.immuneTurns ?? 3,
         maxDeltaMessages: raw?.maxDeltaMessages ?? 60,
+        callTimeoutMinutes: raw?.callTimeoutMinutes ?? 10,
         proseFallback: raw?.proseFallback,
         // The resolver never ran on this arm, so the RD-1 empty = automatic
         // normalization (config.ts) is mirrored here: a raw empty/blank value
@@ -673,6 +674,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
       systemPrompt: config.systemPrompt,
       immuneTurns: config.immuneTurns,
       maxDeltaMessages: config.maxDeltaMessages,
+      callTimeoutMinutes: config.callTimeoutMinutes ?? 10,
     }
     if (config.proseFallback !== undefined) wire.proseFallback = config.proseFallback
     if (config.reasoningEffort !== undefined) wire.reasoningEffort = config.reasoningEffort

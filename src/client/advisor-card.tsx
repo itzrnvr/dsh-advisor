@@ -453,6 +453,24 @@ export function AdvisorCard(props: AdvisorCardProps): ReactNode {
               }}
             />
           </div>
+          <div className={styles['field']}>
+            <label htmlFor="advisor-call-timeout" className={styles['fieldLabel']}>{t('callTimeoutMinutes')}</label>
+            <input
+              id="advisor-call-timeout"
+              aria-label={t('callTimeoutMinutes')}
+              className={styles['input']}
+              type="number"
+              min={1}
+              max={60}
+              step={1}
+              value={draft.callTimeoutMinutes ?? ''}
+              disabled={busy}
+              onChange={(event) => {
+                controller.setCallTimeoutMinutes(event.target.value === '' ? undefined : Number(event.target.value))
+              }}
+            />
+            <p className={styles['hint']}>{t('callTimeoutMinutesHint')}</p>
+          </div>
         </div>
       </div>
       <div className={styles['footer']}>
