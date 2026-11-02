@@ -16,10 +16,12 @@
  */
 export function reviewedAnchor(eventSeq: number, location: unknown): number {
   const loc = location as {
-    step?: { step?: number }
     turn?: { start?: { seq?: number } }
   } | undefined
   const turnStart = loc?.turn?.start?.seq
-  if (loc?.step?.step !== 1 || typeof turnStart !== 'number' || turnStart <= 0) return eventSeq
+  // Anchor at the containing turn's start regardless of which step consumed
+  // the inbox message: every advisor note reviews the PREVIOUS turn, and the
+  // note event is written inside the next turn (after its user message).
+  if (typeof turnStart !== 'number' || turnStart <= 0) return eventSeq
   return turnStart - 0.01
 }

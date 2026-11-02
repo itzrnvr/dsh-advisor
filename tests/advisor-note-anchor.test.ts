@@ -9,8 +9,8 @@ describe('reviewedAnchor — advisor note row placement (fork addition)', () => 
     expect(reviewedAnchor(105, { step: { step: 1 }, turn: { start: { seq: 100 } } })).toBe(99.99)
   })
 
-  it('keeps the real position for a mid-turn note', () => {
-    expect(reviewedAnchor(130, { step: { step: 2 }, turn: { start: { seq: 100 } } })).toBe(130)
+  it('anchors a note consumed at a later step to the same turn start', () => {
+    expect(reviewedAnchor(130, { step: { step: 2 }, turn: { start: { seq: 100 } } })).toBe(99.99)
   })
 
   it('keeps the real position when the location is unknown', () => {
