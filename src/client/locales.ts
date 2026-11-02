@@ -80,6 +80,8 @@ export const en = {
   // turning this off makes the advisor opt-in per session via /advisor on.
   defaultEnabled: 'Enabled by default',
   defaultEnabledHint: 'New sessions start with the advisor on; turn it off to make the advisor opt-in per session (enable with /advisor on).',
+  mainSessionOnly: 'Main session only',
+  mainSessionOnlyHint: 'Review the top-level conversation only — skip subagent sessions.',
 }
 
 /** The settings.advisor namespace key union. */
@@ -142,4 +144,6 @@ export const zh: typeof en = {
   nextPromptAccept: '→ 采纳',
   defaultEnabled: '默认启用',
   defaultEnabledHint: '新会话默认开启顾问；关闭后改为按会话手动启用（用 /advisor on）。',
+  mainSessionOnly: '仅主会话',
+  mainSessionOnlyHint: '只审阅顶层会话，跳过子代理会话。',
 }

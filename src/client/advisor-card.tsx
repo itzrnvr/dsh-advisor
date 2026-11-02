@@ -420,6 +420,21 @@ export function AdvisorCard(props: AdvisorCardProps): ReactNode {
           />
           <p className={styles['hint']}>{t('defaultEnabledHint')}</p>
         </div>
+        <div className={styles['field']}>
+          <label htmlFor="advisor-main-session-only" className={styles['fieldLabel']}>{t('mainSessionOnly')}</label>
+          {/* Fork addition: keep the reviewer on the top-level conversation —
+              delegated (subagent) sessions are skipped while this is checked. */}
+          <input
+            id="advisor-main-session-only"
+            aria-label={t('mainSessionOnly')}
+            className={styles['checkboxInput']}
+            type="checkbox"
+            checked={draft.mainSessionOnly ?? true}
+            disabled={busy}
+            onChange={(event) => { controller.setMainSessionOnly(event.target.checked) }}
+          />
+          <p className={styles['hint']}>{t('mainSessionOnlyHint')}</p>
+        </div>
         <div className={styles['numberFields']}>
           <div className={styles['field']}>
             <label htmlFor="advisor-immune-turns" className={styles['fieldLabel']}>{t('immuneTurns')}</label>

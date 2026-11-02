@@ -389,6 +389,28 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   // safe wrapper (qc2 W-1 — a throwing resolver must not break the
   // session/event handler or `/advisor status`).
   const effectiveConfig = (sessionId: string): ResolvedAdvisorConfig => safeEffective(sessionId)
+  /**
+   * Subagent exclusion (fork addition): delegated sessions carry
+   * `header.delegationDepth > 0`. With `mainSessionOnly` on (the schema
+   * default) the reviewer stays on the top-level conversation only — no
+   * review runtime and no next-prompt prediction for subagents. An absent
+   * header/agent reads as a top-level session (fail open).
+   */
+  const isDelegatedSession = (sessionId: string): boolean => {
+    const session = ctx.agents.get(sessionId as SessionId)?.session
+    return (session?.header?.delegationDepth ?? 0) > 0
+  }
+  const mainSessionOnlyEnabled = (): boolean => {
+    try {
+      return sourceConfig().mainSessionOnly !== false
+    } catch {
+      return true
+    }
+  }
+  const sessionExcluded = (sessionId: string): boolean => {
+    if (!mainSessionOnlyEnabled()) return false
+    return isDelegatedSession(sessionId)
+  }
   // Spec §5.3 — model-validation teardown signal: fused into every in-flight
   // `/advisor model set` lookup, so owner teardown aborts them promptly; the
   // generation wipe (disposeAll, below) makes any completion that still
@@ -427,7 +449,11 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   // decoupled from the review runtimes (no shared state; a failing
   // prediction drops silently).
   const suggestions = new NextPromptManager({
-    resolve: (sessionId) => effectiveConfig(sessionId),
+    resolve: (sessionId) => {
+      const config = effectiveConfig(sessionId)
+      // Fork addition: no next-prompt predictions for excluded subagents.
+      return sessionExcluded(sessionId) ? { ...config, enabled: false } : config
+    },
     llm: () => appRootLlm(),
     logger: ctx.logger('advisor'),
   })
@@ -485,6 +511,8 @@ export function apply(ctx: Context, config: AdvisorConfig) {
    */
   const ensureRuntime = (sessionId: string): AdvisorRuntime | undefined => {
     if (!effectiveEnabled(sessionId)) return undefined
+    // Fork addition: main-session-only scope skips delegated (subagent) sessions.
+    if (sessionExcluded(sessionId)) return undefined
     let runtime = runtimes.get(sessionId)
     if (runtime !== undefined) return runtime
     const effective = effectiveConfig(sessionId)
@@ -745,6 +773,10 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // override/runtime through this loop; a session with NO runtime and NO
       // override is not a candidate and starts on its next event
       // (`ensureRuntime` on `agent/created` / the next delta).
+      if (sessionExcluded(sessionId)) {
+        disposeRuntime(sessionId)
+        continue
+      }
       if (!effectiveEnabled(sessionId)) {
         disposeRuntime(sessionId)
         continue

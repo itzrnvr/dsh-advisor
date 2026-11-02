@@ -101,6 +101,8 @@ export interface AdvisorConfigView {
   maxDeltaMessages: number
   /** Reviewer call timeout in minutes (integer ≥ 1, default 10); bounds one advisor model call. */
   callTimeoutMinutes?: number
+  /** Main-session-only scope (fork addition); default true excludes subagent sessions. */
+  mainSessionOnly?: boolean
   /**
    * Opt-in prose fallback switch (KD-I2, issue #102). Absent on plain-object
    * entries → the runtime default false, mirroring src/config.ts.
@@ -201,6 +203,8 @@ export interface AdvisorDraft {
   maxDeltaMessages?: number
   /** Reviewer call timeout in minutes (integer ≥ 1, default 10). Cleared input → undefined (left unchanged on apply). */
   callTimeoutMinutes?: number
+  /** Main-session-only scope (fork addition); default true excludes subagent sessions. */
+  mainSessionOnly?: boolean
   /** Opt-in prose fallback (KD-I2, issue #102); default false. */
   proseFallback?: boolean
   /**
@@ -306,7 +310,7 @@ export interface AdvisorSettingsState {
 
 /** The schema-defaulted advisor config used when no config resolves. */
 function defaultDraft(): AdvisorDraft {
-  return { systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, callTimeoutMinutes: 10 }
+  return { systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, callTimeoutMinutes: 10, mainSessionOnly: true }
 }
 
 /** A non-empty string field (whitespace-only reads as absent, mirroring the hard gate). */
@@ -334,6 +338,8 @@ function draftOfConfig(config: AdvisorConfigView | undefined): AdvisorDraft {
     // Reviewer call deadline (fork addition): the seed shows the effective
     // value; an omitted containment wire reads the schema default (10).
     callTimeoutMinutes: numberField(config?.callTimeoutMinutes, 10),
+    // Fork addition: an omitted containment wire reads the schema default (true).
+    mainSessionOnly: typeof config?.mainSessionOnly === 'boolean' ? config.mainSessionOnly : true,
     // The scalar fields show the effective values: the gateway returns the
     // resolved config, so the wire carries both keys whenever the resolver
     // defined them (the schema default fills false on the normal path); this
@@ -838,6 +844,11 @@ export class AdvisorSettingsStore {
   }
 
   /** Set the reviewer call timeout in minutes (int 1..60; undefined clears → omitted from patch). */
+  /** Set the main-session-only scope (fork addition): true = skip subagent sessions. */
+  setMainSessionOnly(value: boolean): void {
+    this.setField('mainSessionOnly', value)
+  }
+
   setCallTimeoutMinutes(value: number | undefined): void {
     if (value === undefined) {
       this.clearField('callTimeoutMinutes')
@@ -988,7 +999,7 @@ export class AdvisorSettingsStore {
    */
   private patchFor(draft: AdvisorDraft): Record<string, unknown> {
     const patch: Record<string, unknown> = {}
-    const always = ['systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'callTimeoutMinutes', 'proseFallback', 'nextPrompt', 'defaultEnabled'] as const
+    const always = ['systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'callTimeoutMinutes', 'mainSessionOnly', 'proseFallback', 'nextPrompt', 'defaultEnabled'] as const
     for (const key of always) {
       const next = draft[key]
       // A cleared number input (undefined) means "leave the stored value

@@ -149,6 +149,10 @@ function blockText(block: ContentBlock): string {
   switch (block.type) {
     case 'text':
       return block.text
+    case 'image':
+      // The reviewer is a text-only consumer: image bytes are never sent.
+      // Keep a marker so the delta still shows that visual context existed.
+      return '[image omitted]'
     default:
       // reasoning / tool-call / tool-addition / tool-removal / unknown
       // extensions carry no rendered text here.

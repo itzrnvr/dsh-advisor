@@ -61,6 +61,12 @@ export interface AdvisorConfig {
    */
   readonly callTimeoutMinutes?: number
   /**
+   * Main-session-only scope (fork addition): when true (the schema default),
+   * sessions with `header.delegationDepth > 0` (subagents) are not reviewed.
+   * The reviewer stays on the top-level conversation only.
+   */
+  readonly mainSessionOnly?: boolean
+  /**
    * Opt-in prose fallback (KD-I2, issue #102): when true, a reply with no
    * parseable JSON frame but non-empty text is delivered as a `nit` note
    * (trimmed, surrounding fence stripped, capped at the note-char bound)
@@ -131,7 +137,6 @@ export interface ResolvedAdvisorConfig {
   readonly immuneTurns: number
   readonly maxDeltaMessages: number
   /** Reviewer call timeout in minutes (integer ≥ 1, default 10) — the value
-  /** Reviewer call timeout in minutes (integer ≥ 1, default 10) — the value
    * threaded into the per-session runtime's `callTimeoutMs`. Optional on the
    * resolved contract like `proseFallback`: consumers apply the 10-minute
    * default when a plain-object config omits it. */
@@ -172,6 +177,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'immuneTurns',
   'maxDeltaMessages',
   'callTimeoutMinutes',
+  'mainSessionOnly',
   'proseFallback',
   'reasoningEffort',
   'nextPrompt',
@@ -236,6 +242,9 @@ export const Config = z.object({
   // runtime construction constant (index.ts passes callTimeoutMs), so a
   // committed edit rebuilds the session's runtime via its signature.
   callTimeoutMinutes: z.number().step(1).min(1).max(60).default(10).volatile(),
+  // Main-session-only scope (fork addition): default true keeps the reviewer
+  // off subagent sessions; flip false to review delegated sessions too.
+  mainSessionOnly: z.boolean().default(true).volatile(),
   proseFallback: z.boolean().default(false).volatile(),
   // No default (RD-1): an absent value means automatic, and schemastery's
   // `default()` would persist a concrete effort as the "unconfigured" value.
@@ -278,6 +287,8 @@ export interface VolatileAdvisorConfig {
   readonly maxDeltaMessages: unknown
   /** Optional like {@link AdvisorConfig.proseFallback}: plain entries may omit it; the Loader path always carries it. */
   readonly callTimeoutMinutes?: unknown
+  /** Optional like {@link AdvisorConfig.mainSessionOnly}: plain entries may omit it; the Loader path always carries it. */
+  readonly mainSessionOnly?: unknown
   /** Optional like {@link AdvisorConfig.proseFallback}: plain entries may omit it; the Loader path always carries it. */
   readonly proseFallback?: unknown
   /** Optional like {@link AdvisorConfig.reasoningEffort}: plain entries may omit it; the Loader path always carries it. */
@@ -337,7 +348,7 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
   // The raw side is loose on purpose: the schema-removed `enabled` and
   // `maxTokens` are not VolatileAdvisorConfig members but can arrive on any
   // plain entry — the cast widens only to let the destructure strip them.
-  const { enabled, provider, model, systemPrompt, immuneTurns, maxDeltaMessages, callTimeoutMinutes, proseFallback, reasoningEffort, nextPrompt, defaultEnabled, maxTokens, ...rest } =
+  const { enabled, provider, model, systemPrompt, immuneTurns, maxDeltaMessages, callTimeoutMinutes, mainSessionOnly, proseFallback, reasoningEffort, nextPrompt, defaultEnabled, maxTokens, ...rest } =
     raw as VolatileAdvisorConfig & { readonly enabled?: unknown; readonly maxTokens?: unknown }
   return {
     ...rest,
@@ -347,6 +358,7 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
     immuneTurns: unwrapReference<number>(immuneTurns),
     maxDeltaMessages: unwrapReference<number>(maxDeltaMessages),
     callTimeoutMinutes: unwrapReference<number | undefined>(callTimeoutMinutes),
+    mainSessionOnly: unwrapReference<boolean | undefined>(mainSessionOnly),
     proseFallback: unwrapReference<boolean | undefined>(proseFallback),
     reasoningEffort: normalizeReasoningEffort(unwrapReference<unknown>(reasoningEffort)),
     nextPrompt: unwrapReference<boolean>(nextPrompt),
@@ -384,12 +396,18 @@ export function resolveAdvisorConfig(raw: unknown): ResolvedAdvisorConfig {
   // Config(raw) resolves each `.volatile()` field to its reference; unwrap
   // into the plain contract the gate (and every consumer) reads.
   const normalized = unwrapAdvisorConfig(Config(raw))
+  // Fork addition: `mainSessionOnly` is a RAW scope key (read live from the
+  // entry config by `src/index.ts`), deliberately NOT part of the resolved
+  // runner contract — strip it before the spread so the resolved shape stays
+  // upstream-compatible.
+  const resolvedBase = { ...normalized }
+  delete (resolvedBase as { mainSessionOnly?: boolean }).mainSessionOnly
   const missing: string[] = []
   if (!isNonEmptyString(normalized.provider)) missing.push('provider')
   if (!isNonEmptyString(normalized.model)) missing.push('model')
   if (missing.length === 0) {
     return {
-      ...normalized,
+      ...resolvedBase,
       callTimeoutMinutes: normalized.callTimeoutMinutes ?? 10,
       enabled: true,
       nextPrompt: normalized.nextPrompt ?? true,
@@ -407,7 +425,7 @@ export function resolveAdvisorConfig(raw: unknown): ResolvedAdvisorConfig {
   // resolved contract, which types it as a plain boolean. The same holds for
   // `defaultEnabled` (issue #124) on this disabled-with-reason arm.
   return {
-    ...normalized,
+    ...resolvedBase,
     callTimeoutMinutes: normalized.callTimeoutMinutes ?? 10,
     enabled: false,
     nextPrompt: normalized.nextPrompt ?? true,

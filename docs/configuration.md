@@ -26,6 +26,7 @@
 | `immuneTurns` | number（整数 ≥ 0） | `3` | 冷却步数：实际 steer 过一次 concern/blocker 后，接下来 N 个完成的 stepped 主 turn 必须走完，另一条打断性 note 才可再次 steer；窗口内的 note 降级为 inject。 |
 | `maxDeltaMessages` | number（整数 ≥ 0） | `60` | 有界的 advisor 输入窗口。超过 N 的 delta 以 `… <earlier messages omitted>` 标记截断；`0` = 无上限。 |
 | `callTimeoutMinutes` | number（整数 1–60） | `10` | 单次审阅模型调用的整次超时（分钟，fork 新增）。超时按 transient 处理：重试一次后丢弃该 delta；改值会重建该会话的 runtime 以生效。默认 10 分钟，取代上游固定 60 秒。 |
+| `mainSessionOnly` | boolean | `true` | 仅审阅顶层会话（fork 新增）：为 `true` 时跳过 `header.delegationDepth > 0` 的子代理会话（不建 runtime、不预测下一提示）；设为 `false` 可同时审阅子代理。 |
 | `proseFallback` | boolean | `false` | Opt-in 散文容错（issue #102）：开启后，未产出有效 note（无可解析 JSON 帧，或帧的 note 为空/非法）但正文非空的回复经清理（trim → 剥外围 markdown 围栏 → 768 字符截断）作为 `severity: 'nit'` 的 note 走正常 guard/投递管线。可用的帧 note 始终优先；默认关闭时同样回复仍被丢弃。 |
 | `nextPrompt` | boolean | `true` | 下一提示预测开关（plan dsh-advisor-next-prompt-n12）：每个完成的 turn 后预测用户可能的下一提示，作为 composer 下方提示条显示。**仅 web 配置面**（web 卡片可编辑；`/advisor config` 回读与 TUI 分节不包含该键）。 |
 | `defaultEnabled` | boolean | `true` | 新会话默认开关（GitHub issue #124）：默认 `true` 时，没有显式会话 override 的会话在 pair 门禁通过后即开启（与旧行为逐字节一致）。设为 `false` 时，这类会话解析为 **disabled-by-default**（带 `disabled by default — enable it for this session with /advisor on` 原因），直到 `/advisor on` 写入该会话的显式 override。S4 显式模型门禁仍然优先——缺 `provider`/`model` 时依旧报告门禁原因；`/advisor model set|reset` 从不改变该开关。 |
@@ -45,6 +46,7 @@
     immuneTurns: 3              # 整数 ≥ 0，默认 3 —— 打断性送达后的冷却步数
     maxDeltaMessages: 60        # 整数 ≥ 0，默认 60 —— delta 窗口；0 = 无上限
     callTimeoutMinutes: 10      # 整数 1–60，默认 10 —— 审阅调用超时（分钟，fork 新增）
+    mainSessionOnly: true       # 布尔，默认 true —— 只审阅顶层会话（fork 新增）
     proseFallback: false        # 布尔，默认 false —— 无有效 note（含帧 note 为空/非法）时将散文回复作为 nit note 投递（opt-in）
     nextPrompt: true            # 布尔，默认 true —— 下一提示预测（仅 web 卡片）
     defaultEnabled: true        # 布尔，默认 true —— 新会话默认开启；false = 按会话手动启用（/advisor on）

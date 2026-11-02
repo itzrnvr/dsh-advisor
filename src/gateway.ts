@@ -689,6 +689,16 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     if (config.provider !== undefined) wire.provider = config.provider
     if (config.model !== undefined) wire.model = config.model
     if (config.disabledReason !== undefined) wire.disabledReason = config.disabledReason
+    // Fork addition: main-session-only is a RAW config key (not part of the
+    // resolved contract). Emit it only when explicitly disabled so the
+    // default-true readback stays byte-identical to upstream.
+    let mainSessionOnlyRaw: boolean | undefined
+    try {
+      mainSessionOnlyRaw = this.bridge.source().mainSessionOnly
+    } catch {
+      mainSessionOnlyRaw = undefined
+    }
+    if (mainSessionOnlyRaw === false) wire.mainSessionOnly = false
     return wire as unknown as ResolvedAdvisorConfig
   }
 }

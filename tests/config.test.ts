@@ -36,7 +36,7 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
     // fiber's references. A resolved field must duck-type as `{ get() }` —
     // every runtime read (unwrapAdvisorConfig → the gate) depends on it.
     const resolved: Record<string, unknown> = Config({})
-    for (const key of ['provider', 'model', 'systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'callTimeoutMinutes', 'proseFallback', 'nextPrompt', 'defaultEnabled']) {
+    for (const key of ['provider', 'model', 'systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'callTimeoutMinutes', 'mainSessionOnly', 'proseFallback', 'nextPrompt', 'defaultEnabled']) {
       expect(typeof (resolved[key] as { get?: unknown }).get, key).toBe('function')
     }
   })
@@ -46,7 +46,7 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
       systemPrompt: '',
       immuneTurns: 3,
       maxDeltaMessages: 60,
-      callTimeoutMinutes: 10,
+      callTimeoutMinutes: 10, mainSessionOnly: true,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -67,7 +67,7 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
       systemPrompt: 'custom reviewer prompt',
       immuneTurns: 5,
       maxDeltaMessages: 10,
-      callTimeoutMinutes: 10,
+      callTimeoutMinutes: 10, mainSessionOnly: true,
       proseFallback: true,
       nextPrompt: true,
       defaultEnabled: true,
@@ -246,7 +246,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
       systemPrompt: '',
       immuneTurns: 3,
       maxDeltaMessages: 60,
-      callTimeoutMinutes: 10,
+      callTimeoutMinutes: 10, mainSessionOnly: true,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -266,7 +266,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
       systemPrompt: '',
       immuneTurns: 3,
       maxDeltaMessages: 60,
-      callTimeoutMinutes: 10,
+      callTimeoutMinutes: 10, mainSessionOnly: true,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -310,7 +310,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
       systemPrompt: 'custom reviewer prompt',
       immuneTurns: 5,
       maxDeltaMessages: 10,
-      callTimeoutMinutes: 10,
+      callTimeoutMinutes: 10, mainSessionOnly: true,
       proseFallback: true,
       reasoningEffort: 'high',
       nextPrompt: true,
