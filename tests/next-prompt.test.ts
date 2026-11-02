@@ -255,10 +255,10 @@ describe('gate (contract 1)', () => {
     expect(options.messages).toHaveLength(1)
     const message = options.messages[0]!
     expect(message.role).toBe('user')
-    expect(message.content[0]).toEqual({
-      type: 'text',
-      text: '### Session update\n\n**agent**: fixed the parser',
-    })
+    expect(message.content[0]).toMatchObject({ type: 'text' })
+    const direct = (message.content[0] as { text: string }).text
+    expect(direct).toContain('Prediction task:')
+    expect(direct).toContain('### Session update\n\n**agent**: fixed the parser')
     expect(manager.getSuggestion('s')).toEqual({ suggestion: 'write a regression test' })
   })
 
@@ -329,7 +329,8 @@ describe('arm/consume (contract 2)', () => {
     expect(llm.calls).toHaveLength(2)
     const textOf = (options: GenerateOptions): string => {
       const block = options.messages[0]!.content[0]!
-      return block.type === 'text' ? block.text : ''
+      const raw = block.type === 'text' ? block.text : ''
+      return raw.replace(/^(Reviewer|Prediction) task:[^\n]*\n\n/, '')
     }
     expect(textOf(llm.calls[0]!)).toBe('turn one update')
     expect(textOf(llm.calls[1]!)).toBe('turn two update')

@@ -287,7 +287,10 @@ describe('AdvisorRuntime — drain calls llm.stream once per delta with expected
     expect(options.messages).toHaveLength(1)
     const message = options.messages[0]!
     expect(message.role).toBe('user')
-    expect(message.content[0]).toEqual({ type: 'text', text: '### Session update\n\n**user**: fix the bug' })
+    expect(message.content[0]).toMatchObject({ type: 'text' })
+    const direct = (message.content[0] as { text: string }).text
+    expect(direct).toContain('Reviewer task:')
+    expect(direct).toContain('### Session update\n\n**user**: fix the bug')
     expect(runtime.status()).toBe('running')
     expect(runtime.pendingCount).toBe(0)
   })
@@ -324,7 +327,8 @@ describe('AdvisorRuntime — drain calls llm.stream once per delta with expected
     expect(llm.calls).toHaveLength(2)
     const textOf = (options: GenerateOptions): string => {
       const block = options.messages[0]!.content[0]!
-      return block.type === 'text' ? block.text : ''
+      const raw = block.type === 'text' ? block.text : ''
+      return raw.replace(/^(Reviewer|Prediction) task:[^\n]*\n\n/, '')
     }
     expect(textOf(llm.calls[0]!)).toBe('update one')
     expect(textOf(llm.calls[1]!)).toBe('update two')
@@ -1171,7 +1175,8 @@ describe('AdvisorRuntime — bounded backlog drop-newest (spec §6)', () => {
   /** Delta markdown carried by one recorded `llm.stream` call (drain-test pattern). */
   const textOf = (options: GenerateOptions): string => {
     const block = options.messages[0]!.content[0]!
-    return block.type === 'text' ? block.text : ''
+    const raw = block.type === 'text' ? block.text : ''
+    return raw.replace(/^(Reviewer|Prediction) task:[^\n]*\n\n/, '')
   }
 
   it('drops the newest delta when the backlog is full, while a delta is in flight', async () => {

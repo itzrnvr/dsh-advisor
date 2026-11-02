@@ -23,6 +23,7 @@
  */
 
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { NEXT_PROMPT_TASK_REMINDER } from './prompts.js'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
@@ -447,7 +448,7 @@ export class NextPromptManager {
       model,
       system: DEFAULT_NEXT_PROMPT_SYSTEM_PROMPT,
       messages: [createUserMessage({
-        content: [{ type: 'text', text: context }],
+        content: [{ type: 'text', text: `${NEXT_PROMPT_TASK_REMINDER}\n\n${context}` }],
         source: { kind: 'user' },
       })],
       // The conversation this prediction belongs to: providers that route per

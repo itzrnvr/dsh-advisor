@@ -57,6 +57,7 @@
  */
 
 import { createUserMessage, isQuotaExceededError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { ADVISOR_TASK_REMINDER } from './prompts.js'
 import { EMPTY_RESPONSE_CODE, INVALID_CREDENTIAL_CODE, QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import type {
   FinishReason,
@@ -266,6 +267,20 @@ function* balancedObjects(text: string): Generator<string> {
  * since the 2026-10-18 ruling this cap is the ONLY output bound). Never
  * throws.
  */
+/**
+ * Reject replies that continue or quote the transcript instead of reviewing
+ * it (fork addition). This happens when a provider drops the system prompt
+ * (unsupported `developer` role): the model keeps writing the conversation.
+ * Such text must never be delivered as advice.
+ */
+function looksLikeTranscript(text: string): boolean {
+  return /^\s*-\s*tool call:/im.test(text)
+    || /\*\*(user|agent)\*\*:/i.test(text)
+    || /<tool_call>/i.test(text)
+    || /\[tool result\]/i.test(text)
+    || /###\s*Session update/i.test(text)
+}
+
 export function extractAdviceNote(reply: string): AdviceNote | undefined {
   for (const frame of balancedObjects(reply)) {
     let parsed: unknown
@@ -281,6 +296,7 @@ export function extractAdviceNote(reply: string): AdviceNote | undefined {
     const severity = record.severity
     const wake = record.wake === true ? true : record.wake === false ? false : undefined
     const trimmed = note.trim()
+    if (looksLikeTranscript(trimmed)) continue // transcript echo, not advice
     return {
       note: trimmed.length > ADVISOR_NOTE_MAX_CHARS
         ? `${trimmed.slice(0, ADVISOR_NOTE_MAX_CHARS - 1)}…`
@@ -321,6 +337,7 @@ export function extractProseFallbackNote(reply: string): AdviceNote | undefined 
   const match = SURROUNDING_FENCE_PATTERN.exec(reply.trim())
   const text = (match?.[1] ?? reply).trim()
   if (text.length === 0) return undefined
+  if (looksLikeTranscript(text)) return undefined
   return {
     note: text.length > ADVISOR_NOTE_MAX_CHARS
       ? `${text.slice(0, ADVISOR_NOTE_MAX_CHARS - 1)}…`
@@ -926,7 +943,7 @@ export class AdvisorRuntime {
       // session id.
       sessionId: this.sessionId,
       messages: [createUserMessage({
-        content: [{ type: 'text', text: delta.markdown }],
+        content: [{ type: 'text', text: `${ADVISOR_TASK_REMINDER}\n\n${delta.markdown}` }],
         source: { kind: 'user' },
       })],
       // Reasoning effort (plan dsh-advisor-reasoning-effort RD-1/RD-2): the

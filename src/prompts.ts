@@ -43,6 +43,18 @@ Reply with EXACTLY ONE JSON object and nothing else:
 - Do not include prose, markdown fences, or anything outside the JSON object.`
 
 /**
+ * Reviewer task reminder repeated in the user message (fork addition).
+ * Some OpenAI-compatible providers ignore the `developer` role, dropping the
+ * system prompt entirely; the model then continues the transcript instead of
+ * reviewing it. This short reminder rides the user message so the task is
+ * always visible.
+ */
+export const ADVISOR_TASK_REMINDER = `Reviewer task: read the session update above and reply with EXACTLY ONE JSON object {"note": "<your note>", "severity": "nit"|"concern"|"blocker", "wake": true|false}. Do not continue, quote, or restate the transcript; do not emit tool calls. If nothing is worth advising, reply {"note": "Nothing to add"}.`
+
+/** Next-prompt task reminder repeated in the user message (same reason). */
+export const NEXT_PROMPT_TASK_REMINDER = `Prediction task: read the session update above and reply with ONE concise, single-line next user prompt, or exactly NONE. Do not continue or restate the transcript.`
+
+/**
  * The next-prompt prediction system prompt (plan dsh-advisor-next-prompt-n12,
  * T1): after each completed primary turn the predictor receives the same
  * incremental transcript delta and replies with ONE plausible next user

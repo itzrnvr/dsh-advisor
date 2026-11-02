@@ -22,7 +22,7 @@
  */
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { AdvisorKey } from './locales.ts'
 import { en } from './locales.ts'
 import styles from './advisor-note-node.module.css'
@@ -89,10 +89,12 @@ export interface AdvisorNoteRowProps {
  * @returns the row, or null for a node without data.
  */
 export function AdvisorNoteRow(props: AdvisorNoteRowProps): ReactNode {
+  const [collapsed, setCollapsed] = useState(false)
   const data = props.node?.data
   if (data === undefined) return null
   const t = props.t ?? ((key: AdvisorKey) => en[key])
   const at = new Date(data.at)
+  const toggleLabel = t(collapsed ? 'notesExpand' : 'notesCollapse')
   return (
     <section className={`${styles['row']} ${styles[data.severity]}`} data-advisor-note="">
       <div className={styles['head']}>
@@ -102,8 +104,18 @@ export function AdvisorNoteRow(props: AdvisorNoteRowProps): ReactNode {
         <time className={styles['time']} dateTime={at.toISOString()}>
           {at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </time>
+        <button
+          type="button"
+          className={styles['toggle']}
+          aria-expanded={!collapsed}
+          aria-label={toggleLabel}
+          title={toggleLabel}
+          onClick={() => setCollapsed((value) => !value)}
+        >
+          {toggleLabel}
+        </button>
       </div>
-      <p className={styles['text']}>{data.text}</p>
+      {collapsed ? null : <p className={styles['text']}>{data.text}</p>}
     </section>
   )
 }

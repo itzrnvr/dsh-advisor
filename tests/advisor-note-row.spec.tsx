@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
-import { render } from '@testing-library/react'
+import { render, fireEvent, within } from '@testing-library/react'
 import { AdvisorNoteRow, installAdvisorNoteNode } from '../src/client/advisor-note-node'
 
 /** A minimal fake client context capturing the definition and slot writes. */
@@ -62,6 +62,22 @@ describe('AdvisorNoteRow — in-chat note rendering (fork addition)', () => {
       <AdvisorNoteRow node={{ data: { text, severity: 'nit', at: Date.now() } }} />,
     )
     expect(container.textContent).toContain('first line\nsecond line\n  indented')
+  })
+
+  it('collapses and expands the body from the header toggle', () => {
+    const text = 'a body that must disappear when collapsed'
+    const { container, getByRole } = render(
+      <AdvisorNoteRow node={{ data: { text, severity: 'nit', at: Date.now() } }} t={(key) => key} />,
+    )
+    expect(container.textContent).toContain(text)
+
+    const scoped = within(container)
+    fireEvent.click(scoped.getByRole('button', { name: 'notesCollapse' }))
+    expect(container.textContent).not.toContain(text)
+    expect(scoped.getByRole('button', { name: 'notesExpand' }).getAttribute('aria-expanded')).toBe('false')
+
+    fireEvent.click(scoped.getByRole('button', { name: 'notesExpand' }))
+    expect(container.textContent).toContain(text)
   })
 })
 

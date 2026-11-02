@@ -86,6 +86,8 @@ export const en = {
   unlimitedDeltaHint: 'Send the whole delta window to the reviewer (0 = unlimited). Uncheck to cap it at 60 messages.',
   notesTitle: 'Advisor',
   notesDismiss: 'Dismiss advisor notes',
+  notesCollapse: 'Collapse',
+  notesExpand: 'Expand',
 }
 
 /** The settings.advisor namespace key union. */
@@ -154,4 +156,6 @@ export const zh: typeof en = {
   unlimitedDeltaHint: '把完整 delta 窗口发给审阅模型（0 = 无限制）。取消勾选则限制为 60 条消息。',
   notesTitle: '顾问',
   notesDismiss: '关闭顾问建议',
+  notesCollapse: '收起',
+  notesExpand: '展开',
 }

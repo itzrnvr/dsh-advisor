@@ -33,6 +33,31 @@ describe('reviewer wake decision (fork addition)', () => {
   })
 })
 
+describe('transcript-echo guard (fork: provider without developer-role support)', () => {
+  it('rejects a JSON note that quotes the transcript', () => {
+    expect(extractAdviceNote(JSON.stringify({
+      note: '- tool call: pwsh({"command":"dir"})\n\n**user**: [tool result] ok',
+      severity: 'nit',
+    }))).toBeUndefined()
+  })
+
+  it('rejects a JSON note that restates the session update', () => {
+    expect(extractAdviceNote(JSON.stringify({
+      note: '### Session update\n\n**user**: fix the bug',
+    }))).toBeUndefined()
+  })
+
+  it('rejects a prose reply that is a transcript continuation', () => {
+    expect(extractProseFallbackNote('- tool call: pwsh({"command":"dir"})')).toBeUndefined()
+    expect(extractProseFallbackNote('**agent**: I updated the file')).toBeUndefined()
+  })
+
+  it('still accepts a genuine review note', () => {
+    expect(extractAdviceNote('{"note":"The retry loop hides the provider error; log it once."}'))
+      .toEqual({ note: 'The retry loop hides the provider error; log it once.', severity: 'nit' })
+  })
+})
+
 describe('note body bound (fork: readable full notes)', () => {
   it('keeps notes up to the 4000-char bound intact', () => {
     const body = 'y'.repeat(ADVISOR_NOTE_MAX_CHARS)
