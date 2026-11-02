@@ -58,7 +58,8 @@ import { AdvisorSessionModelController, AdvisorSettingsStore, refreshIfLoaded } 
 import { NextPromptOverlay } from './next-prompt-overlay.tsx'
 import { AdvisorSuggestionController } from './next-prompt-store.ts'
 import { AdvisorNotesDock } from './advisor-notes.tsx'
-import { AdvisorNotesController } from './advisor-notes-store.ts'
+import { AdvisorNotesController, advisorNotesControllerFor } from './advisor-notes-store.ts'
+import { AdvisorTurnTail } from './advisor-turn-tail.tsx'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { en, zh, type AdvisorKey } from './locales.ts'
 
@@ -318,7 +319,7 @@ export function apply(ctx: ClientContext): void {
       id: `${BUNDLE_NAME}#notes`,
       locale: NS,
       inject: (sessionId: string) => {
-        const notesController = new AdvisorNotesController(sessionId, connection.rpc)
+        const notesController = advisorNotesControllerFor(sessionId, connection.rpc)
         return {
           sessionId,
           controller: notesController,
@@ -328,5 +329,31 @@ export function apply(ctx: ClientContext): void {
         }
       },
     }, AdvisorNotesDock)
+  })
+
+  // Fork addition: inline advice at the end of each completed Turn. The chat
+  // slot contract lives in the shipped chat package (not a plugin peer), so
+  // this registration is intentionally untyped here; the runtime contract is
+  // the owner props { turn, seq, openFile } plus the standard session props.
+  // Notes are attributed to the turn by the host (`AdvisorNoteView.turn`), so
+  // the entry renders only the notes for that turn and null otherwise.
+  ;(ctx.slots as any).inject('conversation.chat.turnTail', function* (tctx: any) {
+    // Host compositions pass the slot-scoped context; simple harnesses call
+    // the factory with no argument, so fall back to the root slot registry.
+    const slotApi = tctx?.slots ?? ctx.slots
+    yield (slotApi as any).register({
+      name: 'conversation.chat.turnTail',
+      id: `${BUNDLE_NAME}#turn-tail`,
+      order: 10,
+      locale: NS,
+      inject: (sessionId: string) => {
+        const notesController = advisorNotesControllerFor(sessionId, connection.rpc)
+        return {
+          sessionId,
+          controller: notesController,
+          hooks: { snapshot: notesController.store },
+        }
+      },
+    }, AdvisorTurnTail)
   })
 }

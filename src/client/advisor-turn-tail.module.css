@@ -1,0 +1,76 @@
+/* Advisor turn-tail row (fork addition) — inline advice at the end of a
+ * completed Turn, rendered in the chat flow beside the other turn-tail
+ * contributions. A quiet card: hairline border, muted copy, severity dots as
+ * the only colour. */
+
+.wrap {
+  box-sizing: border-box;
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-subtle, rgba(128, 128, 128, 0.22));
+  border-radius: var(--dsw-radius-md, 8px);
+  background: var(--dsw-alias-bg-subtle, rgba(128, 128, 128, 0.05));
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary, inherit);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  color: var(--dsw-alias-label-caption, inherit);
+  font-weight: 500;
+}
+
+.glyph {
+  color: var(--dsw-alias-state-business-primary, #4f7cff);
+}
+
+.title {
+  flex: none;
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 0;
+}
+
+.dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  transform: translateY(-1px);
+}
+
+.nit {
+  color: var(--dsw-alias-label-caption, #6b7280);
+}
+
+.concern {
+  color: #d97706;
+}
+
+.blocker {
+  color: #dc2626;
+}
+
+.severity {
+  flex: none;
+  font-size: 11px;
+  opacity: 0.8;
+  text-transform: lowercase;
+}
+
+.text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

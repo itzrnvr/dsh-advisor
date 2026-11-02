@@ -24,6 +24,8 @@ export interface AdvisorNote {
   readonly severity: 'nit' | 'concern' | 'blocker'
   readonly text: string
   readonly channel: 'inject' | 'steer'
+  /** Turn the review belonged to (absent when the host could not attribute it). */
+  readonly turn?: number
 }
 
 /** The strip's snapshot. */
@@ -60,6 +62,28 @@ type AdvisorNotesRpcPayload =
   | { readonly error: { readonly tag: string; readonly message: string } }
 
 /** Per-session notes controller (one per session scope binding). */
+/** Shared controllers keyed by transport then session, so the dock and every
+ * turn tail observe ONE poll per session. */
+const sharedControllers = new WeakMap<ClientConnectionRpc, Map<string, AdvisorNotesController>>()
+
+/** Return the shared per-session notes controller for one RPC transport. */
+export function advisorNotesControllerFor(
+  sessionId: string,
+  rpc: ClientConnectionRpc,
+): AdvisorNotesController {
+  let perSession = sharedControllers.get(rpc)
+  if (perSession === undefined) {
+    perSession = new Map<string, AdvisorNotesController>()
+    sharedControllers.set(rpc, perSession)
+  }
+  let controller = perSession.get(sessionId)
+  if (controller === undefined) {
+    controller = new AdvisorNotesController(sessionId, rpc)
+    perSession.set(sessionId, controller)
+  }
+  return controller
+}
+
 export class AdvisorNotesController {
   readonly sessionId: string
 
@@ -79,20 +103,25 @@ export class AdvisorNotesController {
   /** The mounted poll timer (owned by start/stop, not the component). */
   private timer: number | undefined
 
+  /** Mount count: the controller is shared across surfaces (dock + turn tails). */
+  private mounts = 0
+
   constructor(sessionId: string, private readonly rpc: ClientConnectionRpc) {
     this.sessionId = sessionId
   }
 
-  /** Begin polling: fetch once immediately, then on the idle cadence. */
+  /** Begin polling: fetch once immediately, then on the idle cadence (reference-counted). */
   start(): void {
+    this.mounts += 1
     if (this.timer !== undefined) return
     void this.fetch()
     this.timer = window.setInterval(() => { void this.fetch() }, ADVISOR_NOTES_POLL_MS)
   }
 
-  /** Stop polling (component unmount). Safe to call repeatedly. */
+  /** Release one mount; polling stops when the last surface unmounts. */
   stop(): void {
-    if (this.timer === undefined) return
+    this.mounts = Math.max(0, this.mounts - 1)
+    if (this.mounts > 0 || this.timer === undefined) return
     window.clearInterval(this.timer)
     this.timer = undefined
   }
@@ -139,6 +168,10 @@ export class AdvisorNotesController {
           && (note.severity === 'nit' || note.severity === 'concern' || note.severity === 'blocker')
           && (note.channel === 'inject' || note.channel === 'steer')
         ))
+        .map((note) => ({
+          ...note,
+          ...(typeof (note as { turn?: unknown }).turn === 'number' ? { turn: (note as { turn?: number }).turn } : {}),
+        }))
       this.store.update((s) => {
         s.status = 'ready'
         s.notes = notes

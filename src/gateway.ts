@@ -294,6 +294,8 @@ export interface AdvisorNoteView {
   readonly text: string
   /** Delivery channel: non-waking inject or waking steer. */
   readonly channel: 'inject' | 'steer'
+  /** Agent turn the review belonged to (fork addition; absent when unknown). */
+  readonly turn?: number
 }
 
 /**

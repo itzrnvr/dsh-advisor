@@ -53,11 +53,15 @@ export function AdvisorNotesDock(props: AdvisorNotesProps): ReactNode {
     return () => { controller.stop() }
   }, [controller])
 
-  if (state.dismissed || state.status !== 'ready' || state.notes.length === 0) return null
-  const latest = state.notes[state.notes.length - 1]
+  // Fork addition: turn-driven sessions render notes inline at each turn's
+  // tail; the dock is the fallback surface for notes the host could not
+  // attribute to a turn (agentic sessions without turn/end).
+  const unattributed = state.notes.filter((note) => note.turn === undefined)
+  if (state.dismissed || state.status !== 'ready' || unattributed.length === 0) return null
+  const latest = unattributed[unattributed.length - 1]
   if (latest === undefined) return null
-  const shown = [...state.notes].reverse().slice(0, 10)
-  const extra = state.notes.length - 1
+  const shown = [...unattributed].reverse().slice(0, 10)
+  const extra = unattributed.length - 1
 
   return (
     <div className={styles['wrap']} data-advisor-notes="">

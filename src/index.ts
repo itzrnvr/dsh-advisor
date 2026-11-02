@@ -448,6 +448,8 @@ export function apply(ctx: Context, config: AdvisorConfig) {
    */
   const adviceLog = new Map<string, AdvisorNoteView[]>()
   const ADVICE_LOG_MAX = 30
+  /** Last completed Agent turn per session — attributes a delivered note to the turn it reviewed. */
+  const lastTurn = new Map<string, number>()
   /**
    * Seed the delivered-notes log from the session log the first time a
    * session runtime is built (fork addition): advisor notes are committed
@@ -461,7 +463,12 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     const session = ctx.agents.get(sessionId as SessionId)?.session
     if (session === undefined || typeof session.snapshotEvents !== 'function') return
     const seeded: AdvisorNoteView[] = []
+    let lastEndedTurn: number | undefined
     for (const event of session.snapshotEvents()) {
+      if (event.type === 'turn/end') {
+        lastEndedTurn = (event as unknown as { data?: { turn?: number } }).data?.turn ?? lastEndedTurn
+        continue
+      }
       if (event.type !== 'user/message') continue
       const message = (event as unknown as {
         data?: {
@@ -484,6 +491,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
         severity: match[1] as 'nit' | 'concern' | 'blocker',
         text: match[2].trim(),
         channel: 'inject',
+        ...(lastEndedTurn === undefined ? {} : { turn: lastEndedTurn }),
       })
     }
     adviceLog.set(sessionId, seeded.slice(-ADVICE_LOG_MAX))
@@ -610,7 +618,14 @@ export function apply(ctx: Context, config: AdvisorConfig) {
         // `channel === undefined` means the delivery was dropped (no live agent),
         // so only an actually delivered note is recorded.
         if (channel !== undefined) {
-          const entry: AdvisorNoteView = { at: Date.now(), severity: note.severity, text: note.note, channel }
+          const turn = lastTurn.get(sessionId)
+          const entry: AdvisorNoteView = {
+            at: Date.now(),
+            severity: note.severity,
+            text: note.note,
+            channel,
+            ...(turn === undefined ? {} : { turn }),
+          }
           const log = adviceLog.get(sessionId)
           if (log === undefined) adviceLog.set(sessionId, [entry])
           else {
@@ -749,6 +764,11 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   ctx.on('session/event', (session: Session, event: SessionEvent) => {
     observer.handleEvent(session.id, session.snapshotEvents(), event)
   }, { global: true })
+  // Fork addition: remember the last completed turn so a delivered note can
+  // be attached to the turn it reviewed (the in-chat turn-tail row uses it).
+  ctx.on('session/event', (session: Session, event: SessionEvent) => {
+    if (event.type === 'turn/end') lastTurn.set(session.id as string, event.data.turn)
+  }, { global: true })
   // Per-session runtime lifecycle. Spec KD-5(c) pins `agent/disposed`;
   // `session/disposed` is the store-level pair (both are idempotent — a
   // runtime is disposed at most once, whichever signal lands first). `agent/created`
@@ -782,6 +802,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     overrides.clear(agent.id)
     suggestions.disposeSession(agent.id)
     adviceLog.delete(agent.id)
+    lastTurn.delete(agent.id)
   }, { global: true })
   ctx.on('session/disposed', (session: Session) => {
     observer.disposeSession(session.id)
@@ -790,6 +811,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     overrides.clear(session.id)
     suggestions.disposeSession(session.id)
     adviceLog.delete(session.id)
+    lastTurn.delete(session.id)
   }, { global: true })
 
   // T1-settings live re-apply: construction-time latches (immuneTurns on the
