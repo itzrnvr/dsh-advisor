@@ -683,6 +683,16 @@ export class SessionTranscriptObserver {
     // One completed reply round — the immuneTurns countdown (T6) fires before
     // the render, same ordering as the turn/end path.
     this.options.onSteppedTurnEnd?.(sessionId)
+    // Turn clock for agentic rounds (fork addition): a session that never
+    // emits turn/end still has completed rounds, so reviewEveryTurns gates
+    // THIS path too instead of being inert. The cursor is not advanced on a
+    // skipped round, so the eventual review carries every skipped round.
+    const roundsSince = (this.turnsSinceReview.get(sessionId) ?? 0) + 1
+    if (roundsSince < this.reviewEveryTurns) {
+      this.turnsSinceReview.set(sessionId, roundsSince)
+      return
+    }
+    this.turnsSinceReview.delete(sessionId)
     // Append-type trigger: the arriving input opens the next round — exclude
     // the trigger event itself so it never enters the delta (the wiring
     // guarantees `event` is the last log entry). skipLast does this WITHOUT

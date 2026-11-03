@@ -1213,3 +1213,113 @@ describe('SessionTranscriptObserver — review cadence (fork addition)', () => {
     expect(deltas[0]!.markdown).toContain('go 2')
   })
 })
+
+describe('SessionTranscriptObserver — cadence side effects (fork addition)', () => {
+  it('keeps next-prompt arming per completed turn while reviews follow the turn clock', () => {
+    const deltas: string[] = []
+    const completed: string[] = []
+    const stepped: string[] = []
+    const observer = new SessionTranscriptObserver({
+      maxDeltaMessages: 60,
+      reviewEverySteps: 0,
+      reviewEveryTurns: 2,
+      onDelta: (_sessionId, delta) => deltas.push(delta.markdown),
+      onCompletedTurnEnd: (sessionId) => completed.push(sessionId),
+      onSteppedTurnEnd: (sessionId) => stepped.push(sessionId),
+    })
+
+    const turn = (n: number): EventSpec[] => [
+      turnStart(n),
+      userMessage(`go ${n}`),
+      stepStart(n, 1),
+      assistantMessage(`a${n}`),
+      stepEnd(n, 1),
+      turnEnd(n),
+    ]
+    feed(observer, 's1', [...turn(1), ...turn(2)])
+
+    // Reviews follow the cadence (one review for two turns) ...
+    expect(deltas).toHaveLength(1)
+    expect(deltas[0]).toContain('go 1')
+    expect(deltas[0]).toContain('go 2')
+    // ... while the immuneTurns countdown and next-prompt arming stay
+    // per-completed-turn (they are not reviews).
+    expect(stepped).toHaveLength(2)
+    expect(completed).toHaveLength(2)
+  })
+
+  it('applies the turn clock to agentic rounds that never emit turn/end', () => {
+    const deltas: string[] = []
+    const observer = new SessionTranscriptObserver({
+      maxDeltaMessages: 60,
+      reviewEverySteps: 0,
+      reviewEveryTurns: 2,
+      onDelta: (_sessionId, delta) => deltas.push(delta.markdown),
+    })
+
+    feed(observer, 's1', [
+      userMessage('prompt one'),
+      assistantMessage('reply one'),
+      userMessage('prompt two'),        // round 1 complete — cadence skips
+      assistantMessage('reply two'),
+      userMessage('prompt three'),      // round 2 complete — review both rounds
+    ])
+
+    expect(deltas).toHaveLength(1)
+    expect(deltas[0]).toContain('prompt one')
+    expect(deltas[0]).toContain('reply one')
+    expect(deltas[0]).toContain('prompt two')
+    expect(deltas[0]).toContain('reply two')
+    expect(deltas[0]).not.toContain('prompt three')
+  })
+})
+
+describe('SessionTranscriptObserver — deferred rewrite on skipped cadence rounds (fork addition)', () => {
+  it('detects a compaction on the next qualifying review after skipped rounds', () => {
+    const deltas: string[] = []
+    const rewrites: string[] = []
+    const observer = new SessionTranscriptObserver({
+      maxDeltaMessages: 60,
+      reviewEverySteps: 0,
+      // 3 because the summary REPLACE message is itself a human-input arrival
+      // and therefore counts as one completed round (dsh surface semantics):
+      // round 1 = before compaction, round 2 = the replace arrival, round 3 =
+      // prompt two. Only the third review qualifies, AFTER reply two exists.
+      reviewEveryTurns: 3,
+      onDelta: (_sessionId, delta) => deltas.push(delta.markdown),
+      onRewrite: (sessionId) => rewrites.push(sessionId),
+    })
+
+    feed(observer, 's1', [
+      userMessage('prompt one'),
+      assistantMessage('reply one'),
+      compactStart(),
+      compactSummary(),
+      // A surface-replace message is what actually shadows the pre-compaction
+      // range; the summary alone is only a marker.
+      userMessage('Summary of earlier work.', { kind: 'user' }, { op: 'replace', startSeq: 0, endSeq: 1 }, [0, 1]),
+      compactEnd(),
+      // The replace arrival and this prompt are both skipped rounds: the
+      // cursor stays put, so the rewrite is NOT consumed by them.
+      userMessage('prompt two'),
+      assistantMessage('reply two'),
+      // The qualifying review: it must replay the post-rewrite surface
+      // (deferred rewrite detection), not the pre-rewrite messages.
+      userMessage('prompt three'),
+    ])
+
+    // Each rewrite event reports the rewrite; the point is that the SKIPPED
+    // rounds did not consume it.
+    expect(rewrites.length).toBeGreaterThan(0)
+    expect(deltas).toHaveLength(1)
+    expect(deltas[0]).toContain('Summary of earlier work.')
+    // The visible summary is the REPLACE user message; the log-only
+    // compact/summary marker resets the fold but never enters the surface.
+    expect(deltas[0]).toContain('prompt two')
+    expect(deltas[0]).toContain('reply two')
+    // The shadowed pre-rewrite round must not reappear.
+    expect(deltas[0]).not.toContain('prompt one')
+    expect(deltas[0]).not.toContain('reply one')
+    expect(deltas[0]).not.toContain('prompt three')
+  })
+})
