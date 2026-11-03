@@ -785,6 +785,11 @@ export class AdvisorRuntime {
     return this.state
   }
 
+  /** Exposed for tests: the calibrated chars→tokens ratio. */
+  get estimatedTokensPerChar(): number {
+    return this.tokensPerChar
+  }
+
   /** Number of deltas waiting to be drained (bounded by `maxQueued`). */
   get pendingCount(): number {
     return this.queue.length

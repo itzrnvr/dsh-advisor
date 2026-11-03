@@ -1926,3 +1926,23 @@ describe('AdvisorRuntime — full trace sink (fork addition)', () => {
     expect(compaction?.at).toBe(compactionTurn?.at)
   })
 })
+
+describe('AdvisorRuntime — token estimate calibration (fork addition)', () => {
+  it('calibrates tokensPerChar from provider usage and clamps it', async () => {
+    const llm = new FakeLlm([
+      {
+        chunks: [
+          { type: 'text-delta', index: 0, text: '{"note":"calibrated"}' },
+          // Absurdly high prompt tokens for the chars sent → clamps to 1.5.
+          { type: 'usage', usage: { inputTokens: 100_000, outputTokens: 5 } },
+          { type: 'finish', reason: { kind: 'stop' } },
+        ],
+      },
+    ])
+    const { runtime } = makeRuntime(llm)
+    expect(runtime.estimatedTokensPerChar).toBe(0.25)
+    runtime.enqueue(delta('calibration update'))
+    await runtime.waitForDrain()
+    expect(runtime.estimatedTokensPerChar).toBe(1.5)
+  })
+})

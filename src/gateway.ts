@@ -682,7 +682,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
 
   /**
    * Fork addition — the expand-on-demand full text of one trajectory row
-   * (`/api/advisor/trajectoryEntry`, args `{ sessionId, index }`). Read-only;
+   * (`/api/advisor/trajectoryEntry`, args `{ sessionId, id }`). Read-only;
    * malformed requests answer `advisor/rejected`, an owner without the row
    * answers `advisor/entry-unknown`.
    */
