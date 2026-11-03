@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { normalizeTrajectoryTurns } from '../src/client/advisor-trajectory-store'
 
 const base = {
+  id: 1,
   at: 1_793_596_800_000,
   durationMs: 5,
   outcome: 'note',

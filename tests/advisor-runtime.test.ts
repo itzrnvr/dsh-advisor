@@ -1922,6 +1922,7 @@ describe('AdvisorRuntime — full trace sink (fork addition)', () => {
     expect(compaction?.summary).toContain('Compacted summary.')
     // Expand lookups key on the SAME at as the polled turn row (start time).
     const compactionTurn = turns.find((turn) => turn.kind === 'compaction')
+    expect(compaction?.id).toBe(compactionTurn?.id)
     expect(compaction?.at).toBe(compactionTurn?.at)
   })
 })

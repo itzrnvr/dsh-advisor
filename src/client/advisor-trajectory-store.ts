@@ -23,6 +23,8 @@ export interface AdvisorTrajectoryTurn {
   readonly at: number
   readonly durationMs: number
   readonly outcome: 'note' | 'no-note' | 'failure' | 'aborted'
+  /** Stable attempt id — keys the expand lookup. */
+  readonly id: number
   /** Which call this row describes (fork addition); absent = review. */
   readonly kind?: 'review' | 'compaction'
   /** Bounded text of the delta actually sent (user row for the Advisor tab). */
@@ -55,6 +57,7 @@ export function normalizeTrajectoryTurns(raw: readonly unknown[]): AdvisorTrajec
       typeof turn === 'object' && turn !== null
       && typeof (turn as { at?: unknown }).at === 'number'
       && typeof (turn as { durationMs?: unknown }).durationMs === 'number'
+      && typeof (turn as { id?: unknown }).id === 'number'
       && ['note', 'no-note', 'failure', 'aborted'].includes((turn as { outcome?: string }).outcome ?? '')
     ))
     .map((turn) => {
@@ -152,17 +155,17 @@ export class AdvisorTrajectoryController {
    * Cached per index; a failure returns `undefined` and the row keeps its
    * preview (the poll must never grow to carry full text).
    */
-  async fetchEntry(at: number): Promise<string | undefined> {
-    const cached = this.entryCache.get(at)
+  async fetchEntry(id: number): Promise<string | undefined> {
+    const cached = this.entryCache.get(id)
     if (cached !== undefined) return cached
     try {
       const result = await this.rpc.call('/api', 'advisor/trajectoryEntry', {
-        args: { sessionId: this.sessionId, at },
+        args: { sessionId: this.sessionId, id },
       })
       if (!result.ok) return undefined
       const payload = result.value as { readonly text?: unknown } | undefined
       if (payload === null || typeof payload !== 'object' || typeof payload.text !== 'string') return undefined
-      this.entryCache.set(at, payload.text)
+      this.entryCache.set(id, payload.text)
       return payload.text
     } catch {
       return undefined

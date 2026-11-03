@@ -4,9 +4,9 @@
  * The advisor's complete trace (prepared text + raw reply, or a compaction
  * summary) is retained per session in a bounded ring whose size differs from
  * the polled turn ring. Expansion therefore keys on the attempt's `at`
- * timestamp (NOT an array index, which would drift once either ring wraps),
- * and this module owns that lookup plus the text rendering so both are
- * unit-testable without the cordis wiring.
+ * stable attempt id (NOT an array index, which would drift once either ring
+ * wraps, and NOT a millisecond timestamp, which two attempts can share). This
+ * module owns that lookup plus the text rendering so both are unit-testable.
  *
  * @module dsh-advisor/trace-entry
  */
@@ -14,16 +14,16 @@
 import type { AdvisorTrace } from './advisor-runtime.js'
 
 /**
- * Find one retained trace by its attempt timestamp.
+ * Find one retained trace by its stable attempt id.
  * @param traces - the session's retained trace ring (oldest → newest).
- * @param at - the polled turn row's `at`.
+ * @param id - the polled turn row's `id`.
  * @returns the matching trace, or undefined when it aged out.
  */
 export function findTraceEntry(
   traces: readonly AdvisorTrace[] | undefined,
-  at: number,
+  id: number,
 ): AdvisorTrace | undefined {
-  return traces?.find((trace) => trace.at === at)
+  return traces?.find((trace) => trace.id === id)
 }
 
 /** Render one trace as the expandable full text the Advisor tab shows. */

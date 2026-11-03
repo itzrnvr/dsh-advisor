@@ -674,6 +674,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
         const capped = (value: string | undefined): string | undefined =>
           value === undefined ? undefined : value.slice(0, TRACE_ENTRY_MAX_CHARS)
         const entry: AdvisorTrace = {
+          id: trace.id,
           at: trace.at,
           kind: trace.kind,
           ...(capped(trace.userText) === undefined ? {} : { userText: capped(trace.userText)! }),
@@ -1336,16 +1337,16 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       }
     },
     // Fork addition: expand-on-demand full text of one row.
-    getTrajectoryEntry: (sessionId, at) => {
+    getTrajectoryEntry: (sessionId, id) => {
       // Keyed by the attempt's timestamp, NOT the polled array index: the turn
       // ring and the full-text ring have different bounds, so an index would
       // silently point at another attempt once either wraps.
-      const trace = findTraceEntry(traceLog.get(sessionId), at)
+      const trace = findTraceEntry(traceLog.get(sessionId), id)
       if (trace === undefined) {
         return {
           error: {
             tag: 'advisor/entry-unknown',
-            message: `advisor: no trajectory trace at ${at} for this session`,
+            message: `advisor: no trajectory trace id ${id} for this session`,
           },
         }
       }

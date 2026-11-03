@@ -188,7 +188,7 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
                       key={entry.key}
                       className={styles.entry ?? ''}
                       onToggle={(event) => {
-                        if ((event.currentTarget as HTMLDetailsElement).open) loadFull(entry.turn.at)
+                        if ((event.currentTarget as HTMLDetailsElement).open) loadFull(entry.turn.id)
                       }}
                     >
                       <summary className={styles.entryHead ?? ''}>
@@ -203,7 +203,7 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
                           </span>
                         )}
                       </summary>
-                      <pre className={styles.entryText ?? ''}>{fullTexts[entry.turn.at] ?? entry.text}</pre>
+                      <pre className={styles.entryText ?? ''}>{fullTexts[entry.turn.id] ?? entry.text}</pre>
                     </details>
                   ))}
                 </div>

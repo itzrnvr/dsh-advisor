@@ -12,6 +12,7 @@ import type {
 afterEach(() => { cleanup() })
 
 const turn = (overrides: Partial<AdvisorTrajectoryTurn>): AdvisorTrajectoryTurn => ({
+  id: 1,
   at: 1_793_596_800_000,
   durationMs: 12,
   outcome: 'note',

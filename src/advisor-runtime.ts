@@ -150,6 +150,8 @@ export interface AdvisorRuntimeLogger {
 /** Options for one per-session {@link AdvisorRuntime}. */
 /** One entry of the FULL advisor trace (fork addition; expand-on-demand). */
 export interface AdvisorTrace {
+  /** Stable attempt id, matching the polled turn row. */
+  readonly id: number
   readonly at: number
   readonly kind: 'review' | 'compaction'
   /** Exact user text sent (review) — the full delta, or summary + tail. */
@@ -338,6 +340,8 @@ export interface AdvisorTurnRecord {
   readonly durationMs: number
   /** What the attempt produced. */
   readonly outcome: 'note' | 'no-note' | 'failure' | 'aborted'
+  /** Stable attempt id (fork addition) — keys the expand lookup. */
+  readonly id: number
   /** Which call this row describes (fork addition); absent = review. */
   readonly kind?: 'review' | 'compaction'
   /** Bounded text of the delta actually sent (user row for the Advisor tab). */
@@ -686,6 +690,8 @@ export class AdvisorRuntime {
   private lastSentUserText = ''
   /** Raw reply text of the last attempt (full trace, not the parsed note). */
   private lastFullReply = ''
+  /** Monotonic attempt id, shared by the polled row and its full trace. */
+  private traceSeq = 0
   /**
    * Estimated tokens per character, calibrated from provider-reported usage
    * after every call (fork addition). Starts at the 4-chars/token convention;
@@ -1012,7 +1018,9 @@ export class AdvisorRuntime {
     const deltaChars = delta.markdown.length
     const result = await this.callModelOnce(delta)
     const usage = this.lastUsage
+    const id = ++this.traceSeq
     const record: AdvisorTurnRecord = {
+      id,
       at: startedAt,
       durationMs: Math.max(0, Date.now() - startedAt),
       outcome: result.kind,
@@ -1052,6 +1060,7 @@ export class AdvisorRuntime {
     }
     // Full trace (expand-on-demand): exact prepared text + raw reply.
     this.emitTrace({
+      id,
       at: startedAt,
       kind: 'review',
       ...(this.lastSentUserText.length === 0 ? {} : { userText: this.lastSentUserText }),
@@ -1450,6 +1459,7 @@ export class AdvisorRuntime {
     let result = await run()
     if (result === undefined) result = await run()
     const at = Date.now()
+    const id = ++this.traceSeq
     // Post-compaction review budget: the configured trigger, but never more
     // than the conservative window guess when the adapter declared none.
     const reviewBudget = this.modelContextTokens === undefined
@@ -1458,8 +1468,8 @@ export class AdvisorRuntime {
     if (result === undefined) {
       // Cold-reset fallback: the review must still fire.
       this.resetHistory()
-      this.recordCompaction(startedAt, at, undefined, true)
-      this.emitTrace({ at: startedAt, kind: 'compaction', error: 'compaction failed — reviewer conversation reset' })
+      this.recordCompaction(startedAt, at, undefined, true, id)
+      this.emitTrace({ id, at: startedAt, kind: 'compaction', error: 'compaction failed — reviewer conversation reset' })
       const budget = reviewBudget - this.estimateTextTokens(this.systemPrompt)
       const maxChars = Math.max(0, Math.floor(budget / this.tokensPerChar))
       const marker = `${DELTA_TRUNCATION_MARKER}\n\n`
@@ -1468,8 +1478,8 @@ export class AdvisorRuntime {
       return `${marker}${keep === 0 ? '' : userText.slice(-keep)}`
     }
     this.resetHistory()
-    this.recordCompaction(startedAt, at, result.usage, false, result.summary)
-    this.emitTrace({ at: startedAt, kind: 'compaction', summary: result.summary })
+    this.recordCompaction(startedAt, at, result.usage, false, id, result.summary)
+    this.emitTrace({ id, at: startedAt, kind: 'compaction', summary: result.summary })
     const label = `${ADVISOR_COMPACTION_LABEL}\n${result.summary}`
     const headMarker = `${DELTA_HEAD_FOLD_MARKER}\n\n`
     // The marker itself spends budget: subtract it before sizing the tail.
@@ -1502,9 +1512,11 @@ export class AdvisorRuntime {
     at: number,
     usage: TokenUsage | undefined,
     failed: boolean,
+    id: number,
     summary?: string,
   ): void {
     const record: AdvisorTurnRecord = {
+      id,
       at: startedAt,
       durationMs: Math.max(0, at - startedAt),
       outcome: failed ? 'failure' : 'note',

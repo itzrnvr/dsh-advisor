@@ -337,6 +337,8 @@ export interface AdvisorTurnView {
   readonly durationMs: number
   /** What the attempt produced. */
   readonly outcome: 'note' | 'no-note' | 'failure' | 'aborted'
+  /** Stable attempt id — keys the expand lookup. */
+  readonly id: number
   /** Which call this row describes (fork addition); absent = review. */
   readonly kind?: 'review' | 'compaction'
   /** Bounded text of the delta actually sent (user row for the Advisor tab). */
@@ -382,7 +384,7 @@ export interface AdvisorTrajectoryFace {
   /** Advisor attempts for one session (oldest → newest) plus live status. */
   getTrajectory(sessionId: string): AdvisorTrajectoryRpcResult
   /** Full text of one attempt (expand-on-demand), keyed by its t timestamp. */
-  getTrajectoryEntry(sessionId: string, at: number): AdvisorTrajectoryEntryRpcResult
+  getTrajectoryEntry(sessionId: string, id: number): AdvisorTrajectoryEntryRpcResult
 }
 
 /** One `advisor/trajectoryEntry` result: the full text of one row. */
@@ -432,13 +434,13 @@ export interface AdvisorSuggestionFace {
 export function resolveTrajectoryEntry(
   face: AdvisorTrajectoryFace | undefined,
   sessionId: string,
-  at: number,
+  id: number,
 ): AdvisorTrajectoryEntryRpcResult {
   if (typeof sessionId !== 'string' || sessionId.length === 0) {
     return { error: { tag: 'advisor/rejected', message: 'advisor: getTrajectoryEntry requires a non-empty sessionId' } }
   }
-  if (typeof at !== 'number' || !Number.isInteger(at) || at < 0) {
-    return { error: { tag: 'advisor/rejected', message: 'advisor: getTrajectoryEntry requires a non-negative integer at' } }
+  if (typeof id !== 'number' || !Number.isInteger(id) || id < 0) {
+    return { error: { tag: 'advisor/rejected', message: 'advisor: getTrajectoryEntry requires a non-negative integer id' } }
   }
   if (face === undefined) {
     return {
@@ -448,7 +450,7 @@ export function resolveTrajectoryEntry(
       },
     }
   }
-  return face.getTrajectoryEntry(sessionId, at)
+  return face.getTrajectoryEntry(sessionId, id)
 }
 
 export class AdvisorConfigGateway extends TypertRemoteService {
@@ -684,8 +686,8 @@ export class AdvisorConfigGateway extends TypertRemoteService {
    * malformed requests answer `advisor/rejected`, an owner without the row
    * answers `advisor/entry-unknown`.
    */
-  getTrajectoryEntry(sessionId: string, at: number): AdvisorTrajectoryEntryRpcResult {
-    return resolveTrajectoryEntry(this.trajectoryFace(), sessionId, at)
+  getTrajectoryEntry(sessionId: string, id: number): AdvisorTrajectoryEntryRpcResult {
+    return resolveTrajectoryEntry(this.trajectoryFace(), sessionId, id)
   }
 
   /**
@@ -1061,7 +1063,7 @@ export function advisorTypertContribution(): TypertContribution {
         invocation: { kind: 'direct' },
         parameters: [
           { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },
-          { name: 'at', wire: 'at', source: 'json', codec: { mode: 'src-json' } },
+          { name: 'id', wire: 'id', source: 'json', codec: { mode: 'src-json' } },
         ],
         result: { mode: 'src-json' },
       },
