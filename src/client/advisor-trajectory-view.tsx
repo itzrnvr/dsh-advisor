@@ -101,10 +101,10 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
   const [tab, setTab] = useState<'trajectory' | 'stats'>('trajectory')
   const [fullTexts, setFullTexts] = useState<Record<number, string>>({})
 
-  const loadFull = (index: number): void => {
-    if (fullTexts[index] !== undefined) return
-    void controller.fetchEntry(index).then((text) => {
-      if (text !== undefined) setFullTexts((previous) => ({ ...previous, [index]: text }))
+  const loadFull = (at: number): void => {
+    if (fullTexts[at] !== undefined) return
+    void controller.fetchEntry(at).then((text) => {
+      if (text !== undefined) setFullTexts((previous) => ({ ...previous, [at]: text }))
     })
   }
 
@@ -188,7 +188,7 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
                       key={entry.key}
                       className={styles.entry ?? ''}
                       onToggle={(event) => {
-                        if ((event.currentTarget as HTMLDetailsElement).open) loadFull(entry.index)
+                        if ((event.currentTarget as HTMLDetailsElement).open) loadFull(entry.turn.at)
                       }}
                     >
                       <summary className={styles.entryHead ?? ''}>
@@ -203,7 +203,7 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
                           </span>
                         )}
                       </summary>
-                      <pre className={styles.entryText ?? ''}>{fullTexts[entry.index] ?? entry.text}</pre>
+                      <pre className={styles.entryText ?? ''}>{fullTexts[entry.turn.at] ?? entry.text}</pre>
                     </details>
                   ))}
                 </div>

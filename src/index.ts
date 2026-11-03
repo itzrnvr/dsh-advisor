@@ -1335,13 +1335,16 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       }
     },
     // Fork addition: expand-on-demand full text of one row.
-    getTrajectoryEntry: (sessionId, index) => {
-      const trace = traceLog.get(sessionId)?.[index]
+    getTrajectoryEntry: (sessionId, at) => {
+      // Keyed by the attempt's timestamp, NOT the polled array index: the turn
+      // ring and the full-text ring have different bounds, so an index would
+      // silently point at another attempt once either wraps.
+      const trace = traceLog.get(sessionId)?.find((entry) => entry.at === at)
       if (trace === undefined) {
         return {
           error: {
             tag: 'advisor/entry-unknown',
-            message: `advisor: no trajectory row ${index} for this session`,
+            message: `advisor: no trajectory trace at ${at} for this session`,
           },
         }
       }

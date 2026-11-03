@@ -152,17 +152,17 @@ export class AdvisorTrajectoryController {
    * Cached per index; a failure returns `undefined` and the row keeps its
    * preview (the poll must never grow to carry full text).
    */
-  async fetchEntry(index: number): Promise<string | undefined> {
-    const cached = this.entryCache.get(index)
+  async fetchEntry(at: number): Promise<string | undefined> {
+    const cached = this.entryCache.get(at)
     if (cached !== undefined) return cached
     try {
       const result = await this.rpc.call('/api', 'advisor/trajectoryEntry', {
-        args: { sessionId: this.sessionId, index },
+        args: { sessionId: this.sessionId, at },
       })
       if (!result.ok) return undefined
       const payload = result.value as { readonly text?: unknown } | undefined
       if (payload === null || typeof payload !== 'object' || typeof payload.text !== 'string') return undefined
-      this.entryCache.set(index, payload.text)
+      this.entryCache.set(at, payload.text)
       return payload.text
     } catch {
       return undefined

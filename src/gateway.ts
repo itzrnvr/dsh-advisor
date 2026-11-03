@@ -381,8 +381,8 @@ export type AdvisorTrajectoryRpcResult =
 export interface AdvisorTrajectoryFace {
   /** Advisor attempts for one session (oldest → newest) plus live status. */
   getTrajectory(sessionId: string): AdvisorTrajectoryRpcResult
-  /** Full text of one row (expand-on-demand) — review delta+reply or summary. */
-  getTrajectoryEntry(sessionId: string, index: number): AdvisorTrajectoryEntryRpcResult
+  /** Full text of one attempt (expand-on-demand), keyed by its t timestamp. */
+  getTrajectoryEntry(sessionId: string, at: number): AdvisorTrajectoryEntryRpcResult
 }
 
 /** One `advisor/trajectoryEntry` result: the full text of one row. */
@@ -657,12 +657,12 @@ export class AdvisorConfigGateway extends TypertRemoteService {
    * malformed requests answer `advisor/rejected`, an owner without the row
    * answers `advisor/entry-unknown`.
    */
-  getTrajectoryEntry(sessionId: string, index: number): AdvisorTrajectoryEntryRpcResult {
+  getTrajectoryEntry(sessionId: string, at: number): AdvisorTrajectoryEntryRpcResult {
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
       return { error: { tag: 'advisor/rejected', message: 'advisor: getTrajectoryEntry requires a non-empty sessionId' } }
     }
-    if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
-      return { error: { tag: 'advisor/rejected', message: 'advisor: getTrajectoryEntry requires a non-negative integer index' } }
+    if (typeof at !== 'number' || !Number.isInteger(at) || at < 0) {
+      return { error: { tag: 'advisor/rejected', message: 'advisor: getTrajectoryEntry requires a non-negative integer at' } }
     }
     const face = this.trajectoryFace()
     if (face === undefined) {
@@ -673,7 +673,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
         },
       }
     }
-    return face.getTrajectoryEntry(sessionId, index)
+    return face.getTrajectoryEntry(sessionId, at)
   }
 
   /**
@@ -1049,7 +1049,7 @@ export function advisorTypertContribution(): TypertContribution {
         invocation: { kind: 'direct' },
         parameters: [
           { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },
-          { name: 'index', wire: 'index', source: 'json', codec: { mode: 'src-json' } },
+          { name: 'at', wire: 'at', source: 'json', codec: { mode: 'src-json' } },
         ],
         result: { mode: 'src-json' },
       },

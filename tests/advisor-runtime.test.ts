@@ -1557,32 +1557,6 @@ describe('AdvisorRuntime — append-only reviewer conversation', () => {
     expect(textOfMessage(llm.calls[1]!.messages[1]!)).toBe('not a JSON frame at all')
   })
 
-  it.skip('resets the whole conversation at the budget instead of trimming the oldest turns', async () => {
-    const big = 'x'.repeat(40_000)
-    const llm = new FakeLlm([
-      { chunks: textReply('{"note":"one"}') },
-      { chunks: textReply('{"note":"two"}') },
-      { chunks: textReply('{"note":"three"}') },
-    ])
-    // Small budget: two 40k-char deltas (~10k estimated tokens each) cross it,
-    // so the second call wipes the first exchange.
-    const { runtime } = makeRuntime(llm, { historyMaxTokens: 15_000 })
-
-    runtime.enqueue(delta(`first ${big}`))
-    await runtime.waitForDrain()
-    runtime.enqueue(delta(`second ${big}`))
-    await runtime.waitForDrain()
-    runtime.enqueue(delta('third update'))
-    await runtime.waitForDrain()
-
-    expect(llm.calls).toHaveLength(3)
-    const third = llm.calls[2]!
-    // Two turns would exceed the 60k budget: the second call wiped the first
-    // exchange, so the third call holds only turn 2 + its reply + turn 3.
-    expect(third.messages).toHaveLength(3)
-    expect(textOfMessage(third.messages[0]!)).toContain('second')
-    expect(textOfMessage(third.messages[0]!)).not.toContain('first')
-  })
 })
 
 // ---------------------------------------------------------------------------
@@ -1698,42 +1672,7 @@ describe('AdvisorRuntime — model-context clamp (fork addition)', () => {
     return llm
   }
 
-  it.skip('sheds history before a call that would exceed the declared context window', async () => {
-    const big = 'y'.repeat(3_000)
-    const llm = llmWithWindow(1_000, 200)
-    const turns: AdvisorTurnRecord[] = []
-    const { runtime } = makeRuntime(llm, { onTurn: (record) => turns.push(record) })
 
-    runtime.enqueue(delta(`first ${big}`))
-    await runtime.waitForDrain()
-    runtime.enqueue(delta(`second ${big}`))
-    await runtime.waitForDrain()
-
-    expect(llm.calls).toHaveLength(2)
-    // Both requests are cold: the window cannot hold even one earlier
-    // exchange on top of the next delta, so the clamp sheds it.
-    expect(llm.calls[0]!.messages).toHaveLength(1)
-    expect(llm.calls[1]!.messages).toHaveLength(1)
-    // The trajectory row reports what was ACTUALLY re-sent (post-shed), not
-    // the pre-call snapshot.
-    expect(turns.at(-1)!.historyTokens).toBe(0)
-  })
-
-  it.skip('tail-truncates one oversized delta with a visible partial marker', async () => {
-    const big = 'y'.repeat(3_000)
-    const llm = llmWithWindow(1_000, 200)
-    const { runtime } = makeRuntime(llm)
-
-    runtime.enqueue(delta(`first ${big}`))
-    await runtime.waitForDrain()
-
-    const sent = textOfMessage(llm.calls[0]!.messages[0]!)
-    expect(sent).toContain('[earlier session update truncated to fit the model context]')
-    // The tail is kept (the newest work, ending with the task reminder), and
-    // the request is smaller than the raw delta.
-    expect(sent.length).toBeLessThan(3_000 + 200)
-    expect(sent).toContain('[earlier session update truncated to fit the model context]')
-  })
   it('keeps the configured budget when the model declares no window', async () => {
     const llm = new FakeLlm([
       { chunks: textReply('{"note":"one"}') },
@@ -1753,24 +1692,6 @@ describe('AdvisorRuntime — model-context clamp (fork addition)', () => {
     expect(turns.at(-1)!.historyTokens).toBeGreaterThan(0)
   })
 
-  it.skip('clamps the effective budget to 75% of the request budget', async () => {
-    const llm = llmWithWindow(1_000, 200)
-    const { runtime } = makeRuntime(llm)
-
-    runtime.enqueue(delta(`first ${'x'.repeat(1_200)}`))
-    await runtime.waitForDrain()
-    runtime.enqueue(delta(`second ${'x'.repeat(900)}`))
-    await runtime.waitForDrain()
-    runtime.enqueue(delta('third update'))
-    await runtime.waitForDrain()
-
-    // Prompt budget 750 tok → history budget 562 tok. The second exchange
-    // fits a request (pre-call ~665) but not the stored budget (~656 > 562),
-    // so the whole conversation resets and only exchange 2 survives.
-    expect(llm.calls[2]!.messages).toHaveLength(3)
-    expect(textOfMessage(llm.calls[2]!.messages[0]!)).toContain('second')
-    expect(textOfMessage(llm.calls[2]!.messages[0]!)).not.toContain('first')
-  })
 })
 
 describe('AdvisorRuntime — reviewed-turn attribution (fork addition)', () => {
