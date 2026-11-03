@@ -65,7 +65,7 @@ import type { AdvisorNotesFace, AdvisorNoteView, AdvisorSessionGatewayFace, Advi
 import { SessionTranscriptObserver } from './transcript.js'
 import type { Delta } from './transcript.js'
 import { AdvisorRuntime } from './advisor-runtime.js'
-import type { AdviceNote, AdvisorTurnRecord } from './advisor-runtime.js'
+import type { AdviceNote, AdvisorTrace, AdvisorTurnRecord } from './advisor-runtime.js'
 import { AdvisorDelivery } from './delivery.js'
 import { DEFAULT_ADVISOR_SYSTEM_PROMPT } from './prompts.js'
 import { seedNotesFromEvents } from './seed.js'
@@ -481,6 +481,15 @@ export function apply(ctx: Context, config: AdvisorConfig) {
    */
   const trajectoryLog = new Map<string, AdvisorTurnView[]>()
   const TRAJECTORY_LOG_MAX = 80
+  /**
+   * Fork addition: the FULL advisor trace per session (complete prepared text
+   * and raw reply, or compaction summary), served on demand by
+   * `/api/advisor/trajectoryEntry`. Bounded so a long session cannot
+   * accumulate unbounded memory; cleared with the session.
+   */
+  const traceLog = new Map<string, AdvisorTrace[]>()
+  const TRACE_LOG_MAX = 40
+  const TRACE_ENTRY_MAX_CHARS = 200_000
   /** Last completed Agent turn per session — attributes a delivered note to the turn it reviewed. */
   const lastTurn = new Map<string, number>()
   /**
@@ -658,6 +667,25 @@ export function apply(ctx: Context, config: AdvisorConfig) {
           if (log.length > TRAJECTORY_LOG_MAX) log.splice(0, log.length - TRAJECTORY_LOG_MAX)
         }
       },
+      // Fork addition: retain the FULL text separately, for expand-on-demand.
+      onTrace: (trace: AdvisorTrace) => {
+        const log = traceLog.get(sessionId)
+        const capped = (value: string | undefined): string | undefined =>
+          value === undefined ? undefined : value.slice(0, TRACE_ENTRY_MAX_CHARS)
+        const entry: AdvisorTrace = {
+          at: trace.at,
+          kind: trace.kind,
+          ...(capped(trace.userText) === undefined ? {} : { userText: capped(trace.userText)! }),
+          ...(capped(trace.replyText) === undefined ? {} : { replyText: capped(trace.replyText)! }),
+          ...(capped(trace.summary) === undefined ? {} : { summary: capped(trace.summary)! }),
+          ...(trace.error === undefined ? {} : { error: trace.error }),
+        }
+        if (log === undefined) traceLog.set(sessionId, [entry])
+        else {
+          log.push(entry)
+          if (log.length > TRACE_LOG_MAX) log.splice(0, log.length - TRACE_LOG_MAX)
+        }
+      },
     })
     runtimes.set(sessionId, runtime)
     runtimeSignatures.set(sessionId, runtimeSignature(sessionId))
@@ -832,6 +860,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     suggestions.disposeSession(agent.id)
     adviceLog.delete(agent.id)
     trajectoryLog.delete(agent.id)
+    traceLog.delete(agent.id)
     lastTurn.delete(agent.id)
   }, { global: true })
   ctx.on('session/disposed', (session: Session) => {
@@ -842,6 +871,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     suggestions.disposeSession(session.id)
     adviceLog.delete(session.id)
     trajectoryLog.delete(session.id)
+    traceLog.delete(session.id)
     lastTurn.delete(session.id)
   }, { global: true })
 
@@ -1303,6 +1333,30 @@ export function apply(ctx: Context, config: AdvisorConfig) {
         ...(effective.provider === undefined ? {} : { provider: effective.provider }),
         ...(effective.model === undefined ? {} : { model: effective.model }),
       }
+    },
+    // Fork addition: expand-on-demand full text of one row.
+    getTrajectoryEntry: (sessionId, index) => {
+      const trace = traceLog.get(sessionId)?.[index]
+      if (trace === undefined) {
+        return {
+          error: {
+            tag: 'advisor/entry-unknown',
+            message: `advisor: no trajectory row ${index} for this session`,
+          },
+        }
+      }
+      if (trace.kind === 'compaction') {
+        return {
+          text: trace.error !== undefined
+            ? `[Compaction failed]\n${trace.error}`
+            : `[Compaction summary]\n${trace.summary ?? ''}`,
+        }
+      }
+      const parts: string[] = []
+      if (trace.error !== undefined) parts.push(`[Attempt failed]\n${trace.error}`)
+      parts.push(`[Sent to the advisor]\n${trace.userText ?? '(not retained)'}`)
+      if (trace.replyText !== undefined) parts.push(`[Raw reply]\n${trace.replyText}`)
+      return { text: parts.join('\n\n---\n\n') }
     },
   }
 

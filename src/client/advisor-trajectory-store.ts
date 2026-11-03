@@ -43,6 +43,35 @@ export interface AdvisorTrajectoryTurn {
   readonly error?: string
 }
 
+/**
+ * Validate and cap the wire turns at the poll boundary (fork addition).
+ * Exported for direct tests: the poll ships previews every few seconds, so
+ * both text slots are type-checked and capped, and a row whose outcome is not
+ * in the host's union is dropped instead of reaching the view.
+ */
+export function normalizeTrajectoryTurns(raw: readonly unknown[]): AdvisorTrajectoryTurn[] {
+  return raw
+    .filter((turn): turn is AdvisorTrajectoryTurn => (
+      typeof turn === 'object' && turn !== null
+      && typeof (turn as { at?: unknown }).at === 'number'
+      && typeof (turn as { durationMs?: unknown }).durationMs === 'number'
+      && ['note', 'no-note', 'failure', 'aborted'].includes((turn as { outcome?: string }).outcome ?? '')
+    ))
+    .map((turn) => {
+      const userText = (turn as { userText?: unknown }).userText
+      const note = (turn as { note?: unknown }).note
+      return {
+        ...turn,
+        ...(typeof userText === 'string'
+          ? { userText: userText.length > 8_000 ? `${userText.slice(0, 8_000)}…[truncated]` : userText }
+          : {}),
+        ...(typeof note === 'string'
+          ? { note: note.length > 2_000 ? `${note.slice(0, 2_000)}…[truncated]` : note }
+          : {}),
+      }
+    })
+}
+
 /** The Advisor tab's snapshot. */
 export interface AdvisorTrajectoryState {
   /** idle → pending (fetch in flight) → ready; every failure latches unavailable. */
@@ -111,9 +140,33 @@ export class AdvisorTrajectoryController {
   private timer: number | undefined
   /** Mount count: one controller can feed more than one surface. */
   private mounts = 0
+  /** Expand-on-demand cache: full text by row index (never polled). */
+  private readonly entryCache = new Map<number, string>()
 
   constructor(sessionId: string, private readonly rpc: ClientConnectionRpc) {
     this.sessionId = sessionId
+  }
+
+  /**
+   * Fetch the full text of one trajectory row on demand (fork addition).
+   * Cached per index; a failure returns `undefined` and the row keeps its
+   * preview (the poll must never grow to carry full text).
+   */
+  async fetchEntry(index: number): Promise<string | undefined> {
+    const cached = this.entryCache.get(index)
+    if (cached !== undefined) return cached
+    try {
+      const result = await this.rpc.call('/api', 'advisor/trajectoryEntry', {
+        args: { sessionId: this.sessionId, index },
+      })
+      if (!result.ok) return undefined
+      const payload = result.value as { readonly text?: unknown } | undefined
+      if (payload === null || typeof payload !== 'object' || typeof payload.text !== 'string') return undefined
+      this.entryCache.set(index, payload.text)
+      return payload.text
+    } catch {
+      return undefined
+    }
   }
 
   /** Begin polling: fetch once immediately, then on the idle cadence (reference-counted). */
@@ -155,25 +208,7 @@ export class AdvisorTrajectoryController {
       && Array.isArray((payload as { turns?: unknown }).turns)
     ) {
       const wire = payload as Exclude<AdvisorTrajectoryRpcPayload, { error: unknown }>
-      // Normalize at the poll boundary: the wire ships previews every few
-      // seconds, so both text slots are type-checked and capped here. Rows
-      // failing the outcome check are dropped (the host controls that union).
-      const turns = wire.turns
-        .filter((turn): turn is AdvisorTrajectoryTurn => (
-          typeof turn === 'object' && turn !== null
-          && typeof turn.at === 'number'
-          && typeof turn.durationMs === 'number'
-          && (turn.outcome === 'note' || turn.outcome === 'no-note' || turn.outcome === 'failure' || turn.outcome === 'aborted')
-        ))
-        .map((turn) => {
-          const userText = (turn as { userText?: unknown }).userText
-          const note = (turn as { note?: unknown }).note
-          return {
-            ...turn,
-            ...(typeof userText === 'string' ? { userText: userText.slice(0, 8_000) } : {}),
-            ...(typeof note === 'string' ? { note: note.slice(0, 2_000) } : {}),
-          }
-        })
+      const turns = normalizeTrajectoryTurns(wire.turns)
       this.store.update((s) => {
         s.status = 'ready'
         s.turns = turns

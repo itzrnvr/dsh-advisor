@@ -86,6 +86,7 @@ interface TrajectoryEntry {
   readonly key: string
   readonly role: 'user' | 'assistant' | 'compaction'
   readonly turn: AdvisorTrajectoryTurn
+  readonly index: number
   readonly text: string
 }
 
@@ -98,6 +99,14 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
   const { controller, useSnapshot, t } = props
   const state = useSnapshot((snapshot) => snapshot)
   const [tab, setTab] = useState<'trajectory' | 'stats'>('trajectory')
+  const [fullTexts, setFullTexts] = useState<Record<number, string>>({})
+
+  const loadFull = (index: number): void => {
+    if (fullTexts[index] !== undefined) return
+    void controller.fetchEntry(index).then((text) => {
+      if (text !== undefined) setFullTexts((previous) => ({ ...previous, [index]: text }))
+    })
+  }
 
   useEffect(() => {
     controller.start()
@@ -121,15 +130,16 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
         key: `c-${turn.at}-${index}`,
         role: 'compaction' as const,
         turn,
+        index,
         text: turn.note ?? turn.error ?? 'compaction failed',
       }]
     }
     const out: TrajectoryEntry[] = []
     if (turn.userText !== undefined) {
-      out.push({ key: `u-${turn.at}-${index}`, role: 'user', turn, text: turn.userText })
+      out.push({ key: `u-${turn.at}-${index}`, role: 'user', turn, index, text: turn.userText })
     }
     if (turn.note !== undefined) {
-      out.push({ key: `a-${turn.at}-${index}`, role: 'assistant', turn, text: turn.note })
+      out.push({ key: `a-${turn.at}-${index}`, role: 'assistant', turn, index, text: turn.note })
     }
     return out
   })
@@ -174,7 +184,13 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
               : (
                 <div className={styles.entries ?? ''}>
                   {entries.map((entry) => (
-                    <details key={entry.key} className={styles.entry ?? ''}>
+                    <details
+                      key={entry.key}
+                      className={styles.entry ?? ''}
+                      onToggle={(event) => {
+                        if ((event.currentTarget as HTMLDetailsElement).open) loadFull(entry.index)
+                      }}
+                    >
                       <summary className={styles.entryHead ?? ''}>
                         <span className={`${styles.role ?? ''} ${entry.role === 'user' ? styles.roleUser ?? '' : entry.role === 'assistant' ? styles.roleAssistant ?? '' : styles.roleCompaction ?? ''}`}>
                           {entry.role === 'user' ? t('trajRoleUser') : entry.role === 'assistant' ? t('trajRoleAdvisor') : t('trajCompaction')}
@@ -187,7 +203,7 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
                           </span>
                         )}
                       </summary>
-                      <pre className={styles.entryText ?? ''}>{entry.text}</pre>
+                      <pre className={styles.entryText ?? ''}>{fullTexts[entry.index] ?? entry.text}</pre>
                     </details>
                   ))}
                 </div>

@@ -148,6 +148,19 @@ export interface AdvisorRuntimeLogger {
 }
 
 /** Options for one per-session {@link AdvisorRuntime}. */
+/** One entry of the FULL advisor trace (fork addition; expand-on-demand). */
+export interface AdvisorTrace {
+  readonly at: number
+  readonly kind: 'review' | 'compaction'
+  /** Exact user text sent (review) — the full delta, or summary + tail. */
+  readonly userText?: string
+  /** Raw model reply (review), before note extraction. */
+  readonly replyText?: string
+  /** Compaction summary (compaction rows). */
+  readonly summary?: string
+  readonly error?: string
+}
+
 export interface AdvisorRuntimeOptions {
   /** Resolved provider route (the explicit gate guarantees it when enabled). */
   readonly provider: string
@@ -221,6 +234,13 @@ export interface AdvisorRuntimeOptions {
    * the drain (contained by the runtime).
    */
   readonly onTurn?: (record: AdvisorTurnRecord) => void
+  /**
+   * Optional FULL-trace sink (fork addition): the complete prepared user text
+   * and the raw reply, per review attempt, plus compaction summaries. The
+   * host keeps these in a bounded per-session ring and serves them on demand —
+   * they are deliberately NOT part of the polled turn payload.
+   */
+  readonly onTrace?: (trace: AdvisorTrace) => void
   readonly logger?: AdvisorRuntimeLogger
 }
 
@@ -664,6 +684,8 @@ export class AdvisorRuntime {
   private lastSentHistoryTokens: number | undefined
   /** Exact user text sent on the last attempt (bounded for the trajectory tab). */
   private lastSentUserText = ''
+  /** Raw reply text of the last attempt (full trace, not the parsed note). */
+  private lastFullReply = ''
   /**
    * Estimated tokens per character, calibrated from provider-reported usage
    * after every call (fork addition). Starts at the 4-chars/token convention;
@@ -702,6 +724,8 @@ export class AdvisorRuntime {
   private readonly historyMaxTokens: number
   /** Optional per-attempt trajectory sink (Advisor tab). */
   private readonly onTurn: ((record: AdvisorTurnRecord) => void) | undefined
+  /** Optional full-trace sink (expand-on-demand text, not the polled payload). */
+  private readonly onTrace: ((trace: AdvisorTrace) => void) | undefined
   /** Usage reported by the most recent `llm.stream` attempt (cache fields included). */
   private lastUsage: TokenUsage | undefined
 
@@ -743,6 +767,7 @@ export class AdvisorRuntime {
     this.maxQueued = options.maxQueued ?? DEFAULT_MAX_QUEUED
     this.historyMaxTokens = options.historyMaxTokens ?? ADVISOR_HISTORY_MAX_TOKENS_DEFAULT
     this.onTurn = options.onTurn
+    this.onTrace = options.onTrace
     this.llm = options.llm
     this.guard = options.guard ?? createEmissionGuard()
     this.onNote = options.onNote
@@ -1025,6 +1050,14 @@ export class AdvisorRuntime {
       // The trajectory sink is observational: it must never break the drain.
       this.logger.debug('advisor: trajectory sink threw — contained', { error })
     }
+    // Full trace (expand-on-demand): exact prepared text + raw reply.
+    this.emitTrace({
+      at: startedAt,
+      kind: 'review',
+      ...(this.lastSentUserText.length === 0 ? {} : { userText: this.lastSentUserText }),
+      ...(this.lastFullReply.length === 0 ? {} : { replyText: this.lastFullReply }),
+      ...(result.kind === 'failure' ? { error: `${result.failure.code}: ${result.failure.message}` } : {}),
+    })
     return result
   }
 
@@ -1035,6 +1068,7 @@ export class AdvisorRuntime {
     this.lastUsage = undefined
     this.lastSentHistoryTokens = undefined
     this.lastSentUserText = ''
+    this.lastFullReply = ''
     // Call-level deadline (dsh-timeout): fuses the runtime's dispose signal
     // with a whole-call timer. The fused signal is passed to the provider
     // (AbortSignal honored) AND raced per chunk below, so a hung stream cannot
@@ -1136,6 +1170,7 @@ export class AdvisorRuntime {
     if (promptChars > 0 && promptTokens > 0) {
       this.tokensPerChar = Math.min(1.5, Math.max(0.2, promptTokens / promptChars))
     }
+    this.lastFullReply = text
     this.appendHistory(userText, userMessage, text)
     // stop | max-tokens | tool-calls: extract from the collected text (KD-2;
     // no retry on parse failures — the frame must simply be absent/valid).
@@ -1424,6 +1459,7 @@ export class AdvisorRuntime {
       // Cold-reset fallback: the review must still fire.
       this.resetHistory()
       this.recordCompaction(startedAt, at, undefined, true)
+      this.emitTrace({ at, kind: 'compaction', error: 'compaction failed — reviewer conversation reset' })
       const budget = reviewBudget - this.estimateTextTokens(this.systemPrompt)
       const maxChars = Math.max(0, Math.floor(budget / this.tokensPerChar))
       const marker = `${DELTA_TRUNCATION_MARKER}\n\n`
@@ -1433,6 +1469,7 @@ export class AdvisorRuntime {
     }
     this.resetHistory()
     this.recordCompaction(startedAt, at, result.usage, false, result.summary)
+    this.emitTrace({ at, kind: 'compaction', summary: result.summary })
     const label = `${ADVISOR_COMPACTION_LABEL}\n${result.summary}`
     const headMarker = `${DELTA_HEAD_FOLD_MARKER}\n\n`
     // The marker itself spends budget: subtract it before sizing the tail.
@@ -1452,6 +1489,14 @@ export class AdvisorRuntime {
   }
 
   /** One Stats row for a compaction attempt (visible, never folded into a review row). */
+  private emitTrace(trace: AdvisorTrace): void {
+    try {
+      this.onTrace?.(trace)
+    } catch (error) {
+      this.logger.debug('advisor: trace sink threw — contained', { error })
+    }
+  }
+
   private recordCompaction(
     startedAt: number,
     at: number,

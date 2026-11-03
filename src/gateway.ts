@@ -381,7 +381,19 @@ export type AdvisorTrajectoryRpcResult =
 export interface AdvisorTrajectoryFace {
   /** Advisor attempts for one session (oldest → newest) plus live status. */
   getTrajectory(sessionId: string): AdvisorTrajectoryRpcResult
+  /** Full text of one row (expand-on-demand) — review delta+reply or summary. */
+  getTrajectoryEntry(sessionId: string, index: number): AdvisorTrajectoryEntryRpcResult
 }
+
+/** One `advisor/trajectoryEntry` result: the full text of one row. */
+export type AdvisorTrajectoryEntryRpcResult =
+  | { readonly text: string }
+  | {
+      readonly error: {
+        readonly tag: AdvisorTrajectoryErrorTag | 'advisor/entry-unknown'
+        readonly message: string
+      }
+    }
 
 /**
  * The elected owner's suggestion face — implemented by the wiring
@@ -637,6 +649,31 @@ export class AdvisorConfigGateway extends TypertRemoteService {
       }
     }
     return face.getTrajectory(sessionId)
+  }
+
+  /**
+   * Fork addition — the expand-on-demand full text of one trajectory row
+   * (`/api/advisor/trajectoryEntry`, args `{ sessionId, index }`). Read-only;
+   * malformed requests answer `advisor/rejected`, an owner without the row
+   * answers `advisor/entry-unknown`.
+   */
+  getTrajectoryEntry(sessionId: string, index: number): AdvisorTrajectoryEntryRpcResult {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      return { error: { tag: 'advisor/rejected', message: 'advisor: getTrajectoryEntry requires a non-empty sessionId' } }
+    }
+    if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) {
+      return { error: { tag: 'advisor/rejected', message: 'advisor: getTrajectoryEntry requires a non-negative integer index' } }
+    }
+    const face = this.trajectoryFace()
+    if (face === undefined) {
+      return {
+        error: {
+          tag: 'advisor/unavailable',
+          message: 'advisor: the trajectory surface is not owned by this gateway — no elected owner on this fiber',
+        },
+      }
+    }
+    return face.getTrajectoryEntry(sessionId, index)
   }
 
   /**
@@ -999,6 +1036,20 @@ export function advisorTypertContribution(): TypertContribution {
         invocation: { kind: 'direct' },
         parameters: [
           { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },
+        ],
+        result: { mode: 'src-json' },
+      },
+      // Fork addition — expand-on-demand full text of one trajectory row.
+      {
+        id: 'dsh-advisor#advisor/trajectoryEntry',
+        service: 'advisor',
+        namespace: 'advisor',
+        method: 'trajectoryEntry',
+        implementation: 'getTrajectoryEntry',
+        invocation: { kind: 'direct' },
+        parameters: [
+          { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },
+          { name: 'index', wire: 'index', source: 'json', codec: { mode: 'src-json' } },
         ],
         result: { mode: 'src-json' },
       },

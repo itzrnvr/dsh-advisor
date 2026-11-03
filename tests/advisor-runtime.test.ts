@@ -43,7 +43,7 @@ import { LlmRuntime, LlmAdapter, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmFailure, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { AdvisorRuntime, ADVISOR_NOTE_MAX_CHARS, extractAdviceNote, extractProseFallbackNote } from '../src/advisor-runtime'
-import type { AdvisorLlm, AdvisorRuntimeOptions, AdvisorRuntimeStatus, AdvisorTurnRecord, AdviceNote } from '../src/advisor-runtime'
+import type { AdvisorLlm, AdvisorRuntimeOptions, AdvisorRuntimeStatus, AdvisorTrace, AdvisorTurnRecord, AdviceNote } from '../src/advisor-runtime'
 import type { Delta } from '../src/transcript'
 import { apply } from '../src/index'
 import type { AdvisorConfig } from '../src/config'
@@ -1964,5 +1964,39 @@ describe('AdvisorRuntime — cold-path convergence (fork addition)', () => {
 
     expect(llm.calls).toHaveLength(2)
     expect(notes.some((note) => note.note === 'cold retry')).toBe(true)
+  })
+})
+
+describe('AdvisorRuntime — full trace sink (fork addition)', () => {
+  it('emits the complete prepared text and the raw reply', async () => {
+    const traces: AdvisorTrace[] = []
+    const llm = new FakeLlm([{ chunks: textReply('{"note":"trace note"}') }])
+    const { runtime } = makeRuntime(llm, { onTrace: (trace) => traces.push(trace) })
+
+    runtime.enqueue(delta('full trace update'))
+    await runtime.waitForDrain()
+
+    expect(traces).toHaveLength(1)
+    expect(traces[0]!.kind).toBe('review')
+    expect(traces[0]!.userText).toContain('full trace update')
+    expect(traces[0]!.replyText).toContain('{"note":"trace note"}')
+  })
+
+  it('emits a compaction summary trace row', async () => {
+    const traces: AdvisorTrace[] = []
+    const llm = new FakeLlm([
+      { chunks: textReply('{"note":"one"}') },
+      { chunks: textReply('Compacted summary.') },
+      { chunks: textReply('{"note":"two"}') },
+    ])
+    const { runtime } = makeRuntime(llm, { historyMaxTokens: 100, onTrace: (trace) => traces.push(trace) })
+
+    runtime.enqueue(delta('first update'))
+    await runtime.waitForDrain()
+    runtime.enqueue(delta('second update'))
+    await runtime.waitForDrain()
+
+    const compaction = traces.find((trace) => trace.kind === 'compaction')
+    expect(compaction?.summary).toContain('Compacted summary.')
   })
 })
