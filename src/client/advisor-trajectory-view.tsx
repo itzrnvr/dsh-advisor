@@ -2,15 +2,17 @@
  * Advisor tab (fork addition) — the reviewer's OWN session, rendered as a
  * third view beside Chat and Trajectory in the conversation header.
  *
- * It shows one row per model ATTEMPT (a retry is its own row) with the token
- * accounting the provider reported: prompt tokens (uncached + cache reads +
- * cache writes), how many of those came from the prefix cache, output tokens,
- * latency, and how much history was re-sent. The summary strip adds the
- * session-wide cache hit rate and the configured history budget, so "is the
- * append-only history actually being cached?" is answerable at a glance.
+ * Two inner tabs:
+ * - Trajectory: the message view — the delta the reviewer received, the note
+ *   it returned, and compaction summaries, in order (expandable rows);
+ * - Stats: the numeric view — cache hit rate, token totals, and one row per
+ *   model attempt (including compaction calls).
+ *
+ * Everything here is per-session: the controller is keyed by (transport,
+ * sessionId), so another session's advisor data can never appear.
  */
 
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type {
   AdvisorTrajectoryController,
@@ -79,20 +81,23 @@ function outcomeKey(turn: AdvisorTrajectoryTurn): AdvisorKey {
   return 'trajAborted'
 }
 
-/** Outcome chip class (severity colours a delivered note). */
-function outcomeClass(turn: AdvisorTrajectoryTurn): string {
-  if (turn.outcome !== 'note') return styles[`outcome${turn.outcome === 'no-note' ? 'Silent' : turn.outcome === 'failure' ? 'Failure' : 'Aborted'}`] ?? ''
-  return styles.outcomeNote ?? ''
+/** One message row of the trajectory tab. */
+interface TrajectoryEntry {
+  readonly key: string
+  readonly role: 'user' | 'assistant' | 'compaction'
+  readonly turn: AdvisorTrajectoryTurn
+  readonly text: string
 }
 
 /**
- * Render the advisor's trajectory for this session.
+ * Render the advisor's trajectory and stats for this session.
  * @param props - the injected face, locale seat and snapshot hook.
- * @returns the ledger, or a short empty/unavailable state.
+ * @returns the tabbed ledger.
  */
 export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactNode {
   const { controller, useSnapshot, t } = props
   const state = useSnapshot((snapshot) => snapshot)
+  const [tab, setTab] = useState<'trajectory' | 'stats'>('trajectory')
 
   useEffect(() => {
     controller.start()
@@ -105,10 +110,25 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
   const totalOutput = measured.reduce((sum, turn) => sum + (turn.usage?.outputTokens ?? 0), 0)
   const overallHit = totalPrompt > 0 ? totalCached / totalPrompt : 0
 
-  const statusLight = state.status === 'pending' || state.status === 'idle'
   const route = state.provider === undefined && state.model === undefined
     ? t('trajNoModel')
     : `${state.provider ?? ''}${state.provider !== undefined && state.model !== undefined ? ' · ' : ''}${state.model ?? ''}`
+
+  const entries: TrajectoryEntry[] = state.turns.flatMap((turn, index) => {
+    if (turn.kind === 'compaction') {
+      return turn.note === undefined
+        ? []
+        : [{ key: `c-${turn.at}-${index}`, role: 'compaction' as const, turn, text: turn.note }]
+    }
+    const out: TrajectoryEntry[] = []
+    if (turn.userText !== undefined) {
+      out.push({ key: `u-${turn.at}-${index}`, role: 'user', turn, text: turn.userText })
+    }
+    if (turn.note !== undefined) {
+      out.push({ key: `a-${turn.at}-${index}`, role: 'assistant', turn, text: turn.note })
+    }
+    return out
+  })
 
   return (
     <div className={styles.page ?? ''}>
@@ -119,69 +139,120 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
           <span>{t('trajStatusLabel')}: <span className={styles.metaStrong ?? ''}>{state.runtimeStatus}</span></span>
         </div>
       </header>
-      <p className={styles.hint ?? ''}>{t('trajHint')}</p>
 
-      <div className={styles.statGrid ?? ''}>
-        <Stat label={t('trajCalls')} value={String(state.turns.length)} />
-        <Stat label={t('trajCacheHit')} value={formatPercent(overallHit)} accent={overallHit > 0} />
-        <Stat label={t('trajPromptTokens')} value={formatCount(totalPrompt)} />
-        <Stat label={t('trajCachedTokens')} value={formatCount(totalCached)} />
-        <Stat label={t('trajOutputTokens')} value={formatCount(totalOutput)} />
-        <Stat label={t('trajHistoryBudget')} value={`${formatCount(state.historyMaxTokens)} tok`} />
+      <div className={styles.tabs ?? ''} role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'trajectory'}
+          className={`${styles.tab ?? ''} ${tab === 'trajectory' ? styles.tabActive ?? '' : ''}`}
+          onClick={() => { setTab('trajectory') }}
+        >
+          {t('trajTabTrajectory')}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'stats'}
+          className={`${styles.tab ?? ''} ${tab === 'stats' ? styles.tabActive ?? '' : ''}`}
+          onClick={() => { setTab('stats') }}
+        >
+          {t('trajTabStats')}
+        </button>
       </div>
 
-      {state.status === 'unavailable' && state.turns.length === 0
-        ? <p className={styles.empty ?? ''}>{t('trajUnavailable')}</p>
-        : state.turns.length === 0
-          ? <p className={styles.empty ?? ''}>{statusLight ? t('trajPending') : t('trajEmpty')}</p>
-          : (
-            <ol className={styles.list ?? ''}>
-              {state.turns.map((turn, index) => {
-                const prompt = promptTokens(turn)
-                const hit = cacheHit(turn)
-                return (
-                  <li key={`${turn.at}-${index}`} className={styles.row ?? ''}>
-                    <div className={styles.rowHead ?? ''}>
-                      <span className={styles.outcome ?? ''}>{t(turn.kind === 'compaction' ? 'trajCompaction' : outcomeKey(turn))}</span>
-                      {turn.severity !== undefined && (
-                        <span className={styles.outcome ?? ''}>
-                          {turn.severity}
+      {tab === 'trajectory'
+        ? (
+          <div>
+            <p className={styles.hint ?? ''}>{t('trajHint')}</p>
+            {entries.length === 0
+              ? <p className={styles.empty ?? ''}>{state.status === 'unavailable' ? t('trajUnavailable') : t('trajEmpty')}</p>
+              : (
+                <div className={styles.entries ?? ''}>
+                  {entries.map((entry) => (
+                    <details key={entry.key} className={styles.entry ?? ''}>
+                      <summary className={styles.entryHead ?? ''}>
+                        <span className={`${styles.role ?? ''} ${entry.role === 'user' ? styles.roleUser ?? '' : entry.role === 'assistant' ? styles.roleAssistant ?? '' : styles.roleCompaction ?? ''}`}>
+                          {entry.role === 'user' ? t('trajRoleUser') : entry.role === 'assistant' ? t('trajRoleAdvisor') : t('trajCompaction')}
                         </span>
-                      )}
-                      <span className={styles.time ?? ''}>
-                        {new Date(turn.at).toLocaleTimeString()}
-                      </span>
-                      <span className={styles.duration ?? ''}>{formatCount(turn.durationMs)} ms</span>
-                    </div>
-                    <div className={styles.metrics ?? ''}>
-                      <span className={styles.metric ?? ''}>
-                        <span className={styles.metricLabel ?? ''}>{t('trajPrompt')} </span>
-                        {prompt === undefined ? '—' : formatCount(prompt)}
-                      </span>
-                      <span className={styles.metric ?? ''}>
-                        <span className={styles.metricLabel ?? ''}>{t('trajCached')} </span>
-                        {turn.usage === undefined ? '—' : `${formatCount(turn.usage.cacheReadTokens ?? 0)} (${formatPercent(hit)})`}
-                      </span>
-                      <span className={styles.metric ?? ''}>
-                        <span className={styles.metricLabel ?? ''}>{t('trajOutput')} </span>
-                        {turn.usage === undefined ? '—' : formatCount(turn.usage.outputTokens)}
-                      </span>
-                      <span className={styles.metric ?? ''}>
-                        <span className={styles.metricLabel ?? ''}>{t('trajHistory')} </span>
-                        {formatCount(turn.historyTokens)}
-                      </span>
-                      <span className={styles.metric ?? ''}>
-                        <span className={styles.metricLabel ?? ''}>{t('trajDelta')} </span>
-                        {formatCount(turn.deltaChars)} ch
-                      </span>
-                    </div>
-                    {turn.note !== undefined && <p className={styles.note ?? ''}>{turn.note}</p>}
-                    {turn.error !== undefined && <p className={styles.error ?? ''}>{turn.error}</p>}
-                  </li>
-                )
-              })}
-            </ol>
-          )}
+                        <span className={styles.time ?? ''}>{new Date(entry.turn.at).toLocaleTimeString()}</span>
+                        {entry.role !== 'compaction' && entry.turn.usage !== undefined && (
+                          <span className={styles.metric ?? ''}>
+                            <span className={styles.metricLabel ?? ''}>{t('trajCached')} </span>
+                            {formatCount(entry.turn.usage.cacheReadTokens ?? 0)}
+                          </span>
+                        )}
+                      </summary>
+                      <pre className={styles.entryText ?? ''}>{entry.text}</pre>
+                    </details>
+                  ))}
+                </div>
+              )}
+          </div>
+        )
+        : (
+          <div>
+            <p className={styles.hint ?? ''}>{t('trajStatsHint')}</p>
+            <div className={styles.statGrid ?? ''}>
+              <Stat label={t('trajCalls')} value={String(state.turns.length)} />
+              <Stat label={t('trajCacheHit')} value={formatPercent(overallHit)} accent={overallHit > 0} />
+              <Stat label={t('trajPromptTokens')} value={formatCount(totalPrompt)} />
+              <Stat label={t('trajCachedTokens')} value={formatCount(totalCached)} />
+              <Stat label={t('trajOutputTokens')} value={formatCount(totalOutput)} />
+              <Stat label={t('trajHistoryBudget')} value={`${formatCount(state.historyMaxTokens)} tok`} />
+            </div>
+            {state.status === 'unavailable' && state.turns.length === 0
+              ? <p className={styles.empty ?? ''}>{t('trajUnavailable')}</p>
+              : state.turns.length === 0
+                ? <p className={styles.empty ?? ''}>{state.status === 'pending' ? t('trajPending') : t('trajEmpty')}</p>
+                : (
+                  <ol className={styles.list ?? ''}>
+                    {state.turns.map((turn, index) => {
+                      const prompt = promptTokens(turn)
+                      const hit = cacheHit(turn)
+                      return (
+                        <li key={`${turn.at}-${index}`} className={styles.row ?? ''}>
+                          <div className={styles.rowHead ?? ''}>
+                            <span className={styles.outcome ?? ''}>
+                              {t(turn.kind === 'compaction' ? 'trajCompaction' : outcomeKey(turn))}
+                            </span>
+                            {turn.severity !== undefined && <span className={styles.outcome ?? ''}>{turn.severity}</span>}
+                            <span className={styles.time ?? ''}>{new Date(turn.at).toLocaleTimeString()}</span>
+                            <span className={styles.duration ?? ''}>{formatCount(turn.durationMs)} ms</span>
+                          </div>
+                          <div className={styles.metrics ?? ''}>
+                            <span className={styles.metric ?? ''}>
+                              <span className={styles.metricLabel ?? ''}>{t('trajPrompt')} </span>
+                              {prompt === undefined ? '—' : formatCount(prompt)}
+                            </span>
+                            <span className={styles.metric ?? ''}>
+                              <span className={styles.metricLabel ?? ''}>{t('trajCached')} </span>
+                              {turn.usage === undefined ? '—' : `${formatCount(turn.usage.cacheReadTokens ?? 0)} (${formatPercent(hit)})`}
+                            </span>
+                            <span className={styles.metric ?? ''}>
+                              <span className={styles.metricLabel ?? ''}>{t('trajOutput')} </span>
+                              {turn.usage === undefined ? '—' : formatCount(turn.usage.outputTokens)}
+                            </span>
+                            <span className={styles.metric ?? ''}>
+                              <span className={styles.metricLabel ?? ''}>{t('trajHistory')} </span>
+                              {formatCount(turn.historyTokens)}
+                            </span>
+                            <span className={styles.metric ?? ''}>
+                              <span className={styles.metricLabel ?? ''}>{t('trajDelta')} </span>
+                              {formatCount(turn.deltaChars)} ch
+                            </span>
+                          </div>
+                          {turn.note !== undefined && turn.kind !== 'compaction' && (
+                            <p className={styles.note ?? ''}>{turn.note}</p>
+                          )}
+                          {turn.error !== undefined && <p className={styles.error ?? ''}>{turn.error}</p>}
+                        </li>
+                      )
+                    })}
+                  </ol>
+                )}
+          </div>
+        )}
     </div>
   )
 }
