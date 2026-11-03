@@ -1680,3 +1680,95 @@ describe('AdvisorRuntime — history edge cases and trajectory accounting', () =
     expect(turns[0]!.usage).toBeUndefined()
   })
 })
+
+describe('AdvisorRuntime — model-context clamp (fork addition)', () => {
+  /** A FakeLlm whose capability lookup declares a small context window. */
+  function llmWithWindow(contextWindow: number, defaultMaxTokens: number): FakeLlm {
+    const llm = new FakeLlm([
+      { chunks: textReply('{"note":"one"}') },
+      { chunks: textReply('{"note":"two"}') },
+    ])
+    llm.resolveModelInfo = async (provider: string, model: string) => ({
+      provider,
+      id: model,
+      name: model,
+      context: { contextWindow },
+      defaultMaxTokens,
+    })
+    return llm
+  }
+
+  it('sheds history before a call that would exceed the declared context window', async () => {
+    const big = 'y'.repeat(3_000)
+    const llm = llmWithWindow(1_000, 200)
+    const turns: AdvisorTurnRecord[] = []
+    const { runtime } = makeRuntime(llm, { onTurn: (record) => turns.push(record) })
+
+    runtime.enqueue(delta(`first ${big}`))
+    await runtime.waitForDrain()
+    runtime.enqueue(delta(`second ${big}`))
+    await runtime.waitForDrain()
+
+    expect(llm.calls).toHaveLength(2)
+    // Both requests are cold: the window cannot hold even one earlier
+    // exchange on top of the next delta, so the clamp sheds it.
+    expect(llm.calls[0]!.messages).toHaveLength(1)
+    expect(llm.calls[1]!.messages).toHaveLength(1)
+    // The trajectory row reports what was ACTUALLY re-sent (post-shed), not
+    // the pre-call snapshot.
+    expect(turns.at(-1)!.historyTokens).toBe(0)
+  })
+
+  it('tail-truncates one oversized delta with a visible partial marker', async () => {
+    const big = 'y'.repeat(3_000)
+    const llm = llmWithWindow(1_000, 200)
+    const { runtime } = makeRuntime(llm)
+
+    runtime.enqueue(delta(`first ${big}`))
+    await runtime.waitForDrain()
+
+    const sent = textOfMessage(llm.calls[0]!.messages[0]!)
+    expect(sent).toContain('[earlier session update truncated to fit the model context]')
+    // The tail is kept (the newest work, ending with the task reminder), and
+    // the request is smaller than the raw delta.
+    expect(sent.length).toBeLessThan(3_000 + 200)
+    expect(sent).toContain('Reviewer task:')
+  })
+  it('keeps the configured budget when the model declares no window', async () => {
+    const llm = new FakeLlm([
+      { chunks: textReply('{"note":"one"}') },
+      { chunks: textReply('{"note":"two"}') },
+    ])
+    const turns: AdvisorTurnRecord[] = []
+    const { runtime } = makeRuntime(llm, { onTurn: (record) => turns.push(record) })
+
+    runtime.enqueue(delta(`first ${'x'.repeat(1_200)}`))
+    await runtime.waitForDrain()
+    runtime.enqueue(delta(`second ${'x'.repeat(900)}`))
+    await runtime.waitForDrain()
+
+    // No declared context window → no clamp: the configured budget (1M) is
+    // the only bound and the first exchange stays in history.
+    expect(llm.calls[1]!.messages).toHaveLength(3)
+    expect(turns.at(-1)!.historyTokens).toBeGreaterThan(0)
+  })
+
+  it('clamps the effective budget to 75% of the request budget', async () => {
+    const llm = llmWithWindow(1_000, 200)
+    const { runtime } = makeRuntime(llm)
+
+    runtime.enqueue(delta(`first ${'x'.repeat(1_200)}`))
+    await runtime.waitForDrain()
+    runtime.enqueue(delta(`second ${'x'.repeat(900)}`))
+    await runtime.waitForDrain()
+    runtime.enqueue(delta('third update'))
+    await runtime.waitForDrain()
+
+    // Prompt budget 750 tok → history budget 562 tok. The second exchange
+    // fits a request (pre-call ~665) but not the stored budget (~656 > 562),
+    // so the whole conversation resets and only exchange 2 survives.
+    expect(llm.calls[2]!.messages).toHaveLength(3)
+    expect(textOfMessage(llm.calls[2]!.messages[0]!)).toContain('second')
+    expect(textOfMessage(llm.calls[2]!.messages[0]!)).not.toContain('first')
+  })
+})

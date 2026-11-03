@@ -48,6 +48,7 @@ import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import { DEFAULT_HISTORY_MAX_TOKENS } from '../limits'
 import type { SettingsSchemaService } from '@deepseek-ai/dsh-client-ui-settings/client'
 /**
  * The schema face the card store uses: ui-settings owns the immutable
@@ -328,7 +329,7 @@ function defaultDraft(): AdvisorDraft {
     maxDeltaMessages: 0,
     callTimeoutMinutes: 10,
     // Fork additions: schema-default cadence/history values.
-    historyMaxTokens: 1_000_000,
+    historyMaxTokens: DEFAULT_HISTORY_MAX_TOKENS,
     reviewEveryTurns: 1,
     reviewEverySteps: 3,
     mainSessionOnly: true,
@@ -362,7 +363,7 @@ function draftOfConfig(config: AdvisorConfigView | undefined): AdvisorDraft {
     callTimeoutMinutes: numberField(config?.callTimeoutMinutes, 10),
     // Fork additions: the seed shows the effective budget/cadence; an omitted
     // containment wire reads the schema defaults (1M / 1 / 3).
-    historyMaxTokens: numberField(config?.historyMaxTokens, 1_000_000),
+    historyMaxTokens: numberField(config?.historyMaxTokens, DEFAULT_HISTORY_MAX_TOKENS),
     reviewEveryTurns: numberField(config?.reviewEveryTurns, 1),
     reviewEverySteps: numberField(config?.reviewEverySteps, 3),
     // Fork addition: an omitted containment wire reads the schema default (true).
@@ -890,7 +891,7 @@ export class AdvisorSettingsStore {
       this.clearField('historyMaxTokens')
       return
     }
-    this.setField('historyMaxTokens', this.clampInt(value, this.store.getSnapshot().draft.historyMaxTokens ?? 1_000_000, 0, 10_000_000))
+    this.setField('historyMaxTokens', this.clampInt(value, this.store.getSnapshot().draft.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS, 0, 10_000_000))
   }
 
   /** Set the turn-clock cadence (fork addition; int 1..50). */

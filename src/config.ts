@@ -40,6 +40,7 @@
  */
 
 import z from '@deepseek-ai/schemastery'
+import { DEFAULT_HISTORY_MAX_TOKENS, DEFAULT_REVIEW_EVERY_STEPS, DEFAULT_REVIEW_EVERY_TURNS } from './limits.js'
 
 /** Raw plugin row config after Loader defaults — spec §5.1. */
 export interface AdvisorConfig {
@@ -298,15 +299,15 @@ export const Config = z.object({
   // 1,000,000 by default — effectively "keep the session's history" — and 0
   // disables history entirely (every review starts cold). Values are estimated
   // at ~4 chars/token; see AdvisorConfig.historyMaxTokens.
-  historyMaxTokens: z.number().step(1).min(0).max(10_000_000).default(1_000_000).volatile(),
+  historyMaxTokens: z.number().step(1).min(0).max(10_000_000).default(DEFAULT_HISTORY_MAX_TOKENS).volatile(),
   // Turn-clock cadence (fork addition): review every Nth completed turn.
   // 1 = every turn (the pre-fork behavior); inert in agentic sessions that
   // never emit `turn/end`.
-  reviewEveryTurns: z.number().step(1).min(1).max(50).default(1).volatile(),
+  reviewEveryTurns: z.number().step(1).min(1).max(50).default(DEFAULT_REVIEW_EVERY_TURNS).volatile(),
   // Step-clock cadence (fork addition): review inside a turn after every Nth
   // completed model step. 0 = off (only turn/end reviews). Fires on the next
   // step's start, when the previous step is guaranteed complete.
-  reviewEverySteps: z.number().step(1).min(0).max(50).default(3).volatile(),
+  reviewEverySteps: z.number().step(1).min(0).max(50).default(DEFAULT_REVIEW_EVERY_STEPS).volatile(),
   proseFallback: z.boolean().default(false).volatile(),
   // No default (RD-1): an absent value means automatic, and schemastery's
   // `default()` would persist a concrete effort as the "unconfigured" value.
@@ -480,7 +481,7 @@ export function resolveAdvisorConfig(raw: unknown): ResolvedAdvisorConfig {
     return {
       ...resolvedBase,
       callTimeoutMinutes: normalized.callTimeoutMinutes ?? 10,
-      historyMaxTokens: normalized.historyMaxTokens ?? 1_000_000,
+      historyMaxTokens: normalized.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS,
       reviewEveryTurns: normalized.reviewEveryTurns ?? 1,
       reviewEverySteps: normalized.reviewEverySteps ?? 3,
       enabled: true,
@@ -501,7 +502,7 @@ export function resolveAdvisorConfig(raw: unknown): ResolvedAdvisorConfig {
   return {
     ...resolvedBase,
     callTimeoutMinutes: normalized.callTimeoutMinutes ?? 10,
-    historyMaxTokens: normalized.historyMaxTokens ?? 1_000_000,
+    historyMaxTokens: normalized.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS,
     reviewEveryTurns: normalized.reviewEveryTurns ?? 1,
     reviewEverySteps: normalized.reviewEverySteps ?? 3,
     enabled: false,

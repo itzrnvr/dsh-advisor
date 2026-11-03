@@ -68,6 +68,7 @@ import { AdvisorRuntime } from './advisor-runtime.js'
 import type { AdviceNote, AdvisorTurnRecord } from './advisor-runtime.js'
 import { AdvisorDelivery } from './delivery.js'
 import { DEFAULT_ADVISOR_SYSTEM_PROMPT } from './prompts.js'
+import { DEFAULT_HISTORY_MAX_TOKENS } from './limits.js'
 import { advisorSuggestionFace, NextPromptManager } from './next-prompt.js'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { AdvisorSessionOverrides, registerAdvisorCommands, summarizeSystemPrompt, ADVISOR_MODEL_VALIDATION_TIMEOUT_MS } from './commands.js'
@@ -281,7 +282,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // Fork additions: same containment rule — concrete schema defaults, so
       // the fallback never feeds `undefined` into a runtime construction
       // constant or the runtime signature.
-      historyMaxTokens: raw?.historyMaxTokens ?? 1_000_000,
+      historyMaxTokens: raw?.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS,
       reviewEveryTurns: raw?.reviewEveryTurns ?? 1,
       reviewEverySteps: raw?.reviewEverySteps ?? 3,
       // T1 (plan dsh-advisor-next-prompt-n12): the resolved contract types
@@ -1297,7 +1298,11 @@ export function apply(ctx: Context, config: AdvisorConfig) {
         turns: trajectoryLog.get(sessionId) ?? [],
         enabled: effective.enabled,
         runtimeStatus: runtime?.status() ?? 'disabled',
-        historyMaxTokens: effective.historyMaxTokens ?? 1_000_000,
+        historyMaxTokens: effective.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS,
+        // Fork addition: the configured budget clamped to the model's
+        // declared context window (the runtime knows it after resolution).
+        effectiveHistoryMaxTokens:
+          runtimes.get(sessionId)?.effectiveHistoryBudget ?? (effective.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS),
         ...(effective.provider === undefined ? {} : { provider: effective.provider }),
         ...(effective.model === undefined ? {} : { model: effective.model }),
       }

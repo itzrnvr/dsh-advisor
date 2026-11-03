@@ -63,6 +63,7 @@
 
 import { createAssistantMessage, createUserMessage, isQuotaExceededError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { ADVISOR_TASK_REMINDER } from './prompts.js'
+import { DEFAULT_HISTORY_MAX_TOKENS } from './limits.js'
 import { EMPTY_RESPONSE_CODE, INVALID_CREDENTIAL_CODE, QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import type {
   FinishReason,
@@ -255,7 +256,7 @@ const MAX_CONSECUTIVE_DROPS = 3
  * wholesale (never trims): trimming rewrites the prefix at the cut and forces
  * a full re-prefill, which is the cost the history exists to remove.
  */
-const ADVISOR_HISTORY_MAX_TOKENS_DEFAULT = 1_000_000
+const ADVISOR_HISTORY_MAX_TOKENS_DEFAULT = DEFAULT_HISTORY_MAX_TOKENS
 /**
  * Non-empty assistant placeholder stored for a completed call whose reply had
  * no text (an EMPTY_RESPONSE). The turn WAS part of what the provider saw, so
@@ -264,6 +265,12 @@ const ADVISOR_HISTORY_MAX_TOKENS_DEFAULT = 1_000_000
  * user/assistant-alternation providers reject as a 400.
  */
 const EMPTY_REPLY_PLACEHOLDER = '(no reply)'
+/**
+ * Marker prepended when one reviewed delta alone exceeds the model's request
+ * budget. The TAIL is kept (the newest work is what matters); the reviewer is
+ * told the earlier part was cut.
+ */
+const DELTA_TRUNCATION_MARKER = '[earlier session update truncated to fit the model context]'
 /**
  * Rough token estimate for the history budget: ~4 characters per token for
  * prose and code. Exact counts are model-specific; this number only decides
@@ -565,6 +572,18 @@ type AdvisorHistoryMessage =
   | ReturnType<typeof createAssistantMessage>
 
 /**
+ * Outcome of the one-shot model-capability lookup (fork addition):
+ * `resolved` (an adapter may legitimately resolve no metadata — definitive),
+ * `unavailable` (no capability API on this runtime), or `failed` (throw /
+ * abort — nothing is latched, so the next call retries both the effort gate
+ * and the context clamp together).
+ */
+type ModelInfoLookup =
+  | { readonly status: 'resolved'; readonly info: LlmResolvedModelInfo | undefined }
+  | { readonly status: 'unavailable' }
+  | { readonly status: 'failed' }
+
+/**
  * Per-session advisor runtime: queue deltas, async drain, `llm.stream` call,
  * JSON-frame note extraction, and the KD-5 failure policy. All async work is
  * fire-and-forget — the primary loop is never parked.
@@ -600,6 +619,29 @@ export class AdvisorRuntime {
   private readonly reasoningEffortCache = new Map<string, readonly LlmReasoningEffortInfo[]>()
   /** One-shot latch for the undeclared-configured-effort warn line (log-once per runtime). */
   private reasoningEffortWarned = false
+  /**
+   * The resolved model's declared context window (tokens), when the adapter
+   * reports one. Used to clamp the reviewer-history budget and to shed history
+   * BEFORE a request would exceed the window — otherwise a long session's
+   * history crosses the model's real limit and every review fails, even though
+   * the configured token budget (default 1M) has not been reached.
+   */
+  private modelContextTokens: number | undefined
+  /**
+   * The adapter's default per-request output cap (tokens) when it declares
+   * one — the reserve subtracted from the context window before any history
+   * is allowed. Absent falls back to 20% of the window.
+   */
+  private modelOutputReserve: number | undefined
+  /** One-shot latch: the model-info lookup already ran (success or definitive absence). */
+  private modelInfoResolved = false
+  /** The cached model-info result (shared by the effort gate and the context clamp). */
+  private modelInfo: LlmResolvedModelInfo | undefined
+  /**
+   * History tokens actually sent on the last attempt (post context fit), for
+   * the trajectory row. `undefined` before the first call.
+   */
+  private lastSentHistoryTokens: number | undefined
 
   /**
    * Append-only reviewer conversation: the EXACT user turn sent and the exact
@@ -669,6 +711,16 @@ export class AdvisorRuntime {
   /** Current per-session status (T7 `/advisor status` surface). */
   status(): AdvisorRuntimeStatus {
     return this.state
+  }
+
+  /**
+   * Effective reviewer-history budget in estimated tokens (fork addition):
+   * the configured value, clamped to the reviewer model's declared context
+   * window once that is known. Exposed for the Advisor tab so an early reset
+   * is legible, not mistaken for a malfunction.
+   */
+  get effectiveHistoryBudget(): number {
+    return this.historyBudgetTokens()
   }
 
   /** Number of deltas waiting to be drained (bounded by `maxQueued`). */
@@ -909,7 +961,9 @@ export class AdvisorRuntime {
       durationMs: Math.max(0, Date.now() - startedAt),
       outcome: result.kind,
       deltaChars,
-      historyTokens,
+      // Truthful post-fit value: a context shed inside the call empties the
+      // history, so the pre-call count would overstate what was re-sent.
+      historyTokens: this.lastSentHistoryTokens ?? historyTokens,
       systemChars: this.systemPrompt.length,
       ...(result.kind === 'note' ? { severity: result.note.severity, note: result.note.note } : {}),
       ...(result.kind === 'failure'
@@ -940,6 +994,7 @@ export class AdvisorRuntime {
     let text = ''
     let finish: FinishReason | undefined
     this.lastUsage = undefined
+    this.lastSentHistoryTokens = undefined
     // Call-level deadline (dsh-timeout): fuses the runtime's dispose signal
     // with a whole-call timer. The fused signal is passed to the provider
     // (AbortSignal honored) AND raced per chunk below, so a hung stream cannot
@@ -949,12 +1004,11 @@ export class AdvisorRuntime {
     const deadlineSignal = deadlineHandle.signal
     // The new turn, built ONCE: the exact same message object goes into the
     // request and into the append-only history after the call succeeds, so
-    // what is stored is byte-identical to what the provider saw.
-    const userText = this.userTextFor(delta)
-    const userMessage = createUserMessage({
-      content: [{ type: 'text', text: userText }],
-      source: { kind: 'user' },
-    })
+    // what is stored is byte-identical to what the provider saw. Both are
+    // assigned inside the try (the context fit runs after the model's window
+    // resolves); appendHistory below only runs after a successful stream.
+    let userText = this.userTextFor(delta)
+    let userMessage: ReturnType<typeof createUserMessage> | undefined
     try {
       // Capability-gate `reasoningEffort` (qc2 W-1 / qc1 W-1 / qc3 F-3):
       // resolve the model's declared efforts ONCE per (provider, model) and
@@ -966,6 +1020,16 @@ export class AdvisorRuntime {
       // call instead of wedging the drain ahead of the deadline-guarded
       // stream loop.
       const reasoningEffort = await this.resolveReasoningEffort(deadlineSignal)
+      // Fork addition: fit the request inside the declared context window
+      // BEFORE sending it. History is shed wholesale (never trimmed) and the
+      // delta is tail-truncated only when it alone would not fit.
+      this.fitHistoryToContext(userText)
+      userText = this.fitDeltaToContext(userText)
+      this.lastSentHistoryTokens = this.historyTokens
+      userMessage = createUserMessage({
+        content: [{ type: 'text', text: userText }],
+        source: { kind: 'user' },
+      })
       const stream = this.llm.stream(this.buildOptions(userMessage, deadlineSignal, reasoningEffort))
       const iterator = stream[Symbol.asyncIterator]()
       for (;;) {
@@ -1143,9 +1207,10 @@ export class AdvisorRuntime {
    * history exists to remove. One cold call after a reset is cheaper.
    */
   private appendHistory(userText: string, userMessage: AdvisorHistoryMessage, replyText: string): void {
-    // 0 = history disabled: nothing is stored, so every review starts cold.
-    // The clear also covers a caller that shrank the budget between calls.
-    if (this.historyMaxTokens <= 0) {
+    const budget = this.historyBudgetTokens()
+    // 0 = history disabled (either configured 0, or a context so small that
+    // history cannot fit): nothing is stored, so every review starts cold.
+    if (budget <= 0) {
       this.history.length = 0
       this.historyChars = 0
       this.historyTokens = 0
@@ -1155,12 +1220,13 @@ export class AdvisorRuntime {
     const replyBody = hasReply ? replyText : EMPTY_REPLY_PLACEHOLDER
     const sizeChars = userText.length + replyBody.length
     const sizeTokens = estimateTokens(sizeChars)
-    if (this.historyTokens + sizeTokens > this.historyMaxTokens) {
+    if (this.historyTokens + sizeTokens > budget) {
       this.history.length = 0
       this.historyChars = 0
       this.historyTokens = 0
       this.logger.debug('advisor: reviewer history reset (budget)', {
-        maxTokens: this.historyMaxTokens,
+        maxTokens: budget,
+        configuredMaxTokens: this.historyMaxTokens,
         incomingTokens: sizeTokens,
       })
     }
@@ -1171,6 +1237,77 @@ export class AdvisorRuntime {
     }))
     this.historyChars += sizeChars
     this.historyTokens += sizeTokens
+  }
+
+  /**
+   * Tokens a single request may spend BEFORE the reply: the declared context
+   * window minus the output reserve (the adapter's default cap, else 20% of
+   * the window) minus a 5% safety margin. `undefined` when the model declares
+   * no window — the configured budget is then the only bound.
+   */
+  private promptBudgetTokens(): number | undefined {
+    const context = this.modelContextTokens
+    if (context === undefined || context <= 0) return undefined
+    const reserve = this.modelOutputReserve ?? Math.ceil(context * 0.2)
+    return Math.max(0, context - reserve - Math.ceil(context * 0.05))
+  }
+
+  /** Effective reviewer-history budget: configured, clamped to 75% of the prompt budget. */
+  private historyBudgetTokens(): number {
+    if (this.historyMaxTokens <= 0) return 0
+    const promptBudget = this.promptBudgetTokens()
+    if (promptBudget === undefined) return this.historyMaxTokens
+    return Math.min(this.historyMaxTokens, Math.floor(promptBudget * 0.75))
+  }
+
+  /**
+   * Self-heal before a request (fork addition): if the system prompt + stored
+   * history + this turn's delta would exceed the model's request budget, drop
+   * the history NOW. Sending it would fail the call (context overflow), retry
+   * once, and drop the review — whereas shedding history makes the review
+   * succeed, just cold. The configured 1M-token budget alone cannot prevent
+   * this: a 128k-context model overflows long before 1M.
+   */
+  private fitHistoryToContext(userText: string): void {
+    const promptBudget = this.promptBudgetTokens()
+    if (promptBudget === undefined || this.historyTokens === 0) return
+    const estimatedPrompt = this.historyTokens + estimateTokens(this.systemPrompt.length + userText.length)
+    if (estimatedPrompt <= promptBudget) return
+    this.history.length = 0
+    this.historyChars = 0
+    this.historyTokens = 0
+    this.logger.debug('advisor: reviewer history reset (model context)', {
+      provider: this.provider,
+      model: this.model,
+      contextTokens: this.modelContextTokens,
+      promptBudget,
+      estimatedPrompt,
+    })
+  }
+
+  /**
+   * Tail-truncate one delta that alone (system prompt + delta, history already
+   * shed) exceeds the request budget. The newest work is kept, and a visible
+   * marker tells the reviewer the update is partial — otherwise it would
+   * silently judge a tail-cut transcript as if it were the whole turn.
+   */
+  private fitDeltaToContext(userText: string): string {
+    const promptBudget = this.promptBudgetTokens()
+    if (promptBudget === undefined) return userText
+    const available = promptBudget - estimateTokens(this.systemPrompt.length) - this.historyTokens
+    const maxChars = Math.max(0, available * 4)
+    if (userText.length <= maxChars) return userText
+    const marker = `${DELTA_TRUNCATION_MARKER}\n\n`
+    const keep = Math.max(0, maxChars - marker.length)
+    this.logger.debug('advisor: delta truncated to fit the model context', {
+      provider: this.provider,
+      model: this.model,
+      contextTokens: this.modelContextTokens,
+      promptBudget,
+      deltaChars: userText.length,
+      keptChars: keep,
+    })
+    return `${marker}${keep === 0 ? '' : userText.slice(-keep)}`
   }
 
   private buildOptions(
@@ -1224,6 +1361,32 @@ export class AdvisorRuntime {
   }
 
   /**
+   * Resolve the model's capability metadata ONCE per runtime (fork addition):
+   * reasoning efforts, declared context window, and the adapter's default
+   * output cap all come from this one lookup. It is shared by the effort gate
+   * and the context clamp so the clamp does not depend on the reasoning path
+   * succeeding. Only a THROW is retried; a resolved-but-empty answer is
+   * definitive, so a non-conforming adapter cannot make this spin forever.
+   */
+  private async ensureModelInfo(signal?: AbortSignal): Promise<ModelInfoLookup> {
+    if (this.modelInfoResolved) return { status: 'resolved', info: this.modelInfo }
+    if (this.llm.resolveModelInfo === undefined) {
+      this.modelInfoResolved = true
+      return { status: 'unavailable' }
+    }
+    try {
+      const info = await this.llm.resolveModelInfo(this.provider, this.model, signal)
+      this.modelInfo = info
+      this.modelContextTokens = info?.context?.contextWindow
+      this.modelOutputReserve = info?.defaultMaxTokens
+      this.modelInfoResolved = true
+      return { status: 'resolved', info }
+    } catch {
+      return { status: 'failed' }
+    }
+  }
+
+  /**
    * Resolve the `reasoningEffort` option for this call (plan
    * dsh-advisor-reasoning-effort RD-1/RD-2; capability-gate from qc2 W-1 /
    * qc1 W-1 / qc3 F-3): the configured id when the resolved model declares it,
@@ -1255,22 +1418,19 @@ export class AdvisorRuntime {
     const key = `${this.provider}\u0000${this.model}`
     let efforts = this.reasoningEffortCache.get(key)
     if (efforts === undefined) {
-      // Method absent → definitive verdict: this runtime has no capability API
-      // at all (W-1 fallback), so no effort is declared — cache the empty list
-      // and omit the option.
-      if (this.llm.resolveModelInfo === undefined) {
-        efforts = []
-      } else {
-        try {
-          const info = await this.llm.resolveModelInfo(this.provider, this.model, signal)
-          efforts = info?.reasoning?.efforts ?? []
-        } catch {
-          // Failure (adapter throw OR deadline abort — one class): the call
-          // proceeds without the option, but the failure is NOT cached — the
-          // next call resolves afresh.
-          return undefined
-        }
+      // One model-info lookup per runtime (fork addition): the reasoning
+      // efforts AND the context window/output reserve come from the SAME
+      // resolution, cached for the runtime's lifetime — never a fresh lookup
+      // per review. A failed lookup is not latched (the next call retries);
+      // a model that declares no reasoning metadata — or an absent capability
+      // API — caches the definitive empty list.
+      const lookup = await this.ensureModelInfo(signal)
+      if (lookup.status === 'failed') {
+        // Adapter throw or deadline abort: the call proceeds without the
+        // option, and the failure is NOT cached (the next call retries).
+        return undefined
       }
+      efforts = lookup.status === 'resolved' ? (lookup.info?.reasoning?.efforts ?? []) : []
       this.reasoningEffortCache.set(key, efforts)
     }
     const smallest = efforts[0]

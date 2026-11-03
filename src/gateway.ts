@@ -50,6 +50,7 @@ import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
 import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { deadline } from '@deepseek-ai/dsh-timeout'
 import { ADVISOR_SETTINGS_NAMESPACE } from './settings.js'
+import { DEFAULT_HISTORY_MAX_TOKENS } from './limits.js'
 import type { AdvisorSettingsBridge } from './settings.js'
 import { parseModelPair } from './commands.js'
 import type { AdvisorModelSource } from './commands.js'
@@ -367,6 +368,8 @@ export type AdvisorTrajectoryRpcResult =
       readonly enabled: boolean
       readonly runtimeStatus: string
       readonly historyMaxTokens: number
+      /** Configured budget clamped to the model's declared window (fork addition). */
+      readonly effectiveHistoryMaxTokens: number
       readonly provider?: string
       readonly model?: string
     }
@@ -793,7 +796,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
         immuneTurns: raw?.immuneTurns ?? 3,
         maxDeltaMessages: raw?.maxDeltaMessages ?? 0,
         callTimeoutMinutes: raw?.callTimeoutMinutes ?? 10,
-        historyMaxTokens: raw?.historyMaxTokens ?? 1_000_000,
+        historyMaxTokens: raw?.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS,
         reviewEveryTurns: raw?.reviewEveryTurns ?? 1,
         reviewEverySteps: raw?.reviewEverySteps ?? 3,
         proseFallback: raw?.proseFallback,

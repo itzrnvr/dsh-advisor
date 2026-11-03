@@ -37,7 +37,7 @@ export type AdvisorTrajectoryViewProps =
   AdvisorTrajectoryInjected
   & {
     /** Synthesized locale seat for the `settings.advisor` namespace. */
-    readonly t: (key: AdvisorKey) => string
+    readonly t: (key: AdvisorKey, params?: Record<string, string | number>) => string
     /** Renderer-bound selector hook over the injected snapshot. */
     readonly useSnapshot: <T>(selector: (state: AdvisorTrajectoryState) => T) => T
   }
@@ -127,7 +127,15 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
         <Stat label={t('trajPromptTokens')} value={formatCount(totalPrompt)} />
         <Stat label={t('trajCachedTokens')} value={formatCount(totalCached)} />
         <Stat label={t('trajOutputTokens')} value={formatCount(totalOutput)} />
-        <Stat label={t('trajHistoryBudget')} value={`${formatCount(state.historyMaxTokens)} tok`} />
+        <Stat
+          label={t('trajHistoryBudget')}
+          value={state.effectiveHistoryMaxTokens < state.historyMaxTokens
+            ? t('trajBudgetOf', {
+              effective: formatCount(state.effectiveHistoryMaxTokens),
+              configured: formatCount(state.historyMaxTokens),
+            })
+            : `${formatCount(state.historyMaxTokens)} tok`}
+        />
       </div>
 
       {state.status === 'unavailable' && state.turns.length === 0

@@ -13,6 +13,7 @@
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import { DEFAULT_HISTORY_MAX_TOKENS } from '../limits'
 
 /** How often the Advisor tab refreshes while mounted (no model calls involved). */
 export const ADVISOR_TRAJECTORY_POLL_MS = 3_000
@@ -50,6 +51,8 @@ export interface AdvisorTrajectoryState {
   runtimeStatus: string
   /** Configured append-only history budget in estimated tokens. */
   historyMaxTokens: number
+  /** Effective budget: the configured value clamped to the model's window. */
+  effectiveHistoryMaxTokens: number
   /** The effective reviewer route, when resolved. */
   provider?: string
   model?: string
@@ -62,6 +65,7 @@ type AdvisorTrajectoryRpcPayload =
     readonly enabled: boolean
     readonly runtimeStatus: string
     readonly historyMaxTokens: number
+    readonly effectiveHistoryMaxTokens: number
     readonly provider?: string
     readonly model?: string
   }
@@ -97,7 +101,8 @@ export class AdvisorTrajectoryController {
     turns: [],
     enabled: false,
     runtimeStatus: 'disabled',
-    historyMaxTokens: 1_000_000,
+    historyMaxTokens: DEFAULT_HISTORY_MAX_TOKENS,
+    effectiveHistoryMaxTokens: DEFAULT_HISTORY_MAX_TOKENS,
   })
 
   /** Fence token: a newer fetch makes every older settle stale. */
@@ -161,7 +166,10 @@ export class AdvisorTrajectoryController {
         s.turns = turns
         s.enabled = wire.enabled === true
         s.runtimeStatus = typeof wire.runtimeStatus === 'string' ? wire.runtimeStatus : 'disabled'
-        s.historyMaxTokens = typeof wire.historyMaxTokens === 'number' ? wire.historyMaxTokens : 1_000_000
+        s.historyMaxTokens = typeof wire.historyMaxTokens === 'number' ? wire.historyMaxTokens : DEFAULT_HISTORY_MAX_TOKENS
+        s.effectiveHistoryMaxTokens = typeof wire.effectiveHistoryMaxTokens === 'number'
+          ? wire.effectiveHistoryMaxTokens
+          : s.historyMaxTokens
         s.provider = typeof wire.provider === 'string' ? wire.provider : undefined
         s.model = typeof wire.model === 'string' ? wire.model : undefined
       })
