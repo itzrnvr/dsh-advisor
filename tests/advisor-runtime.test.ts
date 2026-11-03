@@ -1870,6 +1870,9 @@ describe('AdvisorRuntime — compaction fits branch (fork addition)', () => {
     const reviewTurn = turns.filter((turn) => turn.kind !== 'compaction').at(-1)
     expect(reviewTurn?.userText).toContain('second')
     expect(reviewTurn?.userText).toContain('[Compacted earlier reviewer conversation]')
+    // The compaction row carries the summary it produced.
+    const compactionTurn = turns.find((turn) => turn.kind === 'compaction')
+    expect(compactionTurn?.note).toContain('Compact summary text.')
   })
 })
 

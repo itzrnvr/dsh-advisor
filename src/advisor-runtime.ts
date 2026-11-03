@@ -1432,7 +1432,7 @@ export class AdvisorRuntime {
       return `${marker}${keep === 0 ? '' : userText.slice(-keep)}`
     }
     this.resetHistory()
-    this.recordCompaction(startedAt, at, result.usage, false)
+    this.recordCompaction(startedAt, at, result.usage, false, result.summary)
     const label = `${ADVISOR_COMPACTION_LABEL}\n${result.summary}`
     const headMarker = `${DELTA_HEAD_FOLD_MARKER}\n\n`
     // The marker itself spends budget: subtract it before sizing the tail.
@@ -1452,7 +1452,13 @@ export class AdvisorRuntime {
   }
 
   /** One Stats row for a compaction attempt (visible, never folded into a review row). */
-  private recordCompaction(startedAt: number, at: number, usage: TokenUsage | undefined, failed: boolean): void {
+  private recordCompaction(
+    startedAt: number,
+    at: number,
+    usage: TokenUsage | undefined,
+    failed: boolean,
+    summary?: string,
+  ): void {
     const record: AdvisorTurnRecord = {
       at: startedAt,
       durationMs: Math.max(0, at - startedAt),
@@ -1461,6 +1467,8 @@ export class AdvisorRuntime {
       deltaChars: 0,
       historyTokens: 0,
       systemChars: this.systemPrompt.length,
+      // The summary the compaction produced, so its row is inspectable.
+      ...(summary === undefined ? {} : { note: summary.slice(0, 2_000) }),
       ...(failed ? { error: 'compaction failed — reviewer conversation reset' } : {}),
       ...(usage === undefined ? {} : {
         usage: {
