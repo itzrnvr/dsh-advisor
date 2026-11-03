@@ -503,6 +503,62 @@ export function AdvisorCard(props: AdvisorCardProps): ReactNode {
             />
             <p className={styles['hint']}>{t('callTimeoutMinutesHint')}</p>
           </div>
+          {/* Fork additions: append-only history budget + the two review
+              clocks (turn cadence and intra-turn step cadence). */}
+          <div className={styles['field']}>
+            <label htmlFor="advisor-history-tokens" className={styles['fieldLabel']}>{t('historyMaxTokens')}</label>
+            <input
+              id="advisor-history-tokens"
+              aria-label={t('historyMaxTokens')}
+              className={styles['input']}
+              type="number"
+              min={0}
+              max={10_000_000}
+              step={1}
+              value={draft.historyMaxTokens ?? ''}
+              disabled={busy}
+              onChange={(event) => {
+                controller.setHistoryMaxTokens(event.target.value === '' ? undefined : Number(event.target.value))
+              }}
+            />
+            <p className={styles['hint']}>{t('historyMaxTokensHint')}</p>
+          </div>
+          <div className={styles['field']}>
+            <label htmlFor="advisor-review-turns" className={styles['fieldLabel']}>{t('reviewEveryTurns')}</label>
+            <input
+              id="advisor-review-turns"
+              aria-label={t('reviewEveryTurns')}
+              className={styles['input']}
+              type="number"
+              min={1}
+              max={50}
+              step={1}
+              value={draft.reviewEveryTurns ?? ''}
+              disabled={busy}
+              onChange={(event) => {
+                controller.setReviewEveryTurns(event.target.value === '' ? undefined : Number(event.target.value))
+              }}
+            />
+            <p className={styles['hint']}>{t('reviewEveryTurnsHint')}</p>
+          </div>
+          <div className={styles['field']}>
+            <label htmlFor="advisor-review-steps" className={styles['fieldLabel']}>{t('reviewEverySteps')}</label>
+            <input
+              id="advisor-review-steps"
+              aria-label={t('reviewEverySteps')}
+              className={styles['input']}
+              type="number"
+              min={0}
+              max={50}
+              step={1}
+              value={draft.reviewEverySteps ?? ''}
+              disabled={busy}
+              onChange={(event) => {
+                controller.setReviewEverySteps(event.target.value === '' ? undefined : Number(event.target.value))
+              }}
+            />
+            <p className={styles['hint']}>{t('reviewEveryStepsHint')}</p>
+          </div>
         </div>
       </div>
       <div className={styles['footer']}>

@@ -61,11 +61,11 @@ import { resolveAdvisorConfig } from './config.js'
 import type { AdvisorConfig, ResolvedAdvisorConfig } from './config.js'
 import { installAdvisorSettings } from './settings.js'
 import { AdvisorConfigGateway, advisorSessionError, advisorTypertContribution } from './gateway.js'
-import type { AdvisorNotesFace, AdvisorNoteView, AdvisorSessionGatewayFace, AdvisorSessionRpcResult, AdvisorSuggestionFace } from './gateway.js'
+import type { AdvisorNotesFace, AdvisorNoteView, AdvisorSessionGatewayFace, AdvisorSessionRpcResult, AdvisorSuggestionFace, AdvisorTrajectoryFace, AdvisorTurnView } from './gateway.js'
 import { SessionTranscriptObserver } from './transcript.js'
 import type { Delta } from './transcript.js'
 import { AdvisorRuntime } from './advisor-runtime.js'
-import type { AdviceNote } from './advisor-runtime.js'
+import type { AdviceNote, AdvisorTurnRecord } from './advisor-runtime.js'
 import { AdvisorDelivery } from './delivery.js'
 import { DEFAULT_ADVISOR_SYSTEM_PROMPT } from './prompts.js'
 import { advisorSuggestionFace, NextPromptManager } from './next-prompt.js'
@@ -225,9 +225,11 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   let suggestionControl: AdvisorSuggestionFace | undefined
   // Fork addition: the delivered-notes face served to the in-chat Advisor strip.
   let notesControl: AdvisorNotesFace | undefined
+  // Fork addition: the advisor-trajectory face served to the Advisor tab.
+  let trajectoryControl: AdvisorTrajectoryFace | undefined
   try {
     new AdvisorConfigGateway(ctx, bridge, () => sessionControl, (provider, model, signal) =>
-      appRootLlm().resolveModelInfo(provider, model, signal), ctx.logger('advisor'), () => suggestionControl, () => notesControl)
+      appRootLlm().resolveModelInfo(provider, model, signal), ctx.logger('advisor'), () => suggestionControl, () => notesControl, () => trajectoryControl)
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
     ctx.logger('advisor').debug('advisor gateway already registered — no gateway on this fiber (multi-fiber dedupe)')
@@ -276,6 +278,12 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       immuneTurns: raw?.immuneTurns ?? 3,
       maxDeltaMessages: raw?.maxDeltaMessages ?? 0,
       callTimeoutMinutes: raw?.callTimeoutMinutes ?? 10,
+      // Fork additions: same containment rule — concrete schema defaults, so
+      // the fallback never feeds `undefined` into a runtime construction
+      // constant or the runtime signature.
+      historyMaxTokens: raw?.historyMaxTokens ?? 1_000_000,
+      reviewEveryTurns: raw?.reviewEveryTurns ?? 1,
+      reviewEverySteps: raw?.reviewEverySteps ?? 3,
       // T1 (plan dsh-advisor-next-prompt-n12): the resolved contract types
       // nextPrompt as a plain boolean — an absent raw key means the schema
       // default (true; enabled:false already blocks every prediction call).
@@ -448,6 +456,15 @@ export function apply(ctx: Context, config: AdvisorConfig) {
    */
   const adviceLog = new Map<string, AdvisorNoteView[]>()
   const ADVICE_LOG_MAX = 30
+  /**
+   * Fork addition: the advisor's OWN trajectory per session — one entry per
+   * model attempt (notes, silent reviews, failures), with the provider's
+   * reported tokens and cache reads. Served to the Advisor tab by
+   * `/api/advisor/trajectory`; bounded so a long session cannot accumulate
+   * unbounded memory, and cleared with the session.
+   */
+  const trajectoryLog = new Map<string, AdvisorTurnView[]>()
+  const TRAJECTORY_LOG_MAX = 80
   /** Last completed Agent turn per session — attributes a delivered note to the turn it reviewed. */
   const lastTurn = new Map<string, number>()
   /**
@@ -550,6 +567,8 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // Call timeout (minutes) is a runtime-construction constant too: an edit
       // must rebuild the session runtime so the new deadline takes effect.
       globalResolved.callTimeoutMinutes ?? 10,
+      // History budget (estimated tokens) is likewise a construction constant.
+      globalResolved.historyMaxTokens,
       // `nextPrompt` is deliberately ABSENT (plan dsh-advisor-next-prompt-n12,
       // T1 — config-key checklist seam 6): a `nextPrompt`-only edit must not
       // rebuild review runtimes. The prediction gate reads it live on every
@@ -602,6 +621,10 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // Reviewer call deadline (fork addition): minutes → ms. Replaces the
       // upstream hard-coded 60 s so slow max-effort reviewers can finish.
       callTimeoutMs: (globalResolved.callTimeoutMinutes ?? 10) * 60_000,
+      // Append-only reviewer-history budget (fork addition, default 1M
+      // estimated tokens): the whole conversation resets when the next
+      // exchange would cross it.
+      historyMaxTokens: globalResolved.historyMaxTokens,
       llm: appRootLlm(),
       onNote: (note: AdviceNote) => {
         // Accepted notes only — the runtime's emission guard (T5) already
@@ -632,6 +655,17 @@ export function apply(ctx: Context, config: AdvisorConfig) {
             log.push(entry)
             if (log.length > ADVICE_LOG_MAX) log.splice(0, log.length - ADVICE_LOG_MAX)
           }
+        }
+      },
+      // Fork addition: record the advisor's own attempts for the Advisor tab
+      // (tokens incl. cache reads, duration, outcome). The callback is
+      // observational — the runtime contains a throw from it.
+      onTurn: (record: AdvisorTurnRecord) => {
+        const log = trajectoryLog.get(sessionId)
+        if (log === undefined) trajectoryLog.set(sessionId, [record])
+        else {
+          log.push(record)
+          if (log.length > TRAJECTORY_LOG_MAX) log.splice(0, log.length - TRAJECTORY_LOG_MAX)
         }
       },
     })
@@ -702,6 +736,11 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   }, 'advisor: release reviewer claim')
   const observer = new SessionTranscriptObserver({
     maxDeltaMessages: resolved().maxDeltaMessages,
+    // Fork additions: the two review clocks (turn + intra-turn step). Read
+    // from the same safe-resolved config the window uses; live edits re-size
+    // them below without rebuilding the observer.
+    reviewEveryTurns: resolved().reviewEveryTurns,
+    reviewEverySteps: resolved().reviewEverySteps,
     onSteppedTurnEnd: (sessionId: string) => {
       // One completed stepped primary turn — decrement the immuneTurns
       // cooldown (T6, spec §6). Fires before the delta render, so the note
@@ -802,6 +841,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     overrides.clear(agent.id)
     suggestions.disposeSession(agent.id)
     adviceLog.delete(agent.id)
+    trajectoryLog.delete(agent.id)
     lastTurn.delete(agent.id)
   }, { global: true })
   ctx.on('session/disposed', (session: Session) => {
@@ -811,6 +851,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     overrides.clear(session.id)
     suggestions.disposeSession(session.id)
     adviceLog.delete(session.id)
+    trajectoryLog.delete(session.id)
     lastTurn.delete(session.id)
   }, { global: true })
 
@@ -844,6 +885,9 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     }
     delivery.setImmuneTurns(next.immuneTurns)
     observer.setMaxDeltaMessages(next.maxDeltaMessages)
+    // Fork additions: a cadence-only edit re-sizes the observer in place —
+    // no runtime rebuild (the clocks are observer state, not call constants).
+    observer.setReviewCadence(next.reviewEveryTurns, next.reviewEverySteps)
     // Candidates = live runtimes ∪ sessions holding an override. The second
     // set covers an `/advisor on`-enabled session whose runtime is ABSENT
     // because it was gate-blocked: when the defaults become usable (a global
@@ -1236,6 +1280,26 @@ export function apply(ctx: Context, config: AdvisorConfig) {
         ...(effective.provider === undefined ? {} : { provider: effective.provider }),
         ...(effective.model === undefined ? {} : { model: effective.model }),
         ...(runtime?.lastActivity === undefined ? {} : { lastActivityAt: runtime.lastActivity }),
+      }
+    },
+  }
+
+  // Fork addition — the advisor-trajectory face for `/api/advisor/trajectory`
+  // (the Advisor tab): the SAME session-scoped effective config, the live
+  // runtime status, the configured history budget, and the recorded attempts.
+  // Read-only; returns only defined keys (the wire validator rejects
+  // present-as-undefined values).
+  trajectoryControl = {
+    getTrajectory: (sessionId) => {
+      const effective = effectiveConfig(sessionId)
+      const runtime = runtimes.get(sessionId)
+      return {
+        turns: trajectoryLog.get(sessionId) ?? [],
+        enabled: effective.enabled,
+        runtimeStatus: runtime?.status() ?? 'disabled',
+        historyMaxTokens: effective.historyMaxTokens ?? 1_000_000,
+        ...(effective.provider === undefined ? {} : { provider: effective.provider }),
+        ...(effective.model === undefined ? {} : { model: effective.model }),
       }
     },
   }

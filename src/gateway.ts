@@ -325,6 +325,60 @@ export interface AdvisorNotesFace {
 }
 
 /**
+ * Fork addition — one advisor model ATTEMPT as the Advisor tab shows it.
+ * Structural mirror of `AdvisorTurnRecord` in the runtime: the gateway keeps
+ * its own wire contract instead of importing the runtime module.
+ */
+export interface AdvisorTurnView {
+  /** Epoch-ms when the attempt started. */
+  readonly at: number
+  /** Wall-clock duration of the attempt. */
+  readonly durationMs: number
+  /** What the attempt produced. */
+  readonly outcome: 'note' | 'no-note' | 'failure' | 'aborted'
+  readonly severity?: 'nit' | 'concern' | 'blocker'
+  readonly note?: string
+  /** Characters of the reviewed transcript delta. */
+  readonly deltaChars: number
+  /** Estimated history tokens the provider re-read on this call. */
+  readonly historyTokens: number
+  /** Characters in the system prompt. */
+  readonly systemChars: number
+  /** Provider-reported usage (cache fields optional). */
+  readonly usage?: {
+    readonly inputTokens: number
+    readonly outputTokens: number
+    readonly cacheReadTokens?: number
+    readonly cacheWriteTokens?: number
+    readonly reasoningTokens?: number
+    readonly totalTokens?: number
+  }
+  /** Failure detail (`code: message`). */
+  readonly error?: string
+}
+
+/** Plugin-domain tags for the READ-ONLY trajectory query (`advisor/trajectory`). */
+export type AdvisorTrajectoryErrorTag = 'advisor/rejected' | 'advisor/unavailable'
+
+/** One `advisor/trajectory` result: the advisor's own attempts + live route state. */
+export type AdvisorTrajectoryRpcResult =
+  | {
+      readonly turns: readonly AdvisorTurnView[]
+      readonly enabled: boolean
+      readonly runtimeStatus: string
+      readonly historyMaxTokens: number
+      readonly provider?: string
+      readonly model?: string
+    }
+  | { readonly error: { readonly tag: AdvisorTrajectoryErrorTag; readonly message: string } }
+
+/** The elected owner's trajectory face — implemented by the wiring in `src/index.ts`. */
+export interface AdvisorTrajectoryFace {
+  /** Advisor attempts for one session (oldest → newest) plus live status. */
+  getTrajectory(sessionId: string): AdvisorTrajectoryRpcResult
+}
+
+/**
  * The elected owner's suggestion face — implemented by the wiring
  * (`index.ts`) against the SAME `NextPromptManager` the transcript observer
  * feeds (one state store, no divergence). The gateway consults it lazily per
@@ -386,6 +440,8 @@ export class AdvisorConfigGateway extends TypertRemoteService {
   private readonly suggestionFace: () => AdvisorSuggestionFace | undefined
   /** Fork addition: the elected owner's delivered-notes face (lazy, like suggestionFace). */
   private readonly notesFace: () => AdvisorNotesFace | undefined
+  /** Fork addition: the elected owner's advisor-trajectory face (lazy). */
+  private readonly trajectoryFace: () => AdvisorTrajectoryFace | undefined
 
   /**
    * @param ctx - owning context (the plugin fiber's ctx inside `apply`).
@@ -412,6 +468,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     logger?: AdvisorGatewayLogger,
     suggestionFace: () => AdvisorSuggestionFace | undefined = () => undefined,
     notesFace: () => AdvisorNotesFace | undefined = () => undefined,
+    trajectoryFace: () => AdvisorTrajectoryFace | undefined = () => undefined,
   ) {
     super(ctx, 'advisor')
     this.bridge = bridge
@@ -420,6 +477,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     this.logger = logger
     this.suggestionFace = suggestionFace
     this.notesFace = notesFace
+    this.trajectoryFace = trajectoryFace
     // The settings service is optional (no settings → entry fallback). The
     // inject child activates only when a settings service is composed, mirroring
     // installAdvisorSettings' conditional child; the returned disposer mirrors
@@ -550,6 +608,30 @@ export class AdvisorConfigGateway extends TypertRemoteService {
       }
     }
     return face.getNotes(sessionId)
+  }
+
+  /**
+   * Fork addition — the READ-ONLY advisor-trajectory query
+   * (`/api/advisor/trajectory`, args `{ sessionId }`): one entry per model
+   * attempt with provider-reported tokens (cache reads included), duration
+   * and outcome, for the Advisor tab. Idempotent and side-effect-free;
+   * malformed requests answer `advisor/rejected`, a gateway without an
+   * elected owner answers `advisor/unavailable`.
+   */
+  getTrajectory(sessionId: string): AdvisorTrajectoryRpcResult {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      return { error: { tag: 'advisor/rejected', message: 'advisor: getTrajectory requires a non-empty sessionId' } }
+    }
+    const face = this.trajectoryFace()
+    if (face === undefined) {
+      return {
+        error: {
+          tag: 'advisor/unavailable',
+          message: 'advisor: the trajectory surface is not owned by this gateway — no elected owner on this fiber',
+        },
+      }
+    }
+    return face.getTrajectory(sessionId)
   }
 
   /**
@@ -711,6 +793,9 @@ export class AdvisorConfigGateway extends TypertRemoteService {
         immuneTurns: raw?.immuneTurns ?? 3,
         maxDeltaMessages: raw?.maxDeltaMessages ?? 0,
         callTimeoutMinutes: raw?.callTimeoutMinutes ?? 10,
+        historyMaxTokens: raw?.historyMaxTokens ?? 1_000_000,
+        reviewEveryTurns: raw?.reviewEveryTurns ?? 1,
+        reviewEverySteps: raw?.reviewEverySteps ?? 3,
         proseFallback: raw?.proseFallback,
         // The resolver never ran on this arm, so the RD-1 empty = automatic
         // normalization (config.ts) is mirrored here: a raw empty/blank value
@@ -730,21 +815,28 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     // typertGateway wire boundary: absent keys are omitted, never
     // present-as-undefined (the result validator rejects undefined values).
     // Key census (qc1 W-1, issue #102; T2 plan dsh-advisor-reasoning-effort;
-    // T1 plan dsh-advisor-next-prompt-n12; GitHub issue #124): NINE persisted
-    // keys — the live `CONFIG_KEYS` set in src/config.ts: systemPrompt,
-    // immuneTurns, maxDeltaMessages, proseFallback, reasoningEffort, provider,
-    // model, nextPrompt, defaultEnabled. The scalar pair (provider/model) and
-    // reasoningEffort are omitted while unset; the schema-defaulted booleans
-    // (proseFallback, nextPrompt, defaultEnabled) ride every resolved get.
-    // Plus TWO non-persisted live fields: `enabled`/`disabledReason` (the gate
-    // state, never stored). No maxTokens key since the 2026-10-18 ruling
-    // (budget removed).
+    // T1 plan dsh-advisor-next-prompt-n12; GitHub issue #124; fork cadence/
+    // history additions): TWELVE live `CONFIG_KEYS` in src/config.ts —
+    // systemPrompt, immuneTurns, maxDeltaMessages, proseFallback,
+    // reasoningEffort, provider, model, nextPrompt, defaultEnabled,
+    // historyMaxTokens, reviewEveryTurns, reviewEverySteps. The scalar pair
+    // (provider/model) and reasoningEffort are omitted while unset; the
+    // schema-defaulted numbers/booleans ride every resolved get. Plus TWO
+    // non-persisted live fields: `enabled`/`disabledReason` (the gate state,
+    // never stored). `mainSessionOnly` is a raw scope key emitted only when
+    // explicitly disabled (below). No maxTokens key since the 2026-10-18
+    // ruling (budget removed).
     const wire: Record<string, unknown> = {
       enabled: config.enabled,
       systemPrompt: config.systemPrompt,
       immuneTurns: config.immuneTurns,
       maxDeltaMessages: config.maxDeltaMessages,
       callTimeoutMinutes: config.callTimeoutMinutes ?? 10,
+      // Fork additions: the reviewer-history budget and the two review clocks.
+      // Concrete on every resolver arm, so they always ride the get.
+      historyMaxTokens: config.historyMaxTokens,
+      reviewEveryTurns: config.reviewEveryTurns,
+      reviewEverySteps: config.reviewEverySteps,
     }
     if (config.proseFallback !== undefined) wire.proseFallback = config.proseFallback
     if (config.reasoningEffort !== undefined) wire.reasoningEffort = config.reasoningEffort
@@ -885,6 +977,20 @@ export function advisorTypertContribution(): TypertContribution {
         namespace: 'advisor',
         method: 'notes',
         implementation: 'getNotes',
+        invocation: { kind: 'direct' },
+        parameters: [
+          { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },
+        ],
+        result: { mode: 'src-json' },
+      },
+      // Fork addition — the read-only advisor-trajectory query (one entry per
+      // model attempt: tokens, cache reads, duration, outcome).
+      {
+        id: 'dsh-advisor#advisor/trajectory',
+        service: 'advisor',
+        namespace: 'advisor',
+        method: 'trajectory',
+        implementation: 'getTrajectory',
         invocation: { kind: 'direct' },
         parameters: [
           { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },

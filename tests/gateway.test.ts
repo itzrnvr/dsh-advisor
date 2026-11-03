@@ -146,6 +146,9 @@ describe('no settings service (entry fallback)', () => {
         maxDeltaMessages: 60,
         callTimeoutMinutes: 10,
         proseFallback: false,
+        historyMaxTokens: 1_000_000,
+        reviewEveryTurns: 1,
+        reviewEverySteps: 3,
         nextPrompt: true,
         defaultEnabled: true,
       },
@@ -203,6 +206,9 @@ describe('with a settings service (set writes the entry config)', () => {
       maxDeltaMessages: 60,
       callTimeoutMinutes: 10,
       proseFallback: false,
+      historyMaxTokens: 1_000_000,
+      reviewEveryTurns: 1,
+      reviewEverySteps: 3,
       nextPrompt: true,
       defaultEnabled: true,
     }
@@ -242,6 +248,9 @@ describe('with a settings service (set writes the entry config)', () => {
         maxDeltaMessages: 10,
         callTimeoutMinutes: 10,
         proseFallback: false,
+        historyMaxTokens: 1_000_000,
+        reviewEveryTurns: 1,
+        reviewEverySteps: 3,
         nextPrompt: true,
         defaultEnabled: true,
         disabledReason: expect.any(String),
@@ -272,6 +281,9 @@ describe('with a settings service (set writes the entry config)', () => {
         maxDeltaMessages: 10,
         callTimeoutMinutes: 10,
         proseFallback: false,
+        historyMaxTokens: 1_000_000,
+        reviewEveryTurns: 1,
+        reviewEverySteps: 3,
         nextPrompt: true,
         defaultEnabled: true,
       },
@@ -314,8 +326,27 @@ describe('with a settings service (set writes the entry config)', () => {
       maxDeltaMessages: 60,
       callTimeoutMinutes: 10,
       proseFallback: false,
+      historyMaxTokens: 1_000_000,
+      reviewEveryTurns: 1,
+      reviewEverySteps: 3,
       nextPrompt: true,
       defaultEnabled: true,
+    })
+  })
+
+  it('round-trips the fork cadence and history keys through get/set', async () => {
+    const ctx = new Context()
+    const entry = new MemoryEntryConfig(entryConfig({ provider: 'deepseek', model: 'deepseek-chat' }))
+    const bridge = installAdvisorSettings(ctx, entry.config)
+    const gateway = new AdvisorConfigGateway(ctx, bridge)
+    await provideSettingsDouble(ctx, entry)
+    await waitCaptured(ctx, gateway)
+
+    await gateway.set({ historyMaxTokens: 2_000, reviewEveryTurns: 2, reviewEverySteps: 5 })
+    expect(gateway.get().config).toMatchObject({
+      historyMaxTokens: 2_000,
+      reviewEveryTurns: 2,
+      reviewEverySteps: 5,
     })
   })
 
@@ -544,6 +575,9 @@ describe('typertGateway endpoint claims + payload contract', () => {
           maxDeltaMessages: 60,
           callTimeoutMinutes: 10,
           proseFallback: false,
+          historyMaxTokens: 1_000_000,
+          reviewEveryTurns: 1,
+          reviewEverySteps: 3,
           nextPrompt: true,
           defaultEnabled: true,
           disabledReason: expect.any(String),
@@ -849,6 +883,9 @@ describe('composed plugin (apply wires the gateway)', () => {
       maxDeltaMessages: 60,
       callTimeoutMinutes: 10,
       proseFallback: false,
+      historyMaxTokens: 1_000_000,
+      reviewEveryTurns: 1,
+      reviewEverySteps: 3,
       nextPrompt: true,
       defaultEnabled: true,
       disabledReason: expect.any(String),
@@ -880,6 +917,9 @@ describe('composed plugin (apply wires the gateway)', () => {
       maxDeltaMessages: 60,
       callTimeoutMinutes: 10,
       proseFallback: false,
+      historyMaxTokens: 1_000_000,
+      reviewEveryTurns: 1,
+      reviewEverySteps: 3,
       nextPrompt: true,
       defaultEnabled: true,
     })

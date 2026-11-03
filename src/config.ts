@@ -67,6 +67,29 @@ export interface AdvisorConfig {
    */
   readonly mainSessionOnly?: boolean
   /**
+   * Append-only reviewer-history budget in TOKENS (fork addition; default
+   * 1,000,000). The history is the reviewer's own conversation — system +
+   * every earlier exchange + the new turn — kept so each call is a strict
+   * byte-prefix extension the provider can cache. Crossing the budget RESETS
+   * the conversation wholesale (never trims: trimming rewrites the prefix and
+   * forces a full re-prefill). Tokens are estimated at ~4 characters per
+   * token — exact tokenizer counts are model-specific and this bound only
+   * decides when to start over.
+   */
+  readonly historyMaxTokens?: number
+  /**
+   * Turn-clock cadence (fork addition; schema default 1). Review after every
+   * Nth completed stepped turn. Inert in agentic sessions that never emit
+   * `turn/end` — the step clock covers those.
+   */
+  readonly reviewEveryTurns?: number
+  /**
+   * Step-clock cadence (fork addition; schema default 3, 0 = off). Review
+   * inside a turn after every Nth completed model step. The review fires on
+   * the following step's start, so the reviewed step is always complete.
+   */
+  readonly reviewEverySteps?: number
+  /**
    * Opt-in prose fallback (KD-I2, issue #102): when true, a reply with no
    * parseable JSON frame but non-empty text is delivered as a `nit` note
    * (trimmed, surrounding fence stripped, capped at the note-char bound)
@@ -144,6 +167,27 @@ export interface ResolvedAdvisorConfig {
   /** Prose fallback switch (KD-I2); absent on plain-object entries → runtime default false. */
   readonly proseFallback?: boolean
   /**
+   * Append-only reviewer-history budget in tokens (fork addition; default
+   * 1,000,000). Normalized to a concrete number on every resolver arm; the
+   * runtime resets the whole conversation when the next exchange would cross
+   * it. 0 disables history entirely (no exchanges stored — every review is
+   * cold).
+   */
+  readonly historyMaxTokens: number
+  /**
+   * Turn-clock cadence (fork addition; default 1 = every completed turn).
+   * Review after every Nth completed main-session turn. Inert in agentic
+   * sessions that never emit `turn/end` — the step clock covers those.
+   */
+  readonly reviewEveryTurns: number
+  /**
+   * Step-clock cadence (fork addition; default 3, 0 = off). Review inside a
+   * turn after every Nth completed model step (reasoning + response + tool
+   * calls + tool results = one step). Fires on the next step's start, so the
+   * reviewed step is always complete.
+   */
+  readonly reviewEverySteps: number
+  /**
    * Reasoning effort id (RD-1/RD-2); absent/empty = automatic — the runtime
    * sends the smallest effort the resolved model declares, or omits the
    * option when the model declares no reasoning metadata.
@@ -178,6 +222,9 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'maxDeltaMessages',
   'callTimeoutMinutes',
   'mainSessionOnly',
+  'historyMaxTokens',
+  'reviewEveryTurns',
+  'reviewEverySteps',
   'proseFallback',
   'reasoningEffort',
   'nextPrompt',
@@ -247,6 +294,19 @@ export const Config = z.object({
   // Main-session-only scope (fork addition): default true keeps the reviewer
   // off subagent sessions; flip false to review delegated sessions too.
   mainSessionOnly: z.boolean().default(true).volatile(),
+  // Append-only reviewer-history budget in estimated tokens (fork addition).
+  // 1,000,000 by default — effectively "keep the session's history" — and 0
+  // disables history entirely (every review starts cold). Values are estimated
+  // at ~4 chars/token; see AdvisorConfig.historyMaxTokens.
+  historyMaxTokens: z.number().step(1).min(0).max(10_000_000).default(1_000_000).volatile(),
+  // Turn-clock cadence (fork addition): review every Nth completed turn.
+  // 1 = every turn (the pre-fork behavior); inert in agentic sessions that
+  // never emit `turn/end`.
+  reviewEveryTurns: z.number().step(1).min(1).max(50).default(1).volatile(),
+  // Step-clock cadence (fork addition): review inside a turn after every Nth
+  // completed model step. 0 = off (only turn/end reviews). Fires on the next
+  // step's start, when the previous step is guaranteed complete.
+  reviewEverySteps: z.number().step(1).min(0).max(50).default(3).volatile(),
   proseFallback: z.boolean().default(false).volatile(),
   // No default (RD-1): an absent value means automatic, and schemastery's
   // `default()` would persist a concrete effort as the "unconfigured" value.
@@ -291,6 +351,12 @@ export interface VolatileAdvisorConfig {
   readonly callTimeoutMinutes?: unknown
   /** Optional like {@link AdvisorConfig.mainSessionOnly}: plain entries may omit it; the Loader path always carries it. */
   readonly mainSessionOnly?: unknown
+  /** Optional like {@link AdvisorConfig.historyMaxTokens}: plain entries may omit it; the Loader path always carries it. */
+  readonly historyMaxTokens?: unknown
+  /** Optional like {@link AdvisorConfig.reviewEveryTurns}: plain entries may omit it. */
+  readonly reviewEveryTurns?: unknown
+  /** Optional like {@link AdvisorConfig.reviewEverySteps}: plain entries may omit it. */
+  readonly reviewEverySteps?: unknown
   /** Optional like {@link AdvisorConfig.proseFallback}: plain entries may omit it; the Loader path always carries it. */
   readonly proseFallback?: unknown
   /** Optional like {@link AdvisorConfig.reasoningEffort}: plain entries may omit it; the Loader path always carries it. */
@@ -350,7 +416,7 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
   // The raw side is loose on purpose: the schema-removed `enabled` and
   // `maxTokens` are not VolatileAdvisorConfig members but can arrive on any
   // plain entry — the cast widens only to let the destructure strip them.
-  const { enabled, provider, model, systemPrompt, immuneTurns, maxDeltaMessages, callTimeoutMinutes, mainSessionOnly, proseFallback, reasoningEffort, nextPrompt, defaultEnabled, maxTokens, ...rest } =
+  const { enabled, provider, model, systemPrompt, immuneTurns, maxDeltaMessages, callTimeoutMinutes, mainSessionOnly, historyMaxTokens, reviewEveryTurns, reviewEverySteps, proseFallback, reasoningEffort, nextPrompt, defaultEnabled, maxTokens, ...rest } =
     raw as VolatileAdvisorConfig & { readonly enabled?: unknown; readonly maxTokens?: unknown }
   return {
     ...rest,
@@ -361,6 +427,9 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
     maxDeltaMessages: unwrapReference<number>(maxDeltaMessages),
     callTimeoutMinutes: unwrapReference<number | undefined>(callTimeoutMinutes),
     mainSessionOnly: unwrapReference<boolean | undefined>(mainSessionOnly),
+    historyMaxTokens: unwrapReference<number | undefined>(historyMaxTokens),
+    reviewEveryTurns: unwrapReference<number | undefined>(reviewEveryTurns),
+    reviewEverySteps: unwrapReference<number | undefined>(reviewEverySteps),
     proseFallback: unwrapReference<boolean | undefined>(proseFallback),
     reasoningEffort: normalizeReasoningEffort(unwrapReference<unknown>(reasoningEffort)),
     nextPrompt: unwrapReference<boolean>(nextPrompt),
@@ -411,6 +480,9 @@ export function resolveAdvisorConfig(raw: unknown): ResolvedAdvisorConfig {
     return {
       ...resolvedBase,
       callTimeoutMinutes: normalized.callTimeoutMinutes ?? 10,
+      historyMaxTokens: normalized.historyMaxTokens ?? 1_000_000,
+      reviewEveryTurns: normalized.reviewEveryTurns ?? 1,
+      reviewEverySteps: normalized.reviewEverySteps ?? 3,
       enabled: true,
       nextPrompt: normalized.nextPrompt ?? true,
       // GitHub issue #124: `defaultEnabled` is a plain boolean on EVERY
@@ -429,6 +501,9 @@ export function resolveAdvisorConfig(raw: unknown): ResolvedAdvisorConfig {
   return {
     ...resolvedBase,
     callTimeoutMinutes: normalized.callTimeoutMinutes ?? 10,
+    historyMaxTokens: normalized.historyMaxTokens ?? 1_000_000,
+    reviewEveryTurns: normalized.reviewEveryTurns ?? 1,
+    reviewEverySteps: normalized.reviewEverySteps ?? 3,
     enabled: false,
     nextPrompt: normalized.nextPrompt ?? true,
     defaultEnabled: normalized.defaultEnabled ?? true,

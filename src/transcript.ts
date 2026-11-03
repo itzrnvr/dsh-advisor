@@ -445,6 +445,21 @@ export interface SessionObserverOptions {
   /** Invoked once per stepped reviewable turn/end with the rendered delta. */
   readonly onDelta: (sessionId: string, delta: Delta) => void
   /**
+   * Step-clock cadence (fork addition): review inside a turn after every Nth
+   * COMPLETED model step (reasoning + response + tool calls + results = one
+   * step). 0 = off. The review fires on the NEXT step's `step/start` — the
+   * same completeness guarantee the turn gate gets from `turn/end` — never
+   * while counting assistant/tool events, so a half-arrived step is never
+   * rendered.
+   */
+  readonly reviewEverySteps?: number
+  /**
+   * Turn-clock cadence (fork addition): review after every Nth completed
+   * stepped turn. Default 1 (every turn — the pre-fork behavior). Inert in
+   * agentic sessions that never emit `turn/end`; the step clock covers those.
+   */
+  readonly reviewEveryTurns?: number
+  /**
    * Invoked once per stepped reviewable turn/end (the same gate as `onDelta`),
    * before the delta is rendered — the delivery module (T6) counts completed
    * primary turns here to decrement its immuneTurns cooldown (spec §6).
@@ -544,9 +559,34 @@ export class SessionTranscriptObserver {
   private readonly turnEndSessions = new Set<string>()
   /** Bounded delta window (KD-3); forwarded to every per-session renderer. */
   private maxDeltaMessages: number
+  /** Step-clock cadence: 0 = off (fork addition). */
+  private reviewEverySteps: number
+  /** Turn-clock cadence: 1 = every completed turn (fork addition). */
+  private reviewEveryTurns: number
+  /** Steps started since the last step-clock review, per session. */
+  private readonly stepsSinceReview = new Map<string, number>()
+  /** Completed turns since the last turn-clock review, per session. */
+  private readonly turnsSinceReview = new Map<string, number>()
 
   constructor(private readonly options: SessionObserverOptions) {
     this.maxDeltaMessages = options.maxDeltaMessages
+    // Defaults preserve the pre-fork behavior when a caller omits them: every
+    // completed turn is reviewed, and mid-turn reviews are off.
+    this.reviewEverySteps = options.reviewEverySteps ?? 0
+    this.reviewEveryTurns = Math.max(1, options.reviewEveryTurns ?? 1)
+  }
+
+  /**
+   * Update the two review clocks (fork addition, live config): a committed
+   * settings change re-sizes the cadence without rebuilding the observer.
+   * Counters restart from zero so a changed interval never inherits a partial
+   * count from the old one.
+   */
+  setReviewCadence(reviewEveryTurns: number, reviewEverySteps: number): void {
+    this.reviewEveryTurns = Math.max(1, reviewEveryTurns)
+    this.reviewEverySteps = Math.max(0, reviewEverySteps)
+    this.stepsSinceReview.clear()
+    this.turnsSinceReview.clear()
   }
 
   /**
@@ -586,7 +626,20 @@ export class SessionTranscriptObserver {
     // input) and this trigger reads no latch. The ordering that matters is
     // firing before the reviewable-gate return below and before the
     // reply-complete gate at the bottom, so both session kinds observe it.
-    if (isHumanInputEvent(event)) this.options.onUserTurnStart?.(sessionId)
+    if (isHumanInputEvent(event)) {
+      this.options.onUserTurnStart?.(sessionId)
+      // A new user turn restarts the STEP clock. The turn clock counts
+      // completed turns and is reset by its own review, so clearing it here
+      // would keep it below its interval forever on standard sessions.
+      this.stepsSinceReview.delete(sessionId)
+    }
+    // Fork addition — step clock: a step is COMPLETE only once the next step
+    // starts (same completeness guarantee turn/end gives the turn clock), so
+    // the review fires here and never while counting assistant/tool events.
+    if (event.type === 'step/start' && this.reviewEverySteps > 0) {
+      this.maybeReviewOnStep(sessionId, events)
+      return
+    }
     if (isReviewableTurnEnd(event)) {
       // Stepped-turn gate: the arriving turn/end must be the latest closed turn
       // that entered at least one model step (dsh semantics — no-step turns from
@@ -604,6 +657,15 @@ export class SessionTranscriptObserver {
       if (event.type === 'turn/end' && event.data.reason.kind === 'completed') {
         this.options.onCompletedTurnEnd?.(sessionId)
       }
+      // A turn boundary always restarts the step clock; the turn clock counts
+      // this completed turn and reviews only when its interval is reached.
+      this.stepsSinceReview.delete(sessionId)
+      const turnsSince = (this.turnsSinceReview.get(sessionId) ?? 0) + 1
+      if (turnsSince < this.reviewEveryTurns) {
+        this.turnsSinceReview.set(sessionId, turnsSince)
+        return
+      }
+      this.turnsSinceReview.delete(sessionId)
       const delta = this.rendererFor(sessionId).update(events)
       if (delta !== undefined) this.options.onDelta(sessionId, delta)
       return
@@ -634,6 +696,25 @@ export class SessionTranscriptObserver {
     if (delta !== undefined) this.options.onDelta(sessionId, delta)
   }
 
+  /**
+   * Step clock (fork addition): count the step that just started. When the
+   * count exceeds the configured interval, the PREVIOUS interval's steps are
+   * complete — render and review them now, then restart the count at the
+   * step that is beginning. "Every 3" therefore means every 3 completed
+   * steps since the last review, not absolute step indexes 3/6/9.
+   */
+  private maybeReviewOnStep(sessionId: string, events: readonly SessionEvent[]): void {
+    const started = (this.stepsSinceReview.get(sessionId) ?? 0) + 1
+    if (started <= this.reviewEverySteps) {
+      this.stepsSinceReview.set(sessionId, started)
+      return
+    }
+    this.stepsSinceReview.set(sessionId, 1)
+    const delta = this.rendererFor(sessionId).update(events)
+    // `willContinue` marks a mid-turn review: the agent is still working.
+    if (delta !== undefined) this.options.onDelta(sessionId, { ...delta, willContinue: true })
+  }
+
   /** Lazy per-session renderer creation, shared by both trigger modes. */
   private rendererFor(sessionId: string): DeltaRenderer {
     let renderer = this.renderers.get(sessionId)
@@ -654,6 +735,8 @@ export class SessionTranscriptObserver {
     this.renderers.delete(sessionId)
     this.pendingSeeds.delete(sessionId)
     this.turnEndSessions.delete(sessionId)
+    this.stepsSinceReview.delete(sessionId)
+    this.turnsSinceReview.delete(sessionId)
   }
 
   /**

@@ -71,12 +71,26 @@ import type {
   LlmReasoningEffortInfo,
   LlmResolvedModelInfo,
   StreamChunk,
+  TokenUsage,
 } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { createEmissionGuard } from './emission-guard.js'
 import type { EmissionGuard } from './emission-guard.js'
 import type { Delta } from './transcript.js'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface GenerateOptions {
+    /**
+     * Internal marker (fork addition): this request is the advisor's private
+     * review call, not primary-agent output. Stream-interception plugins
+     * (TTSR stream rules) must skip these — the reviewer's own wording is not
+     * the user's transcript and must never be rewritten or retried by a rule.
+     * Model-hidden: adapters never send it to a provider.
+     */
+    readonly advisorInternal?: true
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Contracts
@@ -173,6 +187,13 @@ export interface AdvisorRuntimeOptions {
    * omitted entirely.
    */
   readonly reasoningEffort?: string
+  /**
+   * Append-only reviewer-history budget in estimated tokens (fork addition,
+   * config key `historyMaxTokens`; default 1,000,000). When the next exchange
+   * would cross it the whole conversation is reset — never trimmed, because a
+   * trim rewrites the cached prefix at the cut. 0 disables history entirely.
+   */
+  readonly historyMaxTokens?: number
   /** The llm service (`ctx.llm`); injectable for tests. */
   readonly llm: AdvisorLlm
   /**
@@ -186,6 +207,13 @@ export interface AdvisorRuntimeOptions {
    * (accepted = delivered to T6; suppressed notes are dropped silently).
    */
   readonly onNote: (note: AdviceNote) => void
+  /**
+   * Optional per-attempt trajectory sink (fork addition). Called once for
+   * every completed model attempt — notes, silent reviews, failures and
+   * aborts — for the Advisor tab and the cache-hit readout. Never throws into
+   * the drain (contained by the runtime).
+   */
+  readonly onTurn?: (record: AdvisorTurnRecord) => void
   readonly logger?: AdvisorRuntimeLogger
 }
 
@@ -219,15 +247,69 @@ const MAX_TRANSIENT_ATTEMPTS = 1
 /** Consecutive dropped deltas after which the pending backlog is flushed (KD-5). */
 const MAX_CONSECUTIVE_DROPS = 3
 /**
- * Upper bound for the append-only reviewer conversation (~15k tokens). Larger
- * histories buy continuity at the price of re-reading the whole session on
- * every review; the bound exists so a long session cannot make each call
- * arbitrarily expensive. Crossing it RESETS the conversation (never trims it):
- * dropping the oldest turns in place would rewrite the message prefix and
- * invalidate the provider's cache from the cut onward, which is the exact cost
- * this history exists to avoid.
+ * Default budget for the append-only reviewer conversation, in ESTIMATED
+ * tokens (fork addition; configurable through `historyMaxTokens`). One
+ * million is the "keep the session's history" default: it is far above any
+ * turn count a normal session reaches, so the reset below is a safety valve
+ * rather than a routine event. Crossing the budget RESETS the conversation
+ * wholesale (never trims): trimming rewrites the prefix at the cut and forces
+ * a full re-prefill, which is the cost the history exists to remove.
  */
-const ADVISOR_HISTORY_MAX_CHARS = 60_000
+const ADVISOR_HISTORY_MAX_TOKENS_DEFAULT = 1_000_000
+/**
+ * Non-empty assistant placeholder stored for a completed call whose reply had
+ * no text (an EMPTY_RESPONSE). The turn WAS part of what the provider saw, so
+ * dropping it would both desync the stored conversation and leave two
+ * consecutive user messages in the next request — a shape strict
+ * user/assistant-alternation providers reject as a 400.
+ */
+const EMPTY_REPLY_PLACEHOLDER = '(no reply)'
+/**
+ * Rough token estimate for the history budget: ~4 characters per token for
+ * prose and code. Exact counts are model-specific; this number only decides
+ * when the conversation starts over, so an approximation is the right trade.
+ */
+function estimateTokens(chars: number): number {
+  return Math.ceil(chars / 4)
+}
+
+/** Provider-reported accounting for one advisor call (cache fields optional). */
+export interface AdvisorTurnUsage {
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens?: number
+  readonly cacheWriteTokens?: number
+  readonly reasoningTokens?: number
+  readonly totalTokens?: number
+}
+
+/**
+ * One entry of the advisor's own trajectory (fork addition; served to the
+ * Advisor tab by `/api/advisor/trajectory`). One record per model ATTEMPT —
+ * a retry is its own entry — so the tab can show exactly what each call paid.
+ */
+export interface AdvisorTurnRecord {
+  /** Epoch-ms when the attempt started. */
+  readonly at: number
+  /** Wall-clock duration of the attempt. */
+  readonly durationMs: number
+  /** What the attempt produced. */
+  readonly outcome: 'note' | 'no-note' | 'failure' | 'aborted'
+  /** Severity of an accepted note. */
+  readonly severity?: AdviceNote['severity']
+  /** Accepted note body (possibly capped). */
+  readonly note?: string
+  /** Characters of the reviewed transcript delta. */
+  readonly deltaChars: number
+  /** Estimated history tokens BEFORE this call (what the provider re-read). */
+  readonly historyTokens: number
+  /** Characters in the system prompt. */
+  readonly systemChars: number
+  /** Provider-reported usage; absent when the call failed before usage. */
+  readonly usage?: AdvisorTurnUsage
+  /** Failure detail (`code: message`) for a failed attempt. */
+  readonly error?: string
+}
 
 // ---------------------------------------------------------------------------
 // KD-2 — JSON-frame note extraction
@@ -529,8 +611,16 @@ export class AdvisorRuntime {
    * point to the front and forces a full re-prefill.
    */
   private readonly history: AdvisorHistoryMessage[] = []
-  /** Total characters stored in {@link history} (the maintenance budget). */
+  /** Total characters stored in {@link history}. */
   private historyChars = 0
+  /** Estimated tokens stored in {@link history} (the maintenance budget). */
+  private historyTokens = 0
+  /** Configured history budget in estimated tokens (default 1M). */
+  private readonly historyMaxTokens: number
+  /** Optional per-attempt trajectory sink (Advisor tab). */
+  private readonly onTurn: ((record: AdvisorTurnRecord) => void) | undefined
+  /** Usage reported by the most recent `llm.stream` attempt (cache fields included). */
+  private lastUsage: TokenUsage | undefined
 
   private readonly queue: Delta[] = []
   private state: AdvisorRuntimeStatus = 'running'
@@ -568,6 +658,8 @@ export class AdvisorRuntime {
     this.retryBackoffMs = options.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS
     this.callTimeoutMs = options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
     this.maxQueued = options.maxQueued ?? DEFAULT_MAX_QUEUED
+    this.historyMaxTokens = options.historyMaxTokens ?? ADVISOR_HISTORY_MAX_TOKENS_DEFAULT
+    this.onTurn = options.onTurn
     this.llm = options.llm
     this.guard = options.guard ?? createEmissionGuard()
     this.onNote = options.onNote
@@ -799,10 +891,55 @@ export class AdvisorRuntime {
     return { kind: 'drop' }
   }
 
-  /** One model call: build options, stream text, extract the note (KD-2). */
+  /**
+   * One model call with trajectory accounting: times the attempt, captures
+   * the provider-reported usage, and reports one {@link AdvisorTurnRecord}
+   * for the Advisor tab — notes, silent reviews, failures and aborts alike.
+   * A retry is a separate call, so each entry shows exactly what that attempt
+   * paid.
+   */
   private async callModel(delta: Delta): Promise<CallResult> {
+    const startedAt = Date.now()
+    const historyTokens = this.historyTokens
+    const deltaChars = delta.markdown.length
+    const result = await this.callModelOnce(delta)
+    const usage = this.lastUsage
+    const record: AdvisorTurnRecord = {
+      at: startedAt,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      outcome: result.kind,
+      deltaChars,
+      historyTokens,
+      systemChars: this.systemPrompt.length,
+      ...(result.kind === 'note' ? { severity: result.note.severity, note: result.note.note } : {}),
+      ...(result.kind === 'failure'
+        ? { error: `${result.failure.code}: ${result.failure.message}` }
+        : {}),
+      ...(usage === undefined ? {} : {
+        usage: {
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          ...(usage.cacheReadTokens === undefined ? {} : { cacheReadTokens: usage.cacheReadTokens }),
+          ...(usage.cacheWriteTokens === undefined ? {} : { cacheWriteTokens: usage.cacheWriteTokens }),
+          ...(usage.reasoningTokens === undefined ? {} : { reasoningTokens: usage.reasoningTokens }),
+          ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
+        },
+      }),
+    }
+    try {
+      this.onTurn?.(record)
+    } catch (error) {
+      // The trajectory sink is observational: it must never break the drain.
+      this.logger.debug('advisor: trajectory sink threw — contained', { error })
+    }
+    return result
+  }
+
+  /** One model call: build options, stream text, extract the note (KD-2). */
+  private async callModelOnce(delta: Delta): Promise<CallResult> {
     let text = ''
     let finish: FinishReason | undefined
+    this.lastUsage = undefined
     // Call-level deadline (dsh-timeout): fuses the runtime's dispose signal
     // with a whole-call timer. The fused signal is passed to the provider
     // (AbortSignal honored) AND raced per chunk below, so a hung stream cannot
@@ -848,6 +985,7 @@ export class AdvisorRuntime {
         if (next.done) break
         const chunk = next.value
         if (chunk.type === 'text-delta') text += chunk.text
+        else if (chunk.type === 'usage') this.lastUsage = chunk.usage
         else if (chunk.type === 'finish') finish = chunk.reason
       }
     } catch (error) {
@@ -993,31 +1131,46 @@ export class AdvisorRuntime {
    * or is suppressed by the emission guard — because the provider processed
    * that turn and the stored conversation must match what it saw.
    *
-   * Budget behavior: crossing {@link ADVISOR_HISTORY_MAX_CHARS} clears the
+   * An empty reply (EMPTY_RESPONSE) stores a non-empty placeholder assistant
+   * turn instead of nothing: dropping it would desync the stored conversation
+   * AND leave two consecutive user messages, which strict
+   * user/assistant-alternation providers reject as a 400.
+   *
+   * Budget behavior: crossing the configured token budget clears the
    * conversation and starts over. Trimming the oldest turns in place is
    * deliberately not an option: it rewrites the prefix at the cut and makes
    * the provider re-prefill everything after it, which is the cost this
    * history exists to remove. One cold call after a reset is cheaper.
    */
   private appendHistory(userText: string, userMessage: AdvisorHistoryMessage, replyText: string): void {
-    const hasReply = replyText.trim().length > 0
-    const size = userText.length + (hasReply ? replyText.length : 0)
-    if (this.historyChars + size > ADVISOR_HISTORY_MAX_CHARS) {
+    // 0 = history disabled: nothing is stored, so every review starts cold.
+    // The clear also covers a caller that shrank the budget between calls.
+    if (this.historyMaxTokens <= 0) {
       this.history.length = 0
       this.historyChars = 0
+      this.historyTokens = 0
+      return
+    }
+    const hasReply = replyText.trim().length > 0
+    const replyBody = hasReply ? replyText : EMPTY_REPLY_PLACEHOLDER
+    const sizeChars = userText.length + replyBody.length
+    const sizeTokens = estimateTokens(sizeChars)
+    if (this.historyTokens + sizeTokens > this.historyMaxTokens) {
+      this.history.length = 0
+      this.historyChars = 0
+      this.historyTokens = 0
       this.logger.debug('advisor: reviewer history reset (budget)', {
-        maxChars: ADVISOR_HISTORY_MAX_CHARS,
-        incomingChars: size,
+        maxTokens: this.historyMaxTokens,
+        incomingTokens: sizeTokens,
       })
     }
     this.history.push(userMessage)
-    if (hasReply) {
-      this.history.push(createAssistantMessage({
-        content: [{ type: 'text', text: replyText }],
-        source: { provider: this.provider, model: this.model },
-      }))
-    }
-    this.historyChars += size
+    this.history.push(createAssistantMessage({
+      content: [{ type: 'text', text: replyBody }],
+      source: { provider: this.provider, model: this.model },
+    }))
+    this.historyChars += sizeChars
+    this.historyTokens += sizeTokens
   }
 
   private buildOptions(
@@ -1061,6 +1214,10 @@ export class AdvisorRuntime {
       // extraction-side cap ADVISOR_NOTE_MAX_CHARS, and latency stays
       // bounded by the call deadline.
       signal,
+      // Fork addition: marks this as the reviewer's private call so stream
+      // rules (TTSR) never intercept, rewrite, or retry it. Declared through
+      // module augmentation above; adapters never forward it on the wire.
+      advisorInternal: true,
       // KD-5: `purpose` is a closed union ('compaction' | 'session-title'); an
       // advisor call is an ordinary conversation request and leaves it unset.
     }

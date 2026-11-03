@@ -58,6 +58,9 @@ const baseConfig = (): ResolvedAdvisorConfig => ({
   systemPrompt: '',
   immuneTurns: 3,
   maxDeltaMessages: 60,
+  historyMaxTokens: 1_000_000,
+  reviewEveryTurns: 1,
+  reviewEverySteps: 3,
   nextPrompt: true,
   defaultEnabled: true,
 })

@@ -1142,3 +1142,74 @@ describe('delta safety budget and instruction exclusion (fork addition)', () => 
     expect(delta!.markdown).not.toContain(secret)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Fork addition — review cadence clocks (turn clock + intra-turn step clock)
+// ---------------------------------------------------------------------------
+
+describe('SessionTranscriptObserver — review cadence (fork addition)', () => {
+  /** One turn with N steps: each step starts, replies, and ends. */
+  function steppedTurn(turn: number, steps: number): EventSpec[] {
+    const specs: EventSpec[] = [turnStart(turn), userMessage(`go ${turn}`)]
+    for (let step = 1; step <= steps; step++) {
+      specs.push(stepStart(turn, step), assistantMessage(`a${step}`), stepEnd(turn, step))
+    }
+    specs.push(turnEnd(turn))
+    return specs
+  }
+
+  it('fires a mid-turn review on the NEXT step start, once N steps are complete', () => {
+    const deltas: Array<{ markdown: string; willContinue: boolean }> = []
+    const observer = new SessionTranscriptObserver({
+      maxDeltaMessages: 60,
+      reviewEverySteps: 3,
+      reviewEveryTurns: 1,
+      onDelta: (_sessionId, delta) => deltas.push({ markdown: delta.markdown, willContinue: delta.willContinue }),
+    })
+
+    feed(observer, 's1', steppedTurn(1, 4))
+
+    // Step 4's start completes steps 1-3 → one mid-turn review of a1..a3.
+    const midTurn = deltas.find((delta) => delta.willContinue)
+    expect(midTurn).toBeDefined()
+    expect(midTurn!.markdown).toContain('a1')
+    expect(midTurn!.markdown).toContain('a2')
+    expect(midTurn!.markdown).toContain('a3')
+    expect(midTurn!.markdown).not.toContain('a4')
+    // turn/end still reviews the remainder as a normal turn delta.
+    const turnEndDelta = deltas.at(-1)!
+    expect(turnEndDelta.willContinue).toBe(false)
+    expect(turnEndDelta.markdown).toContain('a4')
+  })
+
+  it('does not fire the step clock when reviewEverySteps is 0', () => {
+    const deltas: Array<{ willContinue: boolean }> = []
+    const observer = new SessionTranscriptObserver({
+      maxDeltaMessages: 60,
+      reviewEverySteps: 0,
+      reviewEveryTurns: 1,
+      onDelta: (_sessionId, delta) => deltas.push({ willContinue: delta.willContinue }),
+    })
+
+    feed(observer, 's1', steppedTurn(1, 5))
+    expect(deltas).toHaveLength(1)
+    expect(deltas[0]!.willContinue).toBe(false)
+  })
+
+  it('the turn clock reviews only every Nth completed turn', () => {
+    const deltas: Array<{ markdown: string }> = []
+    const observer = new SessionTranscriptObserver({
+      maxDeltaMessages: 60,
+      reviewEverySteps: 0,
+      reviewEveryTurns: 2,
+      onDelta: (_sessionId, delta) => deltas.push({ markdown: delta.markdown }),
+    })
+
+    feed(observer, 's1', [...steppedTurn(1, 1), ...steppedTurn(2, 1)])
+
+    // Turn 1 was skipped; the turn-2 review carries BOTH turns' messages.
+    expect(deltas).toHaveLength(1)
+    expect(deltas[0]!.markdown).toContain('go 1')
+    expect(deltas[0]!.markdown).toContain('go 2')
+  })
+})

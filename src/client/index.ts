@@ -58,6 +58,8 @@ import { AdvisorSessionModelController, AdvisorSettingsStore, refreshIfLoaded } 
 import { NextPromptOverlay } from './next-prompt-overlay.tsx'
 import { AdvisorSuggestionController } from './next-prompt-store.ts'
 import { AdvisorTurnTail } from './advisor-turn-tail.tsx'
+import { AdvisorTrajectoryView } from './advisor-trajectory-view.tsx'
+import { advisorTrajectoryControllerFor } from './advisor-trajectory-store.ts'
 import { advisorNotesControllerFor } from './advisor-notes-store.ts'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { en, zh, type AdvisorKey } from './locales.ts'
@@ -75,6 +77,11 @@ export type {
   AdvisorSuggestionController, AdvisorSuggestionState,
 } from './next-prompt-store.ts'
 export type { AdvisorNotesController, AdvisorNotesState, AdvisorNote } from './advisor-notes-store.ts'
+export type {
+  AdvisorTrajectoryController,
+  AdvisorTrajectoryState,
+  AdvisorTrajectoryTurn,
+} from './advisor-trajectory-store.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -126,6 +133,21 @@ export const inject = ['slots', 'locale', 'connection', 'settingsSchema', 'remot
  */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'advisor: copy dictionaries')
+
+  /**
+   * Header tab label, resolved at projection time. The slot's `label` seat has
+   * no locale function (unlike a component's injected `t`), so the tab reads
+   * the active locale directly and falls back to English when the runtime does
+   * not expose one (spec harnesses).
+   */
+  const advisorTabLabel = (): string => {
+    try {
+      const active = (ctx.locale as { getLocale?: () => { readonly active?: string } }).getLocale?.()?.active
+      return active === 'zh' ? zh.advisorTab : en.advisorTab
+    } catch {
+      return en.advisorTab
+    }
+  }
 
   const connection = ctx.get('connection') as ConnectionHandle
   // The store reads/writes the advisor config over the connection's generic
@@ -331,5 +353,30 @@ export function apply(ctx: ClientContext): void {
         }
       },
     }, AdvisorTurnTail)
+  })
+
+  // Fork addition: the Advisor tab — the reviewer's OWN session ledger beside
+  // Chat and Trajectory (`conversation.view` is the header's view roster; a
+  // fresh id adds a tab). It shows one row per model attempt: prompt tokens,
+  // how many came from the provider's prefix cache, output tokens, latency,
+  // and the history that was re-sent — plus the session-wide cache hit rate
+  // and the configured history budget. Polled read-only from
+  // `/api/advisor/trajectory`; no model calls are involved.
+  ctx.slots.inject('conversation.view' as never, function* () {
+    yield (ctx.slots as any).register({
+      name: 'conversation.view',
+      id: `${BUNDLE_NAME}#advisor-trajectory`,
+      order: 20,
+      locale: NS,
+      label: () => advisorTabLabel(),
+      inject: (sessionId: string) => {
+        const trajectoryController = advisorTrajectoryControllerFor(sessionId, connection.rpc)
+        return {
+          sessionId,
+          controller: trajectoryController,
+          hooks: { snapshot: trajectoryController.store },
+        }
+      },
+    }, AdvisorTrajectoryView)
   })
 }

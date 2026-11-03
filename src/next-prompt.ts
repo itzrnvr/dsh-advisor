@@ -338,6 +338,12 @@ export class NextPromptManager {
         immuneTurns: 0,
         maxDeltaMessages: 60,
         callTimeoutMinutes: 10,
+        // Fork additions: required on the resolved contract — inert here
+        // because the disabled gate blocks every prediction call, but the
+        // concrete schema defaults keep the arming signature total.
+        historyMaxTokens: 1_000_000,
+        reviewEveryTurns: 1,
+        reviewEverySteps: 3,
         nextPrompt: false,
         // Fail-closed placeholder (GitHub issue #124 adds the plain-boolean
         // field): the disabled gate already blocks every prediction, so the

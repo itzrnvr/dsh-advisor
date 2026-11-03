@@ -101,6 +101,12 @@ export interface AdvisorConfigView {
   maxDeltaMessages: number
   /** Reviewer call timeout in minutes (integer ≥ 1, default 10); bounds one advisor model call. */
   callTimeoutMinutes?: number
+  /** Append-only reviewer-history budget in estimated tokens (fork addition; default 1M, 0 = off). */
+  historyMaxTokens?: number
+  /** Turn-clock cadence: review every Nth completed turn (fork addition; default 1). */
+  reviewEveryTurns?: number
+  /** Step-clock cadence: review every Nth model step inside a turn (fork addition; default 3, 0 = off). */
+  reviewEverySteps?: number
   /** Main-session-only scope (fork addition); default true excludes subagent sessions. */
   mainSessionOnly?: boolean
   /**
@@ -203,6 +209,12 @@ export interface AdvisorDraft {
   maxDeltaMessages?: number
   /** Reviewer call timeout in minutes (integer ≥ 1, default 10). Cleared input → undefined (left unchanged on apply). */
   callTimeoutMinutes?: number
+  /** Append-only history budget in estimated tokens (fork addition; default 1M, 0 = off). */
+  historyMaxTokens?: number
+  /** Turn-clock cadence (fork addition; default 1). */
+  reviewEveryTurns?: number
+  /** Step-clock cadence (fork addition; default 3, 0 = off). */
+  reviewEverySteps?: number
   /** Main-session-only scope (fork addition); default true excludes subagent sessions. */
   mainSessionOnly?: boolean
   /** Opt-in prose fallback (KD-I2, issue #102); default false. */
@@ -310,7 +322,17 @@ export interface AdvisorSettingsState {
 
 /** The schema-defaulted advisor config used when no config resolves. */
 function defaultDraft(): AdvisorDraft {
-  return { systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 0, callTimeoutMinutes: 10, mainSessionOnly: true }
+  return {
+    systemPrompt: '',
+    immuneTurns: 3,
+    maxDeltaMessages: 0,
+    callTimeoutMinutes: 10,
+    // Fork additions: schema-default cadence/history values.
+    historyMaxTokens: 1_000_000,
+    reviewEveryTurns: 1,
+    reviewEverySteps: 3,
+    mainSessionOnly: true,
+  }
 }
 
 /** A non-empty string field (whitespace-only reads as absent, mirroring the hard gate). */
@@ -338,6 +360,11 @@ function draftOfConfig(config: AdvisorConfigView | undefined): AdvisorDraft {
     // Reviewer call deadline (fork addition): the seed shows the effective
     // value; an omitted containment wire reads the schema default (10).
     callTimeoutMinutes: numberField(config?.callTimeoutMinutes, 10),
+    // Fork additions: the seed shows the effective budget/cadence; an omitted
+    // containment wire reads the schema defaults (1M / 1 / 3).
+    historyMaxTokens: numberField(config?.historyMaxTokens, 1_000_000),
+    reviewEveryTurns: numberField(config?.reviewEveryTurns, 1),
+    reviewEverySteps: numberField(config?.reviewEverySteps, 3),
     // Fork addition: an omitted containment wire reads the schema default (true).
     mainSessionOnly: typeof config?.mainSessionOnly === 'boolean' ? config.mainSessionOnly : true,
     // The scalar fields show the effective values: the gateway returns the
@@ -857,6 +884,33 @@ export class AdvisorSettingsStore {
     this.setField('callTimeoutMinutes', this.clampInt(value, this.store.getSnapshot().draft.callTimeoutMinutes ?? 10, 1, 60))
   }
 
+  /** Set the append-only history budget in estimated tokens (fork addition; int ≥ 0, 0 = off). */
+  setHistoryMaxTokens(value: number | undefined): void {
+    if (value === undefined) {
+      this.clearField('historyMaxTokens')
+      return
+    }
+    this.setField('historyMaxTokens', this.clampInt(value, this.store.getSnapshot().draft.historyMaxTokens ?? 1_000_000, 0, 10_000_000))
+  }
+
+  /** Set the turn-clock cadence (fork addition; int 1..50). */
+  setReviewEveryTurns(value: number | undefined): void {
+    if (value === undefined) {
+      this.clearField('reviewEveryTurns')
+      return
+    }
+    this.setField('reviewEveryTurns', this.clampInt(value, this.store.getSnapshot().draft.reviewEveryTurns ?? 1, 1, 50))
+  }
+
+  /** Set the step-clock cadence (fork addition; int 0..50, 0 = off). */
+  setReviewEverySteps(value: number | undefined): void {
+    if (value === undefined) {
+      this.clearField('reviewEverySteps')
+      return
+    }
+    this.setField('reviewEverySteps', this.clampInt(value, this.store.getSnapshot().draft.reviewEverySteps ?? 3, 0, 50))
+  }
+
   /** Set the opt-in prose fallback (KD-I2, issue #102). */
   setProseFallback(value: boolean): void {
     this.setField('proseFallback', value)
@@ -999,7 +1053,7 @@ export class AdvisorSettingsStore {
    */
   private patchFor(draft: AdvisorDraft): Record<string, unknown> {
     const patch: Record<string, unknown> = {}
-    const always = ['systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'callTimeoutMinutes', 'mainSessionOnly', 'proseFallback', 'nextPrompt', 'defaultEnabled'] as const
+    const always = ['systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'callTimeoutMinutes', 'historyMaxTokens', 'reviewEveryTurns', 'reviewEverySteps', 'mainSessionOnly', 'proseFallback', 'nextPrompt', 'defaultEnabled'] as const
     for (const key of always) {
       const next = draft[key]
       // A cleared number input (undefined) means "leave the stored value

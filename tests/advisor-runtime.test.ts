@@ -43,7 +43,7 @@ import { LlmRuntime, LlmAdapter, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmFailure, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { AdvisorRuntime, ADVISOR_NOTE_MAX_CHARS, extractAdviceNote, extractProseFallbackNote } from '../src/advisor-runtime'
-import type { AdvisorLlm, AdvisorRuntimeOptions, AdvisorRuntimeStatus, AdviceNote } from '../src/advisor-runtime'
+import type { AdvisorLlm, AdvisorRuntimeOptions, AdvisorRuntimeStatus, AdvisorTurnRecord, AdviceNote } from '../src/advisor-runtime'
 import type { Delta } from '../src/transcript'
 import { apply } from '../src/index'
 import type { AdvisorConfig } from '../src/config'
@@ -409,8 +409,8 @@ describe('AdvisorRuntime — drain calls llm.stream once per delta with expected
     // Closed whitelist on both calls (T2-style): call 0 has no reasoningEffort
     // (the failure is not a verdict), call 1 re-advertises 'off' after the
     // fresh resolution — same key set minus/plus reasoningEffort.
-    expect(Object.keys(llm.calls[0]!).sort()).toEqual(['messages', 'model', 'provider', 'sessionId', 'signal', 'system'])
-    expect(Object.keys(llm.calls[1]!).sort()).toEqual(['messages', 'model', 'provider', 'reasoningEffort', 'sessionId', 'signal', 'system'])
+    expect(Object.keys(llm.calls[0]!).sort()).toEqual(['advisorInternal', 'messages', 'model', 'provider', 'sessionId', 'signal', 'system'])
+    expect(Object.keys(llm.calls[1]!).sort()).toEqual(['advisorInternal', 'messages', 'model', 'provider', 'reasoningEffort', 'sessionId', 'signal', 'system'])
     // Zero tools contract: no advisor call ever carries a tools key.
     expect('tools' in llm.calls[0]!).toBe(false)
     expect('tools' in llm.calls[1]!).toBe(false)
@@ -564,7 +564,7 @@ describe('AdvisorRuntime — minimal request shape (AC-1 closed whitelist)', () 
     expect(llm.calls).toHaveLength(1)
     const options = llm.calls[0]!
     // Closed whitelist (AC-1): the exact sorted key set, nothing more.
-    expect(Object.keys(options).sort()).toEqual(['messages', 'model', 'provider', 'reasoningEffort', 'sessionId', 'signal', 'system'])
+    expect(Object.keys(options).sort()).toEqual(['advisorInternal', 'messages', 'model', 'provider', 'reasoningEffort', 'sessionId', 'signal', 'system'])
     // Zero-tools contract; no temperature/stop tuning; no purpose (KD-5).
     expect('tools' in options).toBe(false)
     expect('temperature' in options).toBe(false)
@@ -588,7 +588,7 @@ describe('AdvisorRuntime — minimal request shape (AC-1 closed whitelist)', () 
     expect(llm.calls).toHaveLength(1)
     const options = llm.calls[0]!
     // Closed whitelist minus reasoningEffort (capability 'none' → not advertised).
-    expect(Object.keys(options).sort()).toEqual(['messages', 'model', 'provider', 'sessionId', 'signal', 'system'])
+    expect(Object.keys(options).sort()).toEqual(['advisorInternal', 'messages', 'model', 'provider', 'sessionId', 'signal', 'system'])
     expect('reasoningEffort' in options).toBe(false)
     expect('tools' in options).toBe(false)
     expect('temperature' in options).toBe(false)
@@ -1564,7 +1564,9 @@ describe('AdvisorRuntime — append-only reviewer conversation', () => {
       { chunks: textReply('{"note":"two"}') },
       { chunks: textReply('{"note":"three"}') },
     ])
-    const { runtime } = makeRuntime(llm)
+    // Small budget: two 40k-char deltas (~10k estimated tokens each) cross it,
+    // so the second call wipes the first exchange.
+    const { runtime } = makeRuntime(llm, { historyMaxTokens: 15_000 })
 
     runtime.enqueue(delta(`first ${big}`))
     await runtime.waitForDrain()
@@ -1580,5 +1582,101 @@ describe('AdvisorRuntime — append-only reviewer conversation', () => {
     expect(third.messages).toHaveLength(3)
     expect(textOfMessage(third.messages[0]!)).toContain('second')
     expect(textOfMessage(third.messages[0]!)).not.toContain('first')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Append-only history edge cases + trajectory accounting (fork additions)
+// ---------------------------------------------------------------------------
+
+/** A text reply that also reports provider usage (cache fields included). */
+const replyWithUsage = (
+  text: string,
+  usage: { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalTokens?: number },
+): readonly StreamChunk[] => [
+  { type: 'text-delta', index: 0, text },
+  { type: 'usage', usage },
+  { type: 'finish', reason: { kind: 'stop' } },
+]
+
+describe('AdvisorRuntime — history edge cases and trajectory accounting', () => {
+  it('stores nothing when the history budget is 0 (every review is cold)', async () => {
+    const llm = new FakeLlm([
+      { chunks: textReply('{"note":"one"}') },
+      { chunks: textReply('{"note":"two"}') },
+    ])
+    const { runtime } = makeRuntime(llm, { historyMaxTokens: 0 })
+
+    runtime.enqueue(delta('first update'))
+    await runtime.waitForDrain()
+    runtime.enqueue(delta('second update'))
+    await runtime.waitForDrain()
+
+    expect(llm.calls).toHaveLength(2)
+    expect(llm.calls[1]!.messages).toHaveLength(1)
+    expect(textOfMessage(llm.calls[1]!.messages[0]!)).toContain('second update')
+  })
+
+  it('stores a placeholder assistant turn for an empty reply (alternation preserved)', async () => {
+    const llm = new FakeLlm([
+      { chunks: emptyReply('stop') },
+      { chunks: textReply('{"note":"second"}') },
+    ])
+    const { runtime } = makeRuntime(llm)
+
+    runtime.enqueue(delta('first update'))
+    await runtime.waitForDrain()
+    runtime.enqueue(delta('second update'))
+    await runtime.waitForDrain()
+
+    expect(llm.calls).toHaveLength(2)
+    const second = llm.calls[1]!
+    expect(second.messages).toHaveLength(3)
+    expect(second.messages[1]!.role).toBe('assistant')
+    expect(textOfMessage(second.messages[1]!)).toBe('(no reply)')
+  })
+
+  it('reports provider usage and cache reads to the trajectory sink', async () => {
+    const turns: AdvisorTurnRecord[] = []
+    const llm = new FakeLlm([
+      {
+        chunks: replyWithUsage('{"note":"check the cache","severity":"concern"}', {
+          inputTokens: 400,
+          outputTokens: 20,
+          cacheReadTokens: 1600,
+          cacheWriteTokens: 0,
+          totalTokens: 2020,
+        }),
+      },
+    ])
+    const { runtime } = makeRuntime(llm, { onTurn: (record) => turns.push(record) })
+
+    runtime.enqueue(delta('update'))
+    await runtime.waitForDrain()
+
+    expect(turns).toHaveLength(1)
+    expect(turns[0]!.outcome).toBe('note')
+    expect(turns[0]!.severity).toBe('concern')
+    expect(turns[0]!.usage).toMatchObject({
+      inputTokens: 400,
+      outputTokens: 20,
+      cacheReadTokens: 1600,
+      totalTokens: 2020,
+    })
+    expect(turns[0]!.historyTokens).toBe(0)
+  })
+
+  it('reports a failed attempt with its error and no usage', async () => {
+    const turns: AdvisorTurnRecord[] = []
+    const llm = new FakeLlm([{ throw: new Error('boom') }])
+    const { runtime } = makeRuntime(llm, { onTurn: (record) => turns.push(record) })
+
+    runtime.enqueue(delta('update'))
+    await runtime.waitForDrain()
+
+    expect(turns.length).toBeGreaterThan(0)
+    expect(turns[0]!.outcome).toBe('failure')
+    expect(turns[0]!.error).toContain('boom')
+    expect(turns[0]!.usage).toBeUndefined()
   })
 })
