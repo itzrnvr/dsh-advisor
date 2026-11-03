@@ -1,6 +1,6 @@
 /**
- * Advisor session fallback strip (fork addition) — the surface for notes that
- * carry NO turn number.
+ * Advisor live-notes strip (fork addition) — the surface for the notes of a
+ * turn that has NOT closed yet.
  *
  * Turn-scoped notes render inline in the reviewed turn's tail. Notes
  * committed while a turn is still OPEN (mid-turn step reviews, and sessions
@@ -8,12 +8,15 @@
  * turn closes — the next poll then attributes them to that turn and the tail
  * takes over (one owner at a time).
  *
- * HEIGHT IS BOUNDED (fork fix): the strip sits BELOW the composer card in the
- * dock (and in the sidechat split), so it must never push the composer up.
- * Rows render COLLAPSED by default (header line only) and the section itself
- * is capped with an internal scrollbar — even a wall of 4000-char notes keeps
- * the composer in place. The dismiss button hides the strip for the page
- * lifetime.
+ * SEAT (fork fix, 0.6.43): the host's `conversation.input.dock` — the zone
+ * row ABOVE the composer card's input, beside the host's own todo/queue
+ * rows. It used to be `conversation.composer.dock`, a SIBLING BELOW the
+ * composer card, where the notes pushed the composer up the screen.
+ *
+ * HEIGHT IS BOUNDED: collapsed it is ONE line (title + count); the rows open
+ * on demand inside a height-capped scroll box, so even a wall of notes keeps
+ * the composer exactly where it was. The dismiss button hides the strip for
+ * the page lifetime; a newly arriving concern/blocker lifts it again.
  */
 
 import { useEffect, useState, type ReactNode } from 'react'

@@ -356,12 +356,15 @@ export function apply(ctx: ClientContext): void {
     }, AdvisorTurnTail)
   })
 
-  // Fork addition: fallback strip for TURN-LESS notes only (agentic sessions
-  // that never emit turn/end, so no turn number exists). Turn-tagged notes
-  // render in their turn's tail and never appear here — one owner per note.
-  ctx.slots.inject('conversation.composer.dock' as never, function* () {
+  // Fork addition: the LIVE advisor notes — the notes of the turn that is
+  // STILL RUNNING (a turn tail only exists once the turn closes). They sit in
+  // the host's `conversation.input.dock` — the zone row ABOVE the composer
+  // card's input, beside the host's own todo/queue rows — so live advice
+  // lands in the visible conversation area instead of under the composer,
+  // where it used to push the composer up.
+  ctx.slots.inject('conversation.input.dock' as never, function* () {
     yield (ctx.slots as any).register({
-      name: 'conversation.composer.dock',
+      name: 'conversation.input.dock',
       id: `${BUNDLE_NAME}#notes-strip`,
       order: 30,
       locale: NS,

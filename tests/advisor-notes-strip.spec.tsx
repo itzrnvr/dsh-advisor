@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
 /**
- * Advisor notes strip (fork addition) — the dock entry below the composer.
- * Pins the two load-bearing behaviors:
- * - it owns exactly the TURN-LESS notes (turn === undefined): a turn-tagged
- *   note renders in its turn's tail and must never duplicate here;
- * - rows render COLLAPSED by default (the composer must not be pushed up by
- *   a wall of expanded note bodies) and expand on toggle;
+ * Advisor live-notes strip (fork addition) — the input-dock entry ABOVE the
+ * composer card's input (fork fix 0.6.43; it used to sit below the composer,
+ * where it pushed the composer up). Pins the load-bearing behaviors:
+ * - it owns exactly the notes of a turn that has NOT closed (turn ===
+ *   undefined): a turn-tagged note renders in its turn's tail and must never
+ *   duplicate here;
+ * - collapsed it is ONE line (title + count) — the rows open on demand inside
+ *   a capped box, so the composer never moves;
+ * - a row opens showing its one-line account (source.summary, the dsh-ttsr
+ *   pattern) and expands to the full body;
  * - the dismiss state hides the strip for the page lifetime.
  */
 
