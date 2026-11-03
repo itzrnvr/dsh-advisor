@@ -2,11 +2,18 @@
  * Advisor session fallback strip (fork addition) — the surface for notes that
  * carry NO turn number.
  *
- * Turn-scoped notes render inline in the reviewed turn's tail. Sessions
- * without turn numbering (agentic runs that never emit `turn/end`, so neither
- * `reviewedTurn` nor `lastTurn` exists) would otherwise render NOWHERE — this
- * dock entry shows exactly those untagged notes, and nothing else. Turn-tagged
- * notes never appear here, so there is no duplication.
+ * Turn-scoped notes render inline in the reviewed turn's tail. Notes
+ * committed while a turn is still OPEN (mid-turn step reviews, and sessions
+ * that never emit turn/end) have no tail yet, so they render here until the
+ * turn closes — the next poll then attributes them to that turn and the tail
+ * takes over (one owner at a time).
+ *
+ * HEIGHT IS BOUNDED (fork fix): the strip sits BELOW the composer card in the
+ * dock (and in the sidechat split), so it must never push the composer up.
+ * Rows render COLLAPSED by default (header line only) and the section itself
+ * is capped with an internal scrollbar — even a wall of 4000-char notes keeps
+ * the composer in place. The dismiss button hides the strip for the page
+ * lifetime.
  */
 
 import { useEffect, type ReactNode } from 'react'
@@ -50,6 +57,7 @@ export function AdvisorNotesStrip(props: AdvisorNotesStripProps): ReactNode {
   const { controller, useSnapshot, t } = props
   const status = useSnapshot((s) => s.status)
   const notes = useSnapshot((s) => s.notes)
+  const dismissed = useSnapshot((s) => s.dismissed)
 
   useEffect(() => {
     controller.start()
@@ -57,17 +65,30 @@ export function AdvisorNotesStrip(props: AdvisorNotesStripProps): ReactNode {
   }, [controller])
 
   const untagged = notes.filter((note) => note.turn === undefined)
-  if (status !== 'ready' || untagged.length === 0) return null
-  // Bounded: the strip sits under the composer (and in the sidechat split), so
-  // a long agentic session must not push the composer off-screen.
+  if (status !== 'ready' || dismissed || untagged.length === 0) return null
+  // Bounded twice over: rows render collapsed by default (a header line each,
+  // expanded manually), and the section's height is capped by CSS with an
+  // internal scrollbar — a long agentic session can never push the composer
+  // off-screen.
   const shown = untagged.slice(-MAX_STRIP_NOTES)
   const hidden = untagged.length - shown.length
 
   return (
     <section className={styles.wrap ?? ''} aria-label={t('notesTitle')}>
-      <div className={styles.title ?? ''}>{t('notesTitle')}</div>
+      <div className={styles.title ?? ''}>
+        <span>{t('notesTitle')}</span>
+        <button
+          type="button"
+          className={styles.dismiss ?? ''}
+          aria-label={t('notesDismiss')}
+          title={t('notesDismiss')}
+          onClick={() => { controller.dismiss() }}
+        >
+          ×
+        </button>
+      </div>
       {shown.map((note, index) => (
-        <AdvisorNoteRow key={`${note.at}-${index}`} node={{ data: note }} t={t} />
+        <AdvisorNoteRow key={`${note.at}-${index}`} node={{ data: note }} t={t} defaultCollapsed />
       ))}
       {hidden > 0 && <div className={styles.more ?? ''}>{t('notesMore', { count: hidden })}</div>}
     </section>

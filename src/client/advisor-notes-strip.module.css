@@ -1,20 +1,49 @@
 /* Advisor session fallback strip (fork addition) — the dock entry that shows
- * only turn-less notes (agentic sessions), so they are never dropped on the
- * floor by the turn-tail lookup. */
+ * only turn-less notes (open-turn step reviews, agentic sessions), so they
+ * are never dropped on the floor by the turn-tail lookup. */
 
 .wrap {
+  /* Height bound (fork fix): the strip sits BELOW the composer card, so it
+   * must never push the composer up. Rows render collapsed by default (the
+   * component passes defaultCollapsed); this cap is the hard backstop for
+   * rows the user expands manually — the section scrolls instead of growing. */
+  max-height: 176px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   margin: 6px 0 2px;
   padding-top: 6px;
   border-top: 1px solid var(--dsw-alias-border-subtle, rgba(128, 128, 128, 0.18));
 }
 
 .title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   font-size: 10.5px;
   line-height: 16px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--dsw-alias-label-caption, #6b7280);
 }
+
+.dismiss {
+  border: 0;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dsw-alias-label-caption, #6b7280);
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.dismiss:hover {
+  color: var(--dsw-alias-label-secondary, inherit);
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128, 128, 128, 0.12));
+}
+
 .more {
   margin: 4px 0 0;
   font-size: 10.5px;

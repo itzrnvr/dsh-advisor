@@ -25,6 +25,13 @@ export interface AdvisorNoteData {
 export interface AdvisorNoteRowProps {
   readonly node?: { readonly id?: string; readonly data?: AdvisorNoteData }
   readonly t?: (key: AdvisorKey) => string
+  /**
+   * Start the row collapsed (fork fix): the dock strip renders this row BELOW
+   * the composer, so its rows must never open with a multi-thousand-pixel
+   * body. The turn tails keep the expanded default — they sit in the message
+   * flow, where full height is free.
+   */
+  readonly defaultCollapsed?: boolean
 }
 
 /**
@@ -35,7 +42,7 @@ export interface AdvisorNoteRowProps {
  * @returns the card, or null for a row without data.
  */
 export function AdvisorNoteRow(props: AdvisorNoteRowProps): ReactNode {
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(props.defaultCollapsed === true)
   const data = props.node?.data
   if (data === undefined) return null
   const t = props.t ?? ((key: AdvisorKey) => en[key])

@@ -1,0 +1,63 @@
+// @vitest-environment jsdom
+/**
+ * Advisor turn-tail row (fork addition) — pins the shared note card's default
+ * in the message flow: turn-tail rows render EXPANDED (full note body), while
+ * the dock strip passes defaultCollapsed so its rows open header-only. The
+ * two seats must not drift: a collapsed-default regression here would hide
+ * delivered advice behind a toggle in the flow.
+ */
+
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, render } from '@testing-library/react'
+import { AdvisorTurnTail } from '../src/client/advisor-turn-tail'
+import type { AdvisorNotesController, AdvisorNotesState } from '../src/client/advisor-notes-store'
+
+afterEach(() => { cleanup() })
+
+const note = (at: number, turn?: number) => ({
+  at,
+  severity: 'concern' as const,
+  text: `note body ${at}`,
+  channel: 'commit' as const,
+  ...(turn === undefined ? {} : { turn }),
+})
+
+const state = (notes: readonly unknown[]): AdvisorNotesState => ({
+  status: 'ready',
+  notes: notes as AdvisorNotesState['notes'],
+  enabled: true,
+  runtimeStatus: 'running',
+  expanded: false,
+  dismissed: false,
+})
+
+type TailProps = Parameters<typeof AdvisorTurnTail>[0]
+
+function props(forState: AdvisorNotesState, turn: number): TailProps {
+  return {
+    turn: { turn },
+    seq: 1,
+    sessionId: 's1',
+    controller: { start: vi.fn(), stop: vi.fn() } as unknown as AdvisorNotesController,
+    hooks: { snapshot: {} },
+    t: (key: string) => key,
+    useSnapshot: (selector: (value: AdvisorNotesState) => unknown) => selector(forState),
+  } as unknown as TailProps
+}
+
+describe('AdvisorTurnTail — inline note rows at the reviewed turn', () => {
+  it('renders this turn\'s notes expanded by default (full body visible)', () => {
+    const view = render(<AdvisorTurnTail {...props(state([note(1, 3), note(2, 4)]), 3)} />)
+
+    // Only turn 3's note renders here, and its body is visible without any
+    // toggle — the flow is the permanent home of a delivered note.
+    expect(view.container.textContent).toContain('note body 1')
+    expect(view.container.textContent).not.toContain('note body 2')
+    expect(view.container.textContent).toContain('notesCollapse')
+  })
+
+  it('renders null for a turn with no notes', () => {
+    const view = render(<AdvisorTurnTail {...props(state([note(1, 3)]), 7)} />)
+    expect(view.container.textContent).toBe('')
+  })
+})
