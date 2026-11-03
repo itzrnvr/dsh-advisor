@@ -107,6 +107,7 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
     setRequested((previous) => ({ ...previous, [id]: true }))
     void controller.fetchEntry(id).then((text) => {
       if (text !== undefined) setFullTexts((previous) => ({ ...previous, [id]: text }))
+      else setRequested((previous) => ({ ...previous, [id]: false }))
     })
   }
 
