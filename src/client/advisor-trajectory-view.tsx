@@ -100,11 +100,13 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
   const state = useSnapshot((snapshot) => snapshot)
   const [tab, setTab] = useState<'trajectory' | 'stats'>('trajectory')
   const [fullTexts, setFullTexts] = useState<Record<number, string>>({})
+  const [requested, setRequested] = useState<Record<number, boolean>>({})
 
-  const loadFull = (at: number): void => {
-    if (fullTexts[at] !== undefined) return
-    void controller.fetchEntry(at).then((text) => {
-      if (text !== undefined) setFullTexts((previous) => ({ ...previous, [at]: text }))
+  const loadFull = (id: number): void => {
+    if (fullTexts[id] !== undefined || requested[id] === true) return
+    setRequested((previous) => ({ ...previous, [id]: true }))
+    void controller.fetchEntry(id).then((text) => {
+      if (text !== undefined) setFullTexts((previous) => ({ ...previous, [id]: text }))
     })
   }
 
@@ -204,6 +206,11 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
                         )}
                       </summary>
                       <pre className={styles.entryText ?? ''}>{fullTexts[entry.turn.id] ?? entry.text}</pre>
+                      {fullTexts[entry.turn.id] === undefined
+                        && requested[entry.turn.id] === true
+                        && entry.text.endsWith('…[truncated]') && (
+                        <p className={styles.hint ?? ''}>{t('trajNotRetained')}</p>
+                      )}
                     </details>
                   ))}
                 </div>

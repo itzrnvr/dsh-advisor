@@ -1952,3 +1952,31 @@ describe('AdvisorRuntime — token estimate calibration (fork addition)', () => 
     expect(runtime.estimatedTokensPerChar).toBe(1.5)
   })
 })
+
+describe('AdvisorRuntime — evidence-based window guess (fork addition)', () => {
+  it('caps the guess from a trigger-sized failure without over-shrinking', async () => {
+    const llm = new FakeLlm([
+      { throw: new Error('maximum context length exceeded') },
+      { chunks: textReply('Compact summary.') },
+      { chunks: textReply('{"note":"after huge"}') },
+    ])
+    const { runtime } = makeRuntime(llm)
+    // ~320k chars → ~80k estimated tokens; 80% is ~64k, equal to the guess.
+    runtime.enqueue(delta('x'.repeat(320_000)))
+    await runtime.waitForDrain()
+    expect(runtime.assumedContextTokens).toBe(64_000)
+  })
+
+  it('shrinks the guess to the observed size for a small failing request', async () => {
+    const llm = new FakeLlm([
+      { throw: new Error('maximum context length exceeded') },
+      { chunks: textReply('Compact summary.') },
+      { chunks: textReply('{"note":"after small"}') },
+    ])
+    const { runtime } = makeRuntime(llm)
+    runtime.enqueue(delta('y'.repeat(2_000)))
+    await runtime.waitForDrain()
+    // ~560 estimated tokens × 0.8 ≈ 450 → floor of 4k.
+    expect(runtime.assumedContextTokens).toBe(4_096)
+  })
+})

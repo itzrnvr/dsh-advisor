@@ -785,6 +785,11 @@ export class AdvisorRuntime {
     return this.state
   }
 
+  /** Diagnostic: the assumed window when the adapter declares none. */
+  get assumedContextTokens(): number {
+    return this.compactionWindowGuess
+  }
+
   /** Exposed for tests: the calibrated chars→tokens ratio. */
   get estimatedTokensPerChar(): number {
     return this.tokensPerChar
