@@ -78,6 +78,31 @@ describe('AdvisorTrajectoryView — two-tab Advisor page (fork addition)', () =>
     expect(view.container.textContent).toContain('compaction failed — reset')
   })
 
+  it('marks a not-delivered note in the Trajectory tab and hides the mark once delivered', () => {
+    const dropped = render(<AdvisorTrajectoryView {...props(state([
+      turn({ kind: 'review', userText: 'DROPPED', note: 'NOTE A', delivered: false }),
+    ]))} />)
+    // Trajectory tab (default): the outcome row for a note whose delivery
+    // seam reported dropped shows the not-delivered marker.
+    expect(dropped.container.textContent).toContain('trajNotDelivered')
+
+    const landed = render(<AdvisorTrajectoryView {...props(state([
+      turn({ kind: 'review', userText: 'LANDED', note: 'NOTE B', delivered: true }),
+      turn({ kind: 'review', at: 1_793_596_802_000, userText: 'UNSET', note: 'NOTE C' }),
+    ]))} />)
+    // Delivered=true and the legacy undefined flag both render without the mark.
+    expect(landed.container.textContent).not.toContain('trajNotDelivered')
+  })
+
+  it('marks a not-delivered note on the Stats rowHead too', () => {
+    const view = render(<AdvisorTrajectoryView {...props(state([
+      turn({ kind: 'review', userText: 'DROPPED', note: 'NOTE A', delivered: false }),
+    ]))} />)
+
+    fireEvent.click(within(view.container).getByText('trajTabStats'))
+    expect(view.container.textContent).toContain('trajNotDelivered')
+  })
+
   it('shows the empty state when no calls exist', () => {
     const view = render(<AdvisorTrajectoryView {...props(state([]))} />)
     expect(view.container.textContent).toContain('trajEmpty')
