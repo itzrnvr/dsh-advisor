@@ -116,9 +116,13 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
 
   const entries: TrajectoryEntry[] = state.turns.flatMap((turn, index) => {
     if (turn.kind === 'compaction') {
-      return turn.note === undefined
-        ? []
-        : [{ key: `c-${turn.at}-${index}`, role: 'compaction' as const, turn, text: turn.note }]
+      // Failed compactions are visible too (no note; the error explains it).
+      return [{
+        key: `c-${turn.at}-${index}`,
+        role: 'compaction' as const,
+        turn,
+        text: turn.note ?? turn.error ?? 'compaction failed',
+      }]
     }
     const out: TrajectoryEntry[] = []
     if (turn.userText !== undefined) {
