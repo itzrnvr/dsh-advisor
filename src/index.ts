@@ -68,6 +68,7 @@ import { AdvisorRuntime } from './advisor-runtime.js'
 import type { AdviceNote, AdvisorTrace, AdvisorTurnRecord } from './advisor-runtime.js'
 import { AdvisorDelivery } from './delivery.js'
 import { DEFAULT_ADVISOR_SYSTEM_PROMPT } from './prompts.js'
+import { findTraceEntry, renderTraceEntry } from './trace-entry.js'
 import { seedNotesFromEvents } from './seed.js'
 import { DEFAULT_HISTORY_MAX_TOKENS } from './limits.js'
 import { advisorSuggestionFace, NextPromptManager } from './next-prompt.js'
@@ -1339,7 +1340,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // Keyed by the attempt's timestamp, NOT the polled array index: the turn
       // ring and the full-text ring have different bounds, so an index would
       // silently point at another attempt once either wraps.
-      const trace = traceLog.get(sessionId)?.find((entry) => entry.at === at)
+      const trace = findTraceEntry(traceLog.get(sessionId), at)
       if (trace === undefined) {
         return {
           error: {
@@ -1348,18 +1349,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
           },
         }
       }
-      if (trace.kind === 'compaction') {
-        return {
-          text: trace.error !== undefined
-            ? `[Compaction failed]\n${trace.error}`
-            : `[Compaction summary]\n${trace.summary ?? ''}`,
-        }
-      }
-      const parts: string[] = []
-      if (trace.error !== undefined) parts.push(`[Attempt failed]\n${trace.error}`)
-      parts.push(`[Sent to the advisor]\n${trace.userText ?? '(not retained)'}`)
-      if (trace.replyText !== undefined) parts.push(`[Raw reply]\n${trace.replyText}`)
-      return { text: parts.join('\n\n---\n\n') }
+      return { text: renderTraceEntry(trace) }
     },
   }
 
