@@ -1054,7 +1054,8 @@ describe('AdvisorRuntime — failure policy (KD-5)', () => {
   // KD-6 (§8.6) regression pin
   it('does not latch a deadline-aborted capability resolution — the retry re-resolves and delivers (n4 QC N-5)', async () => {
     const llm = new SignalBoundLlm(textReply('{"note":"resolution bounded"}'))
-    const { runtime, notes } = makeRuntime(llm, { callTimeoutMs: 20 })
+    const records: AdvisorTurnRecord[] = []
+    const { runtime, notes } = makeRuntime(llm, { callTimeoutMs: 20, onTurn: (record) => records.push(record) })
 
     runtime.enqueue(delta('update'))
     await runtime.waitForDrain()
@@ -1079,6 +1080,8 @@ describe('AdvisorRuntime — failure policy (KD-5)', () => {
     expect(llm.calls).toHaveLength(1)
     expect(llm.calls[0]!.reasoningEffort).toBe(ReasoningEffortId('off'))
     expect(notes).toEqual([{ note: 'resolution bounded', severity: 'nit' }])
+    // Attempt 1's failure is a TIMEOUT, which is what makes the retry correct.
+    expect(records.some((record) => record.outcome === 'failure' && record.error?.startsWith('TIMEOUT'))).toBe(true)
     expect(runtime.status()).toBe('running')
   })
 
