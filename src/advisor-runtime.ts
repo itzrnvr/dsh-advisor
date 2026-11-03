@@ -283,6 +283,11 @@ const DELTA_TRUNCATION_MARKER = '[earlier session update truncated to fit the mo
  */
 const DELTA_HEAD_FOLD_MARKER = '[earlier part of this update is in the summary above]'
 /**
+ * Tells the SUMMARIZER that it is seeing the part the review will NOT re-send:
+ * the newer part was omitted here and will be carried by the review itself.
+ */
+const SUMMARIZER_OMIT_MARKER = '[newer part of this update omitted here; it will be re-sent with the review]'
+/**
  * Rough token estimate for the history budget: ~4 characters per token for
  * prose and code. Exact counts are model-specific; this number only decides
  * when the conversation starts over, so an approximation is the right trade.
@@ -1373,7 +1378,7 @@ export class AdvisorRuntime {
     // remaining cap, if any, is filled with the NEWEST history.
     const deltaHead = userText.length <= inputCharsMax
       ? userText
-      : `${userText.slice(0, Math.max(0, inputCharsMax - DELTA_TRUNCATION_MARKER.length - 4))}\n\n${DELTA_TRUNCATION_MARKER}`
+      : `${userText.slice(0, Math.max(0, inputCharsMax - SUMMARIZER_OMIT_MARKER.length - 4))}\n\n${SUMMARIZER_OMIT_MARKER}`
     const historyRoom = Math.max(0, inputCharsMax - deltaHead.length)
     const historyPart = historyRoom === 0
       ? ''
