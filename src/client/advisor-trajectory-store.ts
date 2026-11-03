@@ -25,6 +25,8 @@ export interface AdvisorTrajectoryTurn {
   readonly outcome: 'note' | 'no-note' | 'failure' | 'aborted'
   /** Which call this row describes (fork addition); absent = review. */
   readonly kind?: 'review' | 'compaction'
+  /** Bounded text of the delta actually sent (user row for the Advisor tab). */
+  readonly userText?: string
   readonly severity?: 'nit' | 'concern' | 'blocker'
   readonly note?: string
   readonly deltaChars: number

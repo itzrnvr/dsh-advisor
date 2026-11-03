@@ -320,6 +320,8 @@ export interface AdvisorTurnRecord {
   readonly outcome: 'note' | 'no-note' | 'failure' | 'aborted'
   /** Which call this row describes (fork addition); absent = review. */
   readonly kind?: 'review' | 'compaction'
+  /** Bounded text of the delta actually sent (user row for the Advisor tab). */
+  readonly userText?: string
   /** Severity of an accepted note. */
   readonly severity?: AdviceNote['severity']
   /** Accepted note body (possibly capped). */
@@ -660,6 +662,8 @@ export class AdvisorRuntime {
    * the trajectory row. `undefined` before the first call.
    */
   private lastSentHistoryTokens: number | undefined
+  /** Exact user text sent on the last attempt (bounded for the trajectory tab). */
+  private lastSentUserText = ''
   /**
    * Estimated tokens per character, calibrated from provider-reported usage
    * after every call (fork addition). Starts at the 4-chars/token convention;
@@ -988,6 +992,14 @@ export class AdvisorRuntime {
       durationMs: Math.max(0, Date.now() - startedAt),
       outcome: result.kind,
       deltaChars,
+      // Bounded user text for the Trajectory tab's user row. This is a PREVIEW:
+      // the full delta is not retained, so expansion is not offered; a cut
+      // preview is visibly marked.
+      ...(this.lastSentUserText.length === 0 ? {} : {
+        userText: this.lastSentUserText.length > 8_000
+          ? `${this.lastSentUserText.slice(0, 8_000)}…[truncated]`
+          : this.lastSentUserText,
+      }),
       // Truthful post-fit value: a context shed inside the call empties the
       // history, so the pre-call count would overstate what was re-sent.
       historyTokens: this.lastSentHistoryTokens ?? historyTokens,
@@ -1022,6 +1034,7 @@ export class AdvisorRuntime {
     let finish: FinishReason | undefined
     this.lastUsage = undefined
     this.lastSentHistoryTokens = undefined
+    this.lastSentUserText = ''
     // Call-level deadline (dsh-timeout): fuses the runtime's dispose signal
     // with a whole-call timer. The fused signal is passed to the provider
     // (AbortSignal honored) AND raced per chunk below, so a hung stream cannot
@@ -1051,6 +1064,7 @@ export class AdvisorRuntime {
       // this delta would cross the trigger. The result is ONE user turn
       // (summary + newest content), preserving strict alternation.
       userText = await this.prepareUserText(userText, deadlineSignal)
+      this.lastSentUserText = userText
       this.lastSentHistoryTokens = this.historyTokens
       this.lastRequestEstimateTokens = this.estimateTextTokens(this.systemPrompt)
         + this.historyTokens + this.estimateTextTokens(userText)

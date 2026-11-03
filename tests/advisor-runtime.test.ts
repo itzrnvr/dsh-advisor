@@ -1852,7 +1852,8 @@ describe('AdvisorRuntime — compaction fits branch (fork addition)', () => {
       { chunks: textReply('Compact summary text.') },
       { chunks: textReply('{"note":"second note"}') },
     ])
-    const { runtime } = makeRuntime(llm, { historyMaxTokens: 4_000 })
+    const turns: AdvisorTurnRecord[] = []
+    const { runtime } = makeRuntime(llm, { historyMaxTokens: 4_000, onTurn: (record) => turns.push(record) })
 
     runtime.enqueue(delta(`first ${big}`))
     await runtime.waitForDrain()
@@ -1864,6 +1865,11 @@ describe('AdvisorRuntime — compaction fits branch (fork addition)', () => {
     expect(sent).toContain('[Compacted earlier reviewer conversation]')
     expect(sent).toContain(`second ${big}`)
     expect(sent).not.toContain('[earlier part of this update is in the summary above]')
+    // The Trajectory row carries the prepared text (summary + full delta).
+    // The LAST review row is the compacted one.
+    const reviewTurn = turns.filter((turn) => turn.kind !== 'compaction').at(-1)
+    expect(reviewTurn?.userText).toContain('second')
+    expect(reviewTurn?.userText).toContain('[Compacted earlier reviewer conversation]')
   })
 })
 
@@ -1929,6 +1935,7 @@ describe('AdvisorRuntime — giant-delta summarizer input (fork addition)', () =
     const summarizerInput = textOfMessage(llm.calls[0]!.messages[0]!)
     // Direction: the summarizer sees the HEAD (what the review will not re-send).
     expect(summarizerInput).toContain('HEADSTART')
+    expect(summarizerInput).toContain('[newer part of this update omitted here; it will be re-sent with the review]')
     expect(summarizerInput).not.toContain('TAILEND')
     expect(summarizerInput.length).toBeLessThan(180_000)
     // The review re-sends the TAIL and carries the fold marker.
