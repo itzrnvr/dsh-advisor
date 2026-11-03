@@ -33,4 +33,15 @@ describe('normalizeTrajectoryTurns — poll-boundary validation (fork addition)'
     expect(normalizeTrajectoryTurns([{ ...base, outcome: 'mystery' }])).toEqual([])
     expect(normalizeTrajectoryTurns([{ ...base, outcome: 'mystery' }, { ...base, outcome: 'failure' }])).toHaveLength(1)
   })
+
+  it('passes the delivered flag through (undefined = legacy/unknown, never dropped)', () => {
+    const [delivered, undelivered, legacy] = normalizeTrajectoryTurns([
+      { ...base, note: 'x', delivered: true },
+      { ...base, id: 2, note: 'y', delivered: false },
+      { ...base, id: 3, note: 'z' },
+    ])
+    expect(delivered!.delivered).toBe(true)
+    expect(undelivered!.delivered).toBe(false)
+    expect(legacy!.delivered).toBeUndefined()
+  })
 })

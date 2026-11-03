@@ -293,8 +293,8 @@ export interface AdvisorNoteView {
   readonly severity: 'nit' | 'concern' | 'blocker'
   /** The note body (already capped by the runtime). */
   readonly text: string
-  /** Delivery channel: non-waking inject or waking steer. */
-  readonly channel: 'inject' | 'steer'
+  /** Delivery channel: direct session-log commit, or a waking steer. */
+  readonly channel: 'commit' | 'steer'
   /** Agent turn the review belonged to (fork addition; absent when unknown). */
   readonly turn?: number
 }
@@ -345,6 +345,13 @@ export interface AdvisorTurnView {
   readonly userText?: string
   readonly severity?: 'nit' | 'concern' | 'blocker'
   readonly note?: string
+  /**
+   * Whether the accepted note actually reached the primary session (fork
+   * addition): `true` = delivered (steered or committed), `false` = the note
+   * was extracted but never landed (guard suppressed it, the agent was gone,
+   * or the delivery seam threw). Absent on non-note outcomes.
+   */
+  readonly delivered?: boolean
   /** Characters of the reviewed transcript delta. */
   readonly deltaChars: number
   /** Estimated history tokens the provider re-read on this call. */

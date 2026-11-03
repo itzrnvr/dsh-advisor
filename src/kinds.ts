@@ -108,6 +108,10 @@ export type AdvisorSource = {
  * directly would be the TS2367 dead-check this repo must not paper over.
  */
 export function isAdvisorMessage(message: Message): boolean {
-  const kind = (message.source as { kind?: string }).kind
+  // The relaxed view is also defensive: a structurally malformed row (e.g.
+  // a legacy wrongly-shaped event whose derived "message" is a wrapper
+  // without `source`) must never crash the predicate — it is simply not an
+  // advisor message.
+  const kind = (message.source as { readonly kind?: string } | undefined)?.kind
   return kind === ADVISOR_PLUGIN_ID || kind === `plugin:${ADVISOR_PLUGIN_ID}`
 }

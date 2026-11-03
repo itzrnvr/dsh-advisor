@@ -19,7 +19,7 @@
  *    `{"note","severity"}` reply, the guard passes it, and delivery calls
  *    `agent.steer` with a message whose source is the `plugin` arm tagged
  *    `plugin: 'advisor'`.
- * 2. A nit routes to `agent.inject`, never `steer`.
+ * 2. A nit commits directly to the session log, never `steer`.
  * 3. The explicit model gate (S4): a config without `provider`/`model`
  *    (no config-level switch since 2026-09-26) starts zero model calls.
  * 4. `/advisor` commands register only when a `commands` registry is composed
@@ -161,15 +161,15 @@ async function composeHarness(
   return { ctx, adapter, dispose: () => fiber.dispose() }
 }
 
-/** Fake Agent with inject/steer spies; published via `agent/created`. */
+/** Fake Agent with steer + direct-commit spies; published via `agent/created`. */
 function makeFakeAgent(id = 's1'): {
   agent: Agent
-  inject: ReturnType<typeof vi.fn>
+  commit: ReturnType<typeof vi.fn>
   steer: ReturnType<typeof vi.fn>
 } {
-  const inject = vi.fn()
+  const commit = vi.fn()
   const steer = vi.fn()
-  return { agent: { id, inject, steer } as unknown as Agent, inject, steer }
+  return { agent: { id, session: { append: commit }, steer } as unknown as Agent, commit, steer }
 }
 
 /** A session whose log is a live array the feed loop grows in place. */
@@ -404,7 +404,7 @@ describe('integration — full advisor loop (spec §7)', () => {
       { provider: 'stub', model: 'stub-model' },
       [[...textReply('{"note":"extract the helper","severity":"concern"}')]],
     )
-    const { agent, steer, inject } = makeFakeAgent('s1')
+    const { agent, steer, commit } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
@@ -412,7 +412,7 @@ describe('integration — full advisor loop (spec §7)', () => {
 
     // The drain is async fire-and-forget; wait for the delivery to land.
     await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1))
-    expect(inject).not.toHaveBeenCalled()
+    expect(commit).not.toHaveBeenCalled()
 
     // The steered message carries the advisor source kind + self-describing content.
     const message = steer.mock.calls[0]![0] as UserMessage
@@ -440,20 +440,20 @@ describe('integration — full advisor loop (spec §7)', () => {
     expect(delta).toContain('**agent**: Done.')
   })
 
-  it('routes a nit to agent.inject, never steer', async () => {
+  it('routes a nit to a direct session-log commit, never steer', async () => {
     const { ctx, adapter } = await composeHarness(
       { provider: 'stub', model: 'stub-model' },
       [[...textReply('{"note":"add a unit test","severity":"nit"}')]],
     )
-    const { agent, steer, inject } = makeFakeAgent('s1')
+    const { agent, steer, commit } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
     feed(ctx, session, log, simpleTurn(1, 'do the thing', 'done'))
 
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
     expect(steer).not.toHaveBeenCalled()
-    const message = inject.mock.calls[0]![0] as UserMessage
+    const message = commit.mock.calls[0]![1] as UserMessage
     expect(message.source.kind).toBe('advisor')
     expect(message.content).toEqual([{ type: 'text', text: '[advisor:nit] add a unit test' }])
     expect(adapter.requests).toHaveLength(1)
@@ -485,11 +485,11 @@ describe('integration — full advisor loop (spec §7)', () => {
 // user → reply → delta → advisor call → guard → delivery chain must run
 // WITHOUT any turn/end — including the immuneTurns fence decrementing across
 // rounds (otherwise a concern steer would permanently downgrade later notes
-// to inject).
+// to a commit).
 // ---------------------------------------------------------------------------
 
 describe('integration — agentic reply-complete gate drives the loop without turn/end (KD-N4-5)', () => {
-  it('harness stream → advisor calls per round, nit→inject / concern→steer, immuneTurns fence decays', async () => {
+  it('harness stream → advisor calls per round, nit→commit / concern→steer, immuneTurns fence decays', async () => {
     const { ctx, adapter } = await composeHarness(
       { provider: 'stub', model: 'stub-model', immuneTurns: 3 },
       [
@@ -500,7 +500,7 @@ describe('integration — agentic reply-complete gate drives the loop without tu
         [...textReply('{"note":"concern five","severity":"concern"}')],
       ],
     )
-    const { agent, steer, inject } = makeFakeAgent('s1')
+    const { agent, steer, commit } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
@@ -520,12 +520,12 @@ describe('integration — agentic reply-complete gate drives the loop without tu
 
     // Round 3 input → review 2: fence 3→2, still armed → INJECT.
     feed(ctx, session, log, [inboxSpliced('prompt three'), userMessage('prompt three')])
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
     feed(ctx, session, log, [assistantMessage('reply three')])
 
     // Round 4 input → review 3: fence 2→1 → INJECT.
     feed(ctx, session, log, [inboxSpliced('prompt four'), userMessage('prompt four')])
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(2))
     feed(ctx, session, log, [assistantMessage('reply four')])
 
     // Round 5 input → review 4: the 3rd completion exhausts the fence and the
@@ -539,7 +539,7 @@ describe('integration — agentic reply-complete gate drives the loop without tu
     // INJECT again. The key point: the fence DECAYS across rounds instead of
     // staying permanently armed after the first steer.
     feed(ctx, session, log, [inboxSpliced('prompt six'), userMessage('prompt six')])
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(3))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(3))
     expect(steer).toHaveBeenCalledTimes(2)
 
     // One advisor model call per completed round.
@@ -572,36 +572,38 @@ describe('integration — agentic reply-complete gate drives the loop without tu
     const steerMessages = steer.mock.calls.map((call) => (call[0] as UserMessage).content)
     expect(steerMessages[0]).toEqual([{ type: 'text', text: '[advisor:concern] concern one' }])
     expect(steerMessages[1]).toEqual([{ type: 'text', text: '[advisor:concern] concern four' }])
-    const injectMessages = inject.mock.calls.map((call) => (call[0] as UserMessage).content)
-    expect(injectMessages).toEqual([
+    const commitMessages = commit.mock.calls.map((call) => (call[1] as UserMessage).content)
+    expect(commitMessages).toEqual([
       [{ type: 'text', text: '[advisor:concern] concern two' }],
       [{ type: 'text', text: '[advisor:concern] concern three' }],
       [{ type: 'text', text: '[advisor:concern] concern five' }],
     ])
-    // Every delivered note carries the advisor source kind.
-    for (const call of [...steer.mock.calls, ...inject.mock.calls]) {
-      expect((call[0] as UserMessage).source.kind).toBe('advisor')
+    // Every delivered note carries the advisor source kind (steer calls carry
+    // the message as their single argument; commit calls carry it second).
+    for (const call of [...steer.mock.calls, ...commit.mock.calls]) {
+      const message = call.length === 1 ? (call[0] as UserMessage) : (call[1] as UserMessage)
+      expect(message.source.kind).toBe('advisor')
     }
   })
 
-  it('routes a nit note to agent.inject in a harness stream', async () => {
+  it('routes a nit note to a direct session-log commit in a harness stream', async () => {
     const { ctx, adapter } = await composeHarness(
       { provider: 'stub', model: 'stub-model' },
       [[...textReply('{"note":"add a unit test","severity":"nit"}')]],
     )
-    const { agent, steer, inject } = makeFakeAgent('s1')
+    const { agent, steer, commit } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
     feed(ctx, session, log, [
       userMessage('prompt one'),
       assistantMessage('reply one'),
-      userMessage('prompt two'),   // review 1 → nit → inject
+      userMessage('prompt two'),   // review 1 → nit → commit
     ])
 
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
     expect(steer).not.toHaveBeenCalled()
-    const message = inject.mock.calls[0]![0] as UserMessage
+    const message = commit.mock.calls[0]![1] as UserMessage
     expect(message.source.kind).toBe('advisor')
     expect(message.content).toEqual([{ type: 'text', text: '[advisor:nit] add a unit test' }])
     expect(adapter.requests).toHaveLength(1)
@@ -636,27 +638,34 @@ describe('integration — agentic reply-complete gate drives the loop without tu
 
 // ---------------------------------------------------------------------------
 // 6. C-1 self-trigger fix in the composed harness: the advisor's OWN delivery
-// re-emits `agent/inbox/spliced` (the dsh host's inject/steer → inbox.splice
-// → session.append path), and that splice must NOT re-trigger the review gate.
-// Exactly one review (and one model call) per completed round.
+// must NOT re-trigger the review gate. Both delivery paths are exercised: a
+// steered note re-emits `agent/inbox/spliced` carrying the advisor message
+// (the host's steer → inbox.splice → session.append path), and a committed
+// note appends a `user/message` with the advisor source directly. Neither is
+// a human input (`isHumanInputEvent` only fires on `source.kind === 'user'`),
+// so exactly one review (one model call) happens per completed round.
 // ---------------------------------------------------------------------------
 
 describe('integration — advisor self-delivery never re-triggers the review gate (C-1)', () => {
-  it('a re-emitted advisor inbox splice during delivery produces exactly one review per round', async () => {
+  it('a steered splice and a committed advisor message each produce exactly one review per round', async () => {
     const { ctx, adapter } = await composeHarness(
       { provider: 'stub', model: 'stub-model' },
       [
-        [...textReply('{"note":"nit one","severity":"nit"}')],
+        [...textReply('{"note":"concern one","severity":"concern"}')],
         [...textReply('{"note":"nit two","severity":"nit"}')],
       ],
     )
     const { session, log } = makeSession('s1')
-    const inject = vi.fn()
+    const commit = vi.fn()
     const steer = vi.fn()
-    // The fake agent mirrors the dsh host: inject/steer deliver through the
-    // inbox, which re-emits `agent/inbox/spliced` carrying the advisor's own
-    // message (the advisor plugin arm — NOT a user input). Without the C-1
-    // payload discrimination this splice would self-trigger a second review.
+    // The fake agent mirrors the dsh host on BOTH channels:
+    // - steer splices the message into the inbox, which logs
+    //   `agent/inbox/spliced` carrying the advisor's own message;
+    // - a direct commit appends the advisor `user/message` to the session
+    //   log and emits it.
+    // Without the C-1 payload discrimination (and the renderer's
+    // isAdvisorMessage exclusion) either shape would self-trigger a second
+    // review of the still-current round.
     const emitAdvisorSplice = (): void => {
       const event = {
         type: 'agent/inbox/spliced',
@@ -668,17 +677,28 @@ describe('integration — advisor self-delivery never re-triggers the review gat
           inserted: [{
             id: MessageId(`advisor-${log.length}`),
             role: 'user',
-            content: [text('[advisor:nit] delivered note')],
-            source: { kind: 'advisor', form: 'notice', summary: '[nit] delivered note' },
+            content: [text('[advisor:concern] delivered note')],
+            source: { kind: 'advisor', form: 'notice', summary: '[concern] delivered note' },
           }],
         },
       } as unknown as SessionEvent
       log.push(event)
       ctx.emit('session/event', session, event)
     }
-    inject.mockImplementation(emitAdvisorSplice)
+    const commitAdvisorMessage = (type: string, data: unknown): void => {
+      const event = {
+        type,
+        seq: log.length,
+        time: 1_000 + log.length,
+        data,
+        surfaceOp: 'append',
+      } as unknown as SessionEvent
+      log.push(event)
+      ctx.emit('session/event', session, event)
+    }
     steer.mockImplementation(emitAdvisorSplice)
-    const agent = { id: 's1', inject, steer } as unknown as Agent
+    commit.mockImplementation(commitAdvisorMessage)
+    const agent = { id: 's1', session: { append: commit }, steer } as unknown as Agent
     ctx.emit('agent/created', { agent, source: 'startup' })
 
     // Round 1 completes.
@@ -686,10 +706,11 @@ describe('integration — advisor self-delivery never re-triggers the review gat
       inboxSpliced('prompt one'), userMessage('prompt one'),
       assistantMessage('reply one'),
     ])
-    // Round 2 input → review 1 → the delivery re-emits the advisor splice,
-    // which must NOT start a second review of the still-current round.
+    // Round 2 input → review 1 (concern) → steered, and the delivery
+    // re-emits the advisor splice, which must NOT start a second review of
+    // the still-current round.
     feed(ctx, session, log, [inboxSpliced('prompt two'), userMessage('prompt two')])
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1))
     // Let any would-be self-trigger drain settle: exactly one model call.
     await flush()
     expect(adapter.requests).toHaveLength(1)
@@ -697,15 +718,19 @@ describe('integration — advisor self-delivery never re-triggers the review gat
     expect(first).toContain('**agent**: reply one')
     expect(first).not.toContain('prompt two')
 
-    // Round 2 reply + round 3 input → review 2: still one review per round.
+    // Round 2 reply + round 3 input → review 2 (nit) → committed directly as
+    // an advisor user/message, which equally must not self-trigger.
     feed(ctx, session, log, [assistantMessage('reply two')])
     feed(ctx, session, log, [inboxSpliced('prompt three'), userMessage('prompt three')])
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
     expect(adapter.requests).toHaveLength(2)
     const second = deltaTextOf(adapter.requests[1]!)
     expect(second).toContain('**user**: prompt two')
     expect(second).toContain('**agent**: reply two')
     expect(second).not.toContain('prompt three')
+    // The committed advisor note is excluded from later reviewer deltas
+    // (self-review guard) — it never reads its own advice back.
+    expect(second).not.toContain('[advisor:')
   })
 })
 
@@ -753,7 +778,7 @@ describe('integration — /advisor commands conditional activation (T7)', () => 
         [...textReply('{"note":"after enabling","severity":"concern"}')],
       ],
     )
-    const { agent, steer, inject } = makeFakeAgent('s1')
+    const { agent, steer, commit } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
@@ -768,9 +793,9 @@ describe('integration — /advisor commands conditional activation (T7)', () => 
     } as never)
     await vi.waitFor(() => expect(definitions).toHaveLength(1))
 
-    // A running row is on: a completed turn is reviewed (nit → inject).
+    // A running row is on: a completed turn is reviewed (nit → commit).
     feed(ctx, session, log, simpleTurn(1, 'history turn', 'old reply'))
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
 
     // /advisor off with the REAL handler: the runtime is disposed and a
     // completed turn produces no model call.
@@ -867,12 +892,12 @@ describe('integration — compact / surface-replace reset the composed observer 
         [...textReply('{"note":"second nit","severity":"nit"}')],
       ],
     )
-    const { agent, inject } = makeFakeAgent('s1')
+    const { agent, commit } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
     feed(ctx, session, log, simpleTurn(1, 'original prompt', 'Original reply.'))
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
 
     // A surface replace WITHOUT compact/* events (the authoritative KD-5
     // trigger b) rewrites the delivered prefix.
@@ -881,7 +906,7 @@ describe('integration — compact / surface-replace reset the composed observer 
     ])
 
     feed(ctx, session, log, simpleTurn(2, 'continue', 'Continuing.'))
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(2))
 
     expect(adapter.requests).toHaveLength(2)
     const replay = deltaTextOf(adapter.requests[1]!)
@@ -1078,7 +1103,7 @@ describe('single-reviewer guard (n4 QC F-6)', () => {
     // The second harness has no reviewer: its adapter must never be called and
     // its fake agent must never receive an injection.
     expect(second.adapter.requests).toHaveLength(0)
-    expect(fake2.inject).not.toHaveBeenCalled()
+    expect(fake2.commit).not.toHaveBeenCalled()
     expect(fake2.steer).not.toHaveBeenCalled()
     // The first harness keeps working (single reviewer).
     expect(first.adapter.requests.length).toBeGreaterThanOrEqual(1)
@@ -1109,9 +1134,9 @@ describe('single-reviewer guard (n4 QC F-6)', () => {
     const fake2 = makeFakeAgent()
     feedSteppedRound(second.ctx, session2.session, session2.log, fake2)
     await vi.waitFor(() => expect(second.adapter.requests.length).toBeGreaterThanOrEqual(1))
-    // The note (severity defaults to nit) routes to inject — the second
+    // The note (severity defaults to nit) is committed directly — the second
     // instance is a fully wired reviewer, not an inert non-reviewer.
-    expect(fake2.inject).toHaveBeenCalled()
+    expect(fake2.commit).toHaveBeenCalled()
   })
 
   it('a rejected config never leaves the reviewer claim taken (qc1 W-4)', () => {

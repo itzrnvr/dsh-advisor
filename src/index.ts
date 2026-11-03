@@ -69,7 +69,7 @@ import type { AdviceNote, AdvisorTrace, AdvisorTurnRecord } from './advisor-runt
 import { AdvisorDelivery } from './delivery.js'
 import { DEFAULT_ADVISOR_SYSTEM_PROMPT } from './prompts.js'
 import { findTraceEntry, renderTraceEntry } from './trace-entry.js'
-import { seedNotesFromEvents } from './seed.js'
+import { notesFromSessionEvents } from './seed.js'
 import { DEFAULT_HISTORY_MAX_TOKENS } from './limits.js'
 import { advisorSuggestionFace, NextPromptManager } from './next-prompt.js'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
@@ -453,14 +453,6 @@ export function apply(ctx: Context, config: AdvisorConfig) {
 
   const runtimes = new Map<string, AdvisorRuntime>()
   /**
-   * Fork addition: the last delivered advice notes per session, for the
-   * in-chat Advisor strip (`/api/advisor/notes`). Bounded per session so a
-   * long-running chat cannot accumulate unbounded history in memory; cleared
-   * with the session (agent/session disposed).
-   */
-  const adviceLog = new Map<string, AdvisorNoteView[]>()
-  const ADVICE_LOG_MAX = 30
-  /**
    * Fork addition: the advisor's OWN trajectory per session — one entry per
    * model attempt (notes, silent reviews, failures), with the provider's
    * reported tokens and cache reads. Served to the Advisor tab by
@@ -478,25 +470,46 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   const traceLog = new Map<string, AdvisorTrace[]>()
   const TRACE_LOG_MAX = 40
   const TRACE_ENTRY_MAX_CHARS = 200_000
-  /** Last completed Agent turn per session — attributes a delivered note to the turn it reviewed. */
-  const lastTurn = new Map<string, number>()
+  /** Delivered-notes view bound (same bound the old in-memory log carried). */
+  const NOTES_VIEW_MAX = 30
   /**
-   * Seed the delivered-notes log from the session log the first time a
-   * session runtime is built (fork addition): advisor notes are committed
-   * to the session as `source.kind: 'advisor'` user messages, so a plugin
-   * reload can rehydrate the in-chat strip with the notes the user already
-   * received instead of starting empty. Best-effort and defensive: any
-   * unexpected event shape is skipped, and an existing log is left alone.
+   * Derivation cache (fork addition): the notes view is a pure projection of
+   * the append-only session log, so `(event count, last seq)` identifies the
+   * log contents and a repeat poll with unchanged log reuses the derived
+   * array — the 4 s strip poll never rescans a 27k-event fork. No writable
+   * note state: a longer log (or a changed tail) always rederives.
    */
-  const seedAdviceLog = (sessionId: string): void => {
-    if (adviceLog.has(sessionId)) return
-    const session = ctx.agents.get(sessionId as SessionId)?.session
-    if (session === undefined || typeof session.snapshotEvents !== 'function') return
-    // A seeded fork's log starts with the parent's events: rehydrate only from
-    // child-owned history, or the parent's advisor notes reappear in the fork.
+  const notesCache = new Map<string, { readonly count: number; readonly lastSeq: number; readonly notes: AdvisorNoteView[] }>()
+  /**
+   * Fork addition — the notes SOURCE OF TRUTH: derive the delivered notes
+   * from the session's own committed advisor messages (user messages with
+   * this plugin's producer kind), oldest → newest in log order. Notes are
+   * committed to the log at delivery time (a direct append or a claimed
+   * steer), so this is durable across reloads, matches the chat flow's
+   * ordering exactly, and needs no in-memory mirror that a reload wipes.
+   *
+   * A seeded fork's log starts with the parent's events: derive only from
+   * child-owned history (slice at `inheritedEventCount`), or the parent's
+   * advisor notes reappear in the fork. A session that is not live (agent
+   * gone, store entry dropped) has no log to read — the caller reports no
+   * notes for it, which is the truth: its surface is not mounted anywhere.
+   */
+  const notesOfSession = (sessionId: string): AdvisorNoteView[] => {
+    const session = ctx.sessions.get(sessionId as SessionId)
+      ?? ctx.agents.get(sessionId as SessionId)?.session
+    if (session === undefined || typeof session.snapshotEvents !== 'function') return []
     const events = session.snapshotEvents()
+    if (events.length === 0) return []
+    const cached = notesCache.get(sessionId)
+    const lastSeq = events[events.length - 1]!.seq
+    if (cached !== undefined && cached.count === events.length && cached.lastSeq === lastSeq) {
+      return cached.notes
+    }
     const inherited = Number(session.inheritedEventCount ?? 0)
-    adviceLog.set(sessionId, seedNotesFromEvents(inherited > 0 ? events.slice(inherited) : events).slice(-ADVICE_LOG_MAX))
+    const scoped = inherited > 0 ? events.slice(inherited) : events
+    const notes = notesFromSessionEvents(scoped).slice(-NOTES_VIEW_MAX)
+    notesCache.set(sessionId, { count: events.length, lastSeq, notes })
+    return notes
   }
   // Next-prompt predictor (plan dsh-advisor-next-prompt-n12, T1): one per
   // fiber, next to the runtimes map. The gate re-reads the resolver SSOT on
@@ -578,9 +591,6 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     let runtime = runtimes.get(sessionId)
     if (runtime !== undefined) return runtime
     const effective = effectiveConfig(sessionId)
-    // Fork addition: rehydrate the in-chat notes from this session's already
-    // committed advisor messages (once per session).
-    seedAdviceLog(sessionId)
     // The re-resolved config guarantees provider + model when enabled — the
     // runtime is only constructed behind the gate.
     if (!effective.enabled) return undefined
@@ -611,40 +621,23 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // exchange would cross it.
       historyMaxTokens: globalResolved.historyMaxTokens,
       llm: appRootLlm(),
-      onNote: (note: AdviceNote, reviewedTurn?: number) => {
+      onNote: (note: AdviceNote, reviewedTurn?: number): boolean => {
         // Accepted notes only — the runtime's emission guard (T5) already
         // filtered suppressed ones. T6 routes the accepted note to the primary
-        // agent (inject/steer); delivery throws stay contained in the runtime
-        // path (T4 F1), so a failing agent can only drop its own advice.
+        // agent (steer or a direct session-log commit); delivery throws stay
+        // contained in the runtime path (T4 F1), so a failing seam can only
+        // drop its own advice. The return value marks the attempt's
+        // `delivered` flag on the trajectory — nothing is mirrored into a
+        // second in-memory log: the notes views derive from the committed
+        // session events (`notesOfSession`).
         const channel = delivery.route(sessionId, note)
         ctx.logger('advisor').debug('advice note delivered', {
           sessionId,
           severity: note.severity,
           channel,
+          ...(reviewedTurn === undefined ? {} : { turn: reviewedTurn }),
         })
-        // Fork addition: keep the note for the session's in-chat Advisor strip.
-        // `channel === undefined` means the delivery was dropped (no live agent),
-        // so only an actually delivered note is recorded.
-        if (channel !== undefined) {
-          // Fork fix: attribute the note to the turn the runtime REVIEWED
-          // (carried on the delta), never to whatever turn is latest when the
-          // async review finishes — that race put notes after the next user
-          // message. The `lastTurn` fallback only covers older call paths.
-          const turn = reviewedTurn ?? lastTurn.get(sessionId)
-          const entry: AdvisorNoteView = {
-            at: Date.now(),
-            severity: note.severity,
-            text: note.note,
-            channel,
-            ...(turn === undefined ? {} : { turn }),
-          }
-          const log = adviceLog.get(sessionId)
-          if (log === undefined) adviceLog.set(sessionId, [entry])
-          else {
-            log.push(entry)
-            if (log.length > ADVICE_LOG_MAX) log.splice(0, log.length - ADVICE_LOG_MAX)
-          }
-        }
+        return channel !== undefined
       },
       // Fork addition: record the advisor's own attempts for the Advisor tab
       // (tokens incl. cache reads, duration, outcome). The callback is
@@ -772,8 +765,12 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // (delivery) AND the emission-guard dedupe history (runtime) — session
       // state is being rewritten, so both latches' basis no longer applies.
       // T8: guard reset wired through the runtime (T5 ⚠️ follow-through).
+      // The notes derivation cache is dropped too: a rewrite can replace the
+      // advisor messages the notes view derives from, with an unchanged
+      // (count, lastSeq) tail in the worst case.
       delivery.reset(sessionId)
       runtimes.get(sessionId)?.resetGuard()
+      notesCache.delete(sessionId)
     },
     onCompletedTurnEnd: (sessionId: string) => {
       // One completed primary turn — arm the next-prompt slot (plan
@@ -823,11 +820,6 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   ctx.on('session/event', (session: Session, event: SessionEvent) => {
     observer.handleEvent(session.id, session.snapshotEvents(), event)
   }, { global: true })
-  // Fork addition: remember the last completed turn so a delivered note can
-  // be attached to the turn it reviewed (the in-chat turn-tail row uses it).
-  ctx.on('session/event', (session: Session, event: SessionEvent) => {
-    if (event.type === 'turn/end') lastTurn.set(session.id as string, event.data.turn)
-  }, { global: true })
   // Per-session runtime lifecycle. Spec KD-5(c) pins `agent/disposed`;
   // `session/disposed` is the store-level pair (both are idempotent — a
   // runtime is disposed at most once, whichever signal lands first). `agent/created`
@@ -860,10 +852,9 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     delivery.unregisterAgent(agent.id)
     overrides.clear(agent.id)
     suggestions.disposeSession(agent.id)
-    adviceLog.delete(agent.id)
     trajectoryLog.delete(agent.id)
     traceLog.delete(agent.id)
-    lastTurn.delete(agent.id)
+    notesCache.delete(agent.id)
   }, { global: true })
   ctx.on('session/disposed', (session: Session) => {
     observer.disposeSession(session.id)
@@ -871,10 +862,9 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     delivery.unregisterAgent(session.id)
     overrides.clear(session.id)
     suggestions.disposeSession(session.id)
-    adviceLog.delete(session.id)
     trajectoryLog.delete(session.id)
     traceLog.delete(session.id)
-    lastTurn.delete(session.id)
+    notesCache.delete(session.id)
   }, { global: true })
 
   // T1-settings live re-apply: construction-time latches (immuneTurns on the
@@ -1288,23 +1278,18 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   suggestionControl = advisorSuggestionFace(effectiveConfig, suggestions)
 
   // Fork addition — the delivered-notes face for `/api/advisor/notes` (the
-  // in-chat Advisor strip). Reads the SAME session-scoped effective config the
-  // runtime gate uses, plus the live runtime status, and returns only
-  // defined keys (the wire validator rejects present-as-undefined values).
+  // in-chat Advisor strip). The notes themselves DERIVE from the session's
+  // committed advisor messages (`notesOfSession` — the single source of
+  // truth, durable across reloads, fork-scoped, chat-ordered); the gate/
+  // route fields read the SAME session-scoped effective config the runtime
+  // gate uses plus the live runtime status. Returns only defined keys (the
+  // wire validator rejects present-as-undefined values).
   notesControl = {
     getNotes: (sessionId) => {
-      // Forks are reviewed as their own conversation: their notes surface
-      // shows only notes produced AFTER the inherited prefix (seedAdviceLog
-      // skips that prefix), never the parent's re-shown history.
-      // Cold log (e.g. after a plugin reload/remount): rehydrate from the
-      // session's own committed advisor messages BEFORE answering, so opening
-      // an older session shows the notes it already received instead of an
-      // empty list that never fills until a new review runs.
-      seedAdviceLog(sessionId)
       const effective = effectiveConfig(sessionId)
       const runtime = runtimes.get(sessionId)
       return {
-        notes: adviceLog.get(sessionId) ?? [],
+        notes: notesOfSession(sessionId),
         enabled: effective.enabled,
         runtimeStatus: runtime?.status() ?? 'disabled',
         ...(effective.provider === undefined ? {} : { provider: effective.provider }),

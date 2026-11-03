@@ -10,14 +10,30 @@
  *   `lookupAgent`) that covers agents published before this plugin loaded.
  *   A missing agent at delivery time drops the note with a log — advisory
  *   only, never throw, never stall.
- * - **Severity routing (spec §6)**: nit → `agent.inject` (non-waking, consumed
- *   at the next pre-step boundary); concern/blocker → `agent.steer` (waking —
- *   an idle driver starts a turn, a running driver consumes at its next step
- *   boundary).
+ * - **Severity routing (spec §6, revised)**: a note the reviewer wants to
+ *   interrupt with (`wake`, or a concern/blocker by default) is STEERED —
+ *   `agent.steer`, waking, consumed at the next step boundary. Every other
+ *   note is COMMITTED DIRECTLY to the session log as a user message with
+ *   this plugin's producer kind (`session.append('user/message', …)` with
+ *   `surfaceOp: 'append'`).
+ *
+ *   Why direct commit instead of the old `agent.inject`: the host commits an
+ *   inbox message as a `user/message` event only when a running step CLAIMS
+ *   it (dsh-agent-loop `step()`), and `inject` does not wake the driver — so
+ *   a note delivered while the agent is idle sat in the inbox forever:
+ *   invisible in the chat flow, absent from the session log, unrecoverable
+ *   after a reload, and the model never saw it unless the user happened to
+ *   prompt again. A direct append is durable immediately, visible in the
+ *   chat flow immediately, and joins the model's NEXT request through the
+ *   request's surface derivation (`buildRequest` → `session.deriveMessages`)
+ *   — the same seam the loop itself uses. Both channels commit the same
+ *   message shape; never both for one note (the loop commits every claimed
+ *   inbox message, so a commit + a steer of the same note would
+ *   double-deliver).
  * - **The immuneTurns cooldown (spec §6)**: after a concern/blocker is actually
  *   steered, the next `immuneTurns` stepped primary turns must complete before
  *   another interrupting note may steer; interrupting notes inside the window
- *   downgrade to inject. The fence arms only on a real steer delivery; the
+ *   are downgraded to a direct commit. The fence arms only on a real steer; the
  *   observer's `onSteppedTurnEnd` / `onRewrite` hooks (T3 wiring) drive the
  *   countdown and the KD-5 reset.
  *
@@ -28,10 +44,12 @@
  * how to treat it ("weigh, don't blindly obey" spirit). The kind is claimed by
  * declaration-merging `MessageSourceMap` in dsh-llm, and the V3→V4 format edge
  * preserves direct source kinds, so this identity is cross-generation-safe —
- * the property the retired `plugin` arm used to be borrowed for.
+ * the property the retired `plugin` arm used to be borrowed for. The notes
+ * read path (src/seed.ts) derives what the advisor said from exactly these
+ * committed events.
  *
  * Delivery is synchronous and fire-and-forget; the runtime path (T4 F1) is
- * what contains a throwing `inject`/`steer` — this module lets agent-method
+ * what contains a throwing `steer`/`append` — this module lets agent-method
  * throws propagate to that containment seam.
  *
  * @module dsh-advisor/delivery
@@ -42,15 +60,29 @@ import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { AdvisorSource } from './kinds.js'
 import type { AdviceNote, AdviceSeverity } from './advisor-runtime.js'
 
-/** The channel one accepted note is delivered on (spec §6). */
-export type DeliveryChannel = 'inject' | 'steer'
+/**
+ * The channel one accepted note is delivered on (spec §6, revised):
+ * `commit` — appended directly to the session log (non-waking, durable,
+ * visible immediately); `steer` — waking, consumed at the next step boundary.
+ */
+export type DeliveryChannel = 'commit' | 'steer'
+
+/** Minimal live-session surface the delivery router commits through. */
+export interface AdvisorDeliverySession {
+  /**
+   * Append one event to the session log. Structurally satisfied by dsh's
+   * `Session.append`; only the `user/message` + `surfaceOp: 'append'` shape
+   * is ever used here.
+   */
+  append(type: 'user/message', data: UserMessage, intent: { surfaceOp: 'append' }): unknown
+}
 
 /** Minimal `Agent` surface the delivery router drives (spec §4, KD-4). */
 export interface AdvisorDeliveryAgent {
   /** `Agent.id` — equals the session id by construction (KD-4). */
   readonly id: string
-  /** Non-waking: queue model-facing context for the next pre-step (spec §6). */
-  inject(message: UserMessage): void
+  /** The agent's live session — the direct-commit target (see module doc). */
+  readonly session: AdvisorDeliverySession
   /** Waking: submit steering for the nearest step (spec §6). */
   steer(message: UserMessage): void
 }
@@ -183,9 +215,11 @@ export class AdvisorDelivery {
    * Resolves the primary agent via the map, falling back to the registry; a
    * missing agent drops the note with a log (advisory only — never throw,
    * never stall). The reviewer decides the channel via `wake` (fork addition):
-   * omitted → concern/blocker steer, nit injects; `wake: true` steers any
-   * severity, `wake: false` injects any severity. A steer is downgraded to
-   * inject while the immuneTurns fence is armed.
+   * `wake: true` (or a concern/blocker severity by default) STEERS — a waking
+   * delivery consumed at the next step boundary; anything else is COMMITTED
+   * DIRECTLY to the session log (durable, visible, model-visible next
+   * request). A steer is downgraded to a commit while the immuneTurns fence
+   * is armed.
    *
    * @returns the channel delivered on, or `undefined` when dropped (no agent).
    */
@@ -212,7 +246,11 @@ export class AdvisorDelivery {
       agent.steer(message)
       return 'steer'
     }
-    agent.inject(message)
-    return 'inject'
+    // Non-waking (nit, wake:false, or a steer downgraded by the cooldown):
+    // commit directly to the session log. Durable immediately, visible in
+    // the chat flow immediately, part of the model's next request — and the
+    // exact event shape src/seed.ts derives the notes views from.
+    agent.session.append('user/message', message, { surfaceOp: 'append' })
+    return 'commit'
   }
 }

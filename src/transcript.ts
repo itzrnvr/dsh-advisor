@@ -72,13 +72,6 @@ export interface Delta {
   /** Role-annotated markdown of the new (or replayed) transcript messages. */
   readonly markdown: string
   /**
-   * Whether more transcript content is expected to follow the same logical
-   * update. dsh closes a turn with `turn/end` (all its steps are done), so a
-   * delta rendered at a stepped `turn/end` is always complete — `false` for
-   * the MVP (see the task-3 report for the rationale).
-   */
-  readonly willContinue: boolean
-  /**
    * Agent turn this delta reviews (fork addition). Set by the observer:
    * `turn/end` reviews carry the closed turn, step reviews carry the turn in
    * progress, and agentic rounds (no turn numbering) leave it undefined.
@@ -449,14 +442,13 @@ export class DeltaRenderer {
     if (omitted) lines.push(TRUNCATION_MARKER)
     for (const message of work) lines.push(renderMessage(message))
     const rendered = lines.join('\n\n')
-    if (rendered.length <= MAX_DELTA_CHARS) return { markdown: rendered, willContinue: false }
+    if (rendered.length <= MAX_DELTA_CHARS) return { markdown: rendered }
     // Keep the most recent content; cut at a message boundary when possible.
     const tail = rendered.slice(rendered.length - MAX_DELTA_CHARS)
     const boundary = tail.indexOf('\n\n')
     const body = boundary >= 0 ? tail.slice(boundary + 2) : tail
     return {
       markdown: body.startsWith(TRUNCATION_MARKER) ? body : `${SESSION_UPDATE_HEADING}\n\n${TRUNCATION_MARKER}\n\n${body}`,
-      willContinue: false,
     }
   }
 }
@@ -759,13 +751,11 @@ export class SessionTranscriptObserver {
     }
     this.stepsSinceReview.set(sessionId, 1)
     const delta = this.rendererFor(sessionId).update(events)
-    // `willContinue` marks a mid-turn review: the agent is still working.
     // The turn is the one in progress (from the step that just started).
     if (delta !== undefined) {
       const turn = currentTurnOf(events)
       this.options.onDelta(sessionId, {
         ...delta,
-        willContinue: true,
         ...(turn === undefined ? {} : { turn }),
       })
     }

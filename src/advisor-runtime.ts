@@ -115,14 +115,14 @@ export interface AdviceNote {
 }
 
 /**
- * Per-session runtime status surface for T7 `/advisor status`.
+ * Per-session advisor runtime status surface for T7 `/advisor status`.
  *
- * T4 sets `running` | `quota_exhausted` | `halted`; `paused` is reserved for
- * explicit pause semantics and `disabled` for the config gate — the runtime is
- * never constructed in either state (`index.ts` returns early when the resolved
- * config is disabled).
+ * T4 sets `running` | `quota_exhausted` | `halted`; `disabled` is the
+ * config-gate state callers report for a runtime-less session (`index.ts`
+ * returns early when the resolved config is disabled; the runtime is never
+ * constructed in that state).
  */
-export type AdvisorRuntimeStatus = 'running' | 'paused' | 'quota_exhausted' | 'halted' | 'disabled'
+export type AdvisorRuntimeStatus = 'running' | 'quota_exhausted' | 'halted' | 'disabled'
 
 /** Minimal `ctx.llm` surface the runtime drives (satisfied by `LlmRuntime`). */
 export interface AdvisorLlm {
@@ -227,8 +227,11 @@ export interface AdvisorRuntimeOptions {
   /**
    * Invoked once per extracted note that passes the T5 emission guard
    * (accepted = delivered to T6; suppressed notes are dropped silently).
+   * Returns whether the note was actually delivered to the primary agent
+   * (the delivery channel resolved) — false (or a throw, contained upstream)
+   * marks the attempt as note-not-delivered on the trajectory.
    */
-  readonly onNote: (note: AdviceNote, turn?: number) => void
+  readonly onNote: (note: AdviceNote, turn?: number) => boolean | void
   /**
    * Optional per-attempt trajectory sink (fork addition). Called once for
    * every completed model attempt — notes, silent reviews, failures and
@@ -350,6 +353,13 @@ export interface AdvisorTurnRecord {
   readonly severity?: AdviceNote['severity']
   /** Accepted note body (possibly capped). */
   readonly note?: string
+  /**
+   * Whether the accepted note actually reached the primary agent (fork
+   * addition). Absent on non-note outcomes; `false` marks a note the
+   * emission guard suppressed, the delivery dropped, or a delivery seam
+   * threw — so the Advisor tab never reads an undelivered note as delivered.
+   */
+  readonly delivered?: boolean
   /** Characters of the reviewed transcript delta. */
   readonly deltaChars: number
   /** Estimated history tokens BEFORE this call (what the provider re-read). */
@@ -605,7 +615,7 @@ type ProcessResult =
 
 /** Result of one {@link AdvisorRuntime.callModel} attempt. */
 type CallResult =
-  | { readonly kind: 'note'; readonly note: AdviceNote }
+  | { readonly kind: 'note'; readonly note: AdviceNote; readonly delivered: boolean }
   | { readonly kind: 'no-note' }
   | { readonly kind: 'aborted' }
   | { readonly kind: 'failure'; readonly failure: LlmFailure }
@@ -646,7 +656,7 @@ export class AdvisorRuntime {
   private readonly maxQueued: number
   private readonly llm: AdvisorLlm
   private readonly guard: EmissionGuard
-  private readonly onNote: (note: AdviceNote, turn?: number) => void
+  private readonly onNote: (note: AdviceNote, turn?: number) => boolean | void
   private readonly logger: AdvisorRuntimeLogger
   private readonly controller = new AbortController()
   /**
@@ -665,18 +675,13 @@ export class AdvisorRuntime {
   private reasoningEffortWarned = false
   /**
    * The resolved model's declared context window (tokens), when the adapter
-   * reports one. Used to clamp the reviewer-history budget and to shed history
-   * BEFORE a request would exceed the window — otherwise a long session's
-   * history crosses the model's real limit and every review fails, even though
-   * the configured token budget (default 1M) has not been reached.
+   * reports one. Clamps the reviewer-history budget and sizes the
+   * compaction window BEFORE a request would exceed the model's real limit —
+   * otherwise a long session's history crosses the limit and every review
+   * fails, even though the configured token budget (default 1M) has not
+   * been reached.
    */
   private modelContextTokens: number | undefined
-  /**
-   * The adapter's default per-request output cap (tokens) when it declares
-   * one — the reserve subtracted from the context window before any history
-   * is allowed. Absent falls back to 20% of the window.
-   */
-  private modelOutputReserve: number | undefined
   /** One-shot latch: the model-info lookup already ran (success or definitive absence). */
   private modelInfoResolved = false
   /** The cached model-info result (shared by the effort gate and the context clamp). */
@@ -1047,7 +1052,9 @@ export class AdvisorRuntime {
       // history, so the pre-call count would overstate what was re-sent.
       historyTokens: this.lastSentHistoryTokens ?? historyTokens,
       systemChars: this.systemPrompt.length,
-      ...(result.kind === 'note' ? { severity: result.note.severity, note: result.note.note } : {}),
+      ...(result.kind === 'note'
+        ? { severity: result.note.severity, note: result.note.note, delivered: result.delivered }
+        : {}),
       ...(result.kind === 'failure'
         ? { error: `${result.failure.code}: ${result.failure.message}` }
         : {}),
@@ -1235,6 +1242,7 @@ export class AdvisorRuntime {
         return { kind: 'no-note' }
       }
     }
+    let delivered = false
     try {
       // The T5 emission guard sits between extraction and delivery: only
       // accepted notes reach the delivery callback (T6). Suppression is
@@ -1245,7 +1253,7 @@ export class AdvisorRuntime {
         // onNote, so a throwing delivery seam cannot lose the activity
         // record) — surfaced by `/advisor status` as "last activity".
         this.lastActivityAt = Date.now()
-        this.onNote(note, delta.turn)
+        delivered = this.onNote(note, delta.turn) === true
       } else {
         this.logger.debug('advisor: note suppressed by emission guard', {
           note: note.note,
@@ -1256,10 +1264,10 @@ export class AdvisorRuntime {
       // The emission guard / delivery seam must never crash the drain: log
       // and continue. The model call itself succeeded — this is not a
       // transport failure, so retry/drop/quota/halt semantics are untouched
-      // and the note still counts as extracted.
+      // and the note still counts as extracted (but not delivered).
       this.logger.warn('advisor: emission guard or delivery callback threw — contained', { error })
     }
-    return { kind: 'note', note }
+    return { kind: 'note', note, delivered }
   }
 
   /**
@@ -1625,11 +1633,11 @@ export class AdvisorRuntime {
 
   /**
    * Resolve the model's capability metadata ONCE per runtime (fork addition):
-   * reasoning efforts, declared context window, and the adapter's default
-   * output cap all come from this one lookup. It is shared by the effort gate
-   * and the context clamp so the clamp does not depend on the reasoning path
-   * succeeding. Only a THROW is retried; a resolved-but-empty answer is
-   * definitive, so a non-conforming adapter cannot make this spin forever.
+   * the reasoning efforts and the declared context window come from this one
+   * lookup. It is shared by the effort gate and the context clamp so the
+   * clamp does not depend on the reasoning path succeeding. Only a THROW is
+   * retried; a resolved-but-empty answer is definitive, so a non-conforming
+   * adapter cannot make this spin forever.
    */
   private async ensureModelInfo(signal?: AbortSignal): Promise<ModelInfoLookup> {
     if (this.modelInfoResolved) return { status: 'resolved', info: this.modelInfo }
@@ -1641,7 +1649,6 @@ export class AdvisorRuntime {
       const info = await this.llm.resolveModelInfo(this.provider, this.model, signal)
       this.modelInfo = info
       this.modelContextTokens = info?.context?.contextWindow
-      this.modelOutputReserve = info?.defaultMaxTokens
       this.modelInfoResolved = true
       return { status: 'resolved', info }
     } catch {

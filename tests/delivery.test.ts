@@ -7,7 +7,7 @@
  *   session (per-session map from `agent/created`/`agent/disposed` keyed by
  *   `agent.id` === `session.id`, with a `ctx.agents.get(session.id)` registry
  *   fallback — KD-4) and routes the accepted note:
- *   - nit → `agent.inject` (non-waking, next pre-step boundary);
+ *   - nit → direct session-log commit (non-waking, durable immediately, joins the next model request);
  *   - concern/blocker → `agent.steer` (waking — idle driver starts a turn,
  *     running driver consumes at the next step boundary);
  *   - missing agent → drop the note + log (never throw, never stall).
@@ -18,7 +18,7 @@
  * - immuneTurns (spec §6): after a concern/blocker is actually steered, the
  *   next `immuneTurns` stepped primary turns must complete before another
  *   interrupting note may steer; interrupting notes inside the window downgrade
- *   to inject. The fence arms only on a real steer delivery; `reset` clears the
+ *   to a commit. The fence arms only on a real steer delivery; `reset` clears the
  *   latch (KD-5 reset triggers); `unregisterAgent` clears it with the session.
  * - Observer hooks: `SessionTranscriptObserver` fires `onSteppedTurnEnd` once
  *   per stepped reviewable turn/end (the cooldown decrement) and `onRewrite` on
@@ -55,15 +55,20 @@ function makeLogger(): { logger: AdvisorDeliveryLogger; warn: ReturnType<typeof 
   return { logger: { debug: () => {}, warn }, warn }
 }
 
-/** Fake agent with inject/steer spies (structural `AdvisorDeliveryAgent`). */
+/** Fake agent with steer + direct-commit spies (structural `AdvisorDeliveryAgent`). */
 function makeAgent(id = 's1'): {
   agent: AdvisorDeliveryAgent
-  inject: ReturnType<typeof vi.fn>
+  commit: ReturnType<typeof vi.fn>
   steer: ReturnType<typeof vi.fn>
 } {
-  const inject = vi.fn()
   const steer = vi.fn()
-  return { agent: { id, inject, steer }, inject, steer }
+  const commit = vi.fn()
+  const agent: AdvisorDeliveryAgent = {
+    id,
+    session: { append: commit },
+    steer,
+  }
+  return { agent, commit, steer }
 }
 
 function makeDelivery(
@@ -78,24 +83,24 @@ function makeDelivery(
 // ---------------------------------------------------------------------------
 
 describe('AdvisorDelivery — severity → channel routing (spec §6)', () => {
-  it('routes nit to inject, never waking the agent', () => {
-    const { agent, inject, steer } = makeAgent()
+  it('routes nit to a direct session-log commit, never waking the agent', () => {
+    const { agent, commit, steer } = makeAgent()
     const delivery = makeDelivery(3)
     delivery.registerAgent(agent)
 
-    expect(delivery.route('s1', { note: 'add a test for this branch', severity: 'nit' })).toBe('inject')
-    expect(inject).toHaveBeenCalledTimes(1)
+    expect(delivery.route('s1', { note: 'add a test for this branch', severity: 'nit' })).toBe('commit')
+    expect(commit).toHaveBeenCalledTimes(1)
     expect(steer).not.toHaveBeenCalled()
   })
 
   it('routes concern to steer (waking)', () => {
-    const { agent, inject, steer } = makeAgent()
+    const { agent, commit, steer } = makeAgent()
     const delivery = makeDelivery(3)
     delivery.registerAgent(agent)
 
     expect(delivery.route('s1', { note: 'this loop looks wrong', severity: 'concern' })).toBe('steer')
     expect(steer).toHaveBeenCalledTimes(1)
-    expect(inject).not.toHaveBeenCalled()
+    expect(commit).not.toHaveBeenCalled()
   })
 
   it('routes blocker to steer (waking)', () => {
@@ -198,16 +203,42 @@ describe('AdvisorDelivery — advisor message construction (spec §6)', () => {
   })
 
   it('routes the self-describing advisor message, not the raw note', () => {
-    const { agent, inject } = makeAgent()
+    const { agent, commit } = makeAgent()
     const delivery = makeDelivery(3)
     delivery.registerAgent(agent)
 
     delivery.route('s1', { note: 'slow down and re-read the task', severity: 'nit' })
-    const message = inject.mock.calls[0]![0] as UserMessage
+    // The commit seam's argument order is the host's Session.append:
+    // (type, message, intent) — pin all three, because this is the durable
+    // event the notes derivation reads back.
+    expect(commit).toHaveBeenCalledTimes(1)
+    expect(commit.mock.calls[0]![0]).toBe('user/message')
+    expect(commit.mock.calls[0]![2]).toEqual({ surfaceOp: 'append' })
+    const message = commit.mock.calls[0]![1] as UserMessage
     expect(message.role).toBe('user')
     expect(message.source.kind).toBe(ADVISOR_PLUGIN_ID)
     expect(message.source).toMatchObject({ kind: 'advisor', form: 'notice' })
     expect(message.content).toEqual([{ type: 'text', text: '[advisor:nit] slow down and re-read the task' }])
+  })
+
+  it('keeps the two channels mutually exclusive (no double delivery)', () => {
+    // The load-bearing invariant against double delivery: a steer is
+    // consumed AND committed by the host's step loop when claimed, so a
+    // route that both steered and appended would deliver the note twice;
+    // a commit path that steered would do the same in the other order.
+    const { agent, commit, steer } = makeAgent()
+    const delivery = makeDelivery(0)
+    delivery.registerAgent(agent)
+
+    // Waking note: steer only — the session log is never touched directly.
+    expect(delivery.route('s1', { note: 'wake up', severity: 'concern' })).toBe('steer')
+    expect(steer).toHaveBeenCalledTimes(1)
+    expect(commit).not.toHaveBeenCalled()
+
+    // Non-waking note: commit only — the agent is never woken.
+    expect(delivery.route('s1', { note: 'quiet note', severity: 'nit' })).toBe('commit')
+    expect(commit).toHaveBeenCalledTimes(1)
+    expect(steer).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -216,8 +247,8 @@ describe('AdvisorDelivery — advisor message construction (spec §6)', () => {
 // ---------------------------------------------------------------------------
 
 describe('AdvisorDelivery — immuneTurns cooldown (spec §6)', () => {
-  it('downgrades interrupting notes to inject until N stepped turns complete, then steers again', () => {
-    const { agent, inject, steer } = makeAgent()
+  it('downgrades interrupting notes to a commit until N stepped turns complete, then steers again', () => {
+    const { agent, commit, steer } = makeAgent()
     const delivery = makeDelivery(3)
     delivery.registerAgent(agent)
 
@@ -226,33 +257,33 @@ describe('AdvisorDelivery — immuneTurns cooldown (spec §6)', () => {
     expect(delivery.route('s1', { note: 'first interrupt', severity: 'concern' })).toBe('steer')
 
     // Each completed stepped primary turn decrements the countdown; interrupting
-    // notes inside the window downgrade to inject (and never re-arm the fence).
+    // notes inside the window downgrade to a commit (and never re-arm the fence).
     delivery.onSteppedTurnEnd('s1')
-    expect(delivery.route('s1', { note: 'still a problem', severity: 'blocker' })).toBe('inject')
+    expect(delivery.route('s1', { note: 'still a problem', severity: 'blocker' })).toBe('commit')
     delivery.onSteppedTurnEnd('s1')
-    expect(delivery.route('s1', { note: 'still a problem 2', severity: 'concern' })).toBe('inject')
+    expect(delivery.route('s1', { note: 'still a problem 2', severity: 'concern' })).toBe('commit')
     delivery.onSteppedTurnEnd('s1') // third turn completes → cooldown exhausted
 
     // Steering resumes.
     expect(delivery.route('s1', { note: 'still a problem 3', severity: 'concern' })).toBe('steer')
 
     expect(steer).toHaveBeenCalledTimes(2)
-    expect(inject).toHaveBeenCalledTimes(2)
+    expect(commit).toHaveBeenCalledTimes(2)
   })
 
   it('never arms the fence on a nit — a concern right after a nit still steers', () => {
-    const { agent, inject, steer } = makeAgent()
+    const { agent, commit, steer } = makeAgent()
     const delivery = makeDelivery(3)
     delivery.registerAgent(agent)
 
-    expect(delivery.route('s1', { note: 'minor nit', severity: 'nit' })).toBe('inject')
+    expect(delivery.route('s1', { note: 'minor nit', severity: 'nit' })).toBe('commit')
     expect(delivery.route('s1', { note: 'real concern', severity: 'concern' })).toBe('steer')
     expect(steer).toHaveBeenCalledTimes(1)
 
-    // Inside the armed window, nits still inject (they were inject all along).
+    // Inside the armed window, nits still commit (they never wake).
     delivery.onSteppedTurnEnd('s1')
-    expect(delivery.route('s1', { note: 'another nit', severity: 'nit' })).toBe('inject')
-    expect(inject).toHaveBeenCalledTimes(2)
+    expect(delivery.route('s1', { note: 'another nit', severity: 'nit' })).toBe('commit')
+    expect(commit).toHaveBeenCalledTimes(2)
   })
 
   it('immuneTurns 0 disables the cooldown — every interrupt steers', () => {
@@ -328,10 +359,10 @@ const textReply = (text: string): readonly StreamChunk[] => [
   { type: 'finish', reason: { kind: 'stop' } },
 ]
 
-const delta = (markdown: string): Delta => ({ markdown, willContinue: false })
+const delta = (markdown: string): Delta => ({ markdown })
 
 describe('AdvisorDelivery — contained throw through the routing seam (T4 F1)', () => {
-  it('a throwing agent method inside route never crashes the runtime drain', async () => {
+  it('a throwing steer inside route never crashes the runtime drain', async () => {
     const { agent } = makeAgent()
     agent.steer = vi.fn(() => {
       throw new Error('steer exploded')
@@ -363,6 +394,39 @@ describe('AdvisorDelivery — contained throw through the routing seam (T4 F1)',
     await expect(runtime.waitForDrain()).resolves.toBeUndefined()
 
     expect(llm.calls).toHaveLength(2) // the drain continued past both throws
+    expect(runtime.status()).toBe('running')
+    expect(runtime.pendingCount).toBe(0)
+  })
+
+  it('a throwing session append (the commit arm) never crashes the drain either', async () => {
+    const { agent } = makeAgent()
+    agent.session.append = vi.fn(() => {
+      throw new Error('append exploded')
+    })
+    const delivery = makeDelivery(3)
+    delivery.registerAgent(agent)
+
+    const llm = new FakeLlm([
+      { chunks: textReply('{"note":"first"}') },
+      { chunks: textReply('{"note":"second"}') },
+    ])
+    const runtime = new AdvisorRuntime({
+      provider: 'test-provider',
+      model: 'test-model',
+      sessionId: 's1' as SessionId,
+      systemPrompt: 'review',
+      llm,
+      onNote: (note) => {
+        delivery.route('s1', note)
+      },
+      retryBackoffMs: 0,
+    })
+
+    runtime.enqueue(delta('update one'))
+    runtime.enqueue(delta('update two'))
+    await expect(runtime.waitForDrain()).resolves.toBeUndefined()
+
+    expect(llm.calls).toHaveLength(2)
     expect(runtime.status()).toBe('running')
     expect(runtime.pendingCount).toBe(0)
   })
@@ -508,7 +572,7 @@ describe('SessionTranscriptObserver — delivery hooks (T6)', () => {
   })
 
   it('wires observer turn-ends into the delivery cooldown end to end', () => {
-    const { agent, inject, steer } = makeAgent()
+    const { agent, commit, steer } = makeAgent()
     const delivery = makeDelivery(2)
     delivery.registerAgent(agent)
     const observer = new SessionTranscriptObserver({
@@ -526,15 +590,15 @@ describe('SessionTranscriptObserver — delivery hooks (T6)', () => {
     feedAppend(observer, 's1', [], turn1)
     expect(delivery.route('s1', { note: 'interrupt', severity: 'concern' })).toBe('steer')
 
-    // Turn 2 completes → countdown 1; the next interrupt downgrades to inject.
+    // Turn 2 completes → countdown 1; the next interrupt downgrades to a commit.
     feedAppend(observer, 's1', turn1, turn2)
-    expect(delivery.route('s1', { note: 'still', severity: 'blocker' })).toBe('inject')
+    expect(delivery.route('s1', { note: 'still', severity: 'blocker' })).toBe('commit')
 
     // Turn 3 completes → countdown exhausted; steering resumes.
     feedAppend(observer, 's1', [...turn1, ...turn2], turn3)
     expect(delivery.route('s1', { note: 'resume', severity: 'concern' })).toBe('steer')
 
     expect(steer).toHaveBeenCalledTimes(2)
-    expect(inject).toHaveBeenCalledTimes(1)
+    expect(commit).toHaveBeenCalledTimes(1)
   })
 })

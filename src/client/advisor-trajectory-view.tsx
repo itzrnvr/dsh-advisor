@@ -198,6 +198,12 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
                         <span className={`${styles.role ?? ''} ${entry.role === 'user' ? styles.roleUser ?? '' : entry.role === 'assistant' ? styles.roleAssistant ?? '' : styles.roleCompaction ?? ''}`}>
                           {entry.role === 'user' ? t('trajRoleUser') : entry.role === 'assistant' ? t('trajRoleAdvisor') : t('trajCompaction')}
                         </span>
+                        {entry.role !== 'compaction' && (
+                          <span className={styles.outcome ?? ''}>{t(outcomeKey(entry.turn))}</span>
+                        )}
+                        {entry.role !== 'compaction' && entry.turn.outcome === 'note' && entry.turn.delivered === false && (
+                          <span className={styles.outcome ?? ''}>{t('trajNotDelivered')}</span>
+                        )}
                         <span className={styles.time ?? ''}>{new Date(entry.turn.at).toLocaleTimeString()}</span>
                         {entry.role !== 'compaction' && entry.turn.usage !== undefined && (
                           <span className={styles.metric ?? ''}>
@@ -244,6 +250,9 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
                             <span className={styles.outcome ?? ''}>
                               {t(turn.kind === 'compaction' ? 'trajCompaction' : outcomeKey(turn))}
                             </span>
+                            {turn.outcome === 'note' && turn.delivered === false && (
+                              <span className={styles.outcome ?? ''}>{t('trajNotDelivered')}</span>
+                            )}
                             {turn.severity !== undefined && <span className={styles.outcome ?? ''}>{turn.severity}</span>}
                             <span className={styles.time ?? ''}>{new Date(turn.at).toLocaleTimeString()}</span>
                             <span className={styles.duration ?? ''}>{formatCount(turn.durationMs)} ms</span>

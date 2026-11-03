@@ -262,7 +262,7 @@ async function seededManager(): Promise<NextPromptManager> {
     llm: () => llm,
     logger: { debug: () => {}, warn: () => {} },
   })
-  const delta: Delta = { markdown: 'turn context', willContinue: false }
+  const delta: Delta = { markdown: 'turn context' }
   manager.onCompletedTurnEnd('sess-1')
   manager.onDelta('sess-1', delta)
   await settle()

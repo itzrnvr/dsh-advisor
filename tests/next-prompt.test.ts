@@ -48,7 +48,7 @@ import { DEFAULT_NEXT_PROMPT_SYSTEM_PROMPT } from '../src/prompts'
 // ---------------------------------------------------------------------------
 
 /** A rendered transcript delta (shape produced by the T3 observer). */
-const delta = (markdown: string): Delta => ({ markdown, willContinue: false })
+const delta = (markdown: string): Delta => ({ markdown })
 
 /** A fully enabled resolved config (post-gate) with predictions on. */
 const baseConfig = (): ResolvedAdvisorConfig => ({

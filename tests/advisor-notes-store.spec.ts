@@ -18,7 +18,7 @@ const NOTE = {
   at: 1_000,
   severity: 'nit',
   text: 'consider the cache',
-  channel: 'inject',
+  channel: 'commit',
   turn: 1,
 }
 

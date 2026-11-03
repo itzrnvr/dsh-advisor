@@ -212,18 +212,18 @@ async function composeOverrideHarness(
   return { ctx, adapter, entry, handler: definitions[0]!.handler, definitions, agents, fiber: fiber as unknown as { dispose(): Promise<void> } }
 }
 
-/** Publish a fake agent (steer/inject spies) and register it for liveness. */
+/** Publish a fake agent (steer + direct-commit spies) and register it for liveness. */
 function publishAgent(
   ctx: Context,
   agents: Map<string, Agent>,
   id = 's1',
-): { inject: ReturnType<typeof vi.fn>; steer: ReturnType<typeof vi.fn> } {
-  const inject = vi.fn()
+): { commit: ReturnType<typeof vi.fn>; steer: ReturnType<typeof vi.fn> } {
+  const commit = vi.fn()
   const steer = vi.fn()
-  const agent = { id, inject, steer } as unknown as Agent
+  const agent = { id, session: { append: commit }, steer } as unknown as Agent
   agents.set(id, agent)
   ctx.emit('agent/created', { agent, source: 'startup' })
-  return { inject, steer }
+  return { commit, steer }
 }
 
 /** A session whose `events` is a live log the feed loop grows in place, with
@@ -443,7 +443,7 @@ describe('session model override — explicit gate applies AFTER session resolut
       {}, // pairless global: the session pin is what satisfies the gate
       [textReply('pinned'), textReply('after repair')],
     )
-    const { inject } = publishAgent(ctx, agents, 's1')
+    const { commit } = publishAgent(ctx, agents, 's1')
     const { session, log } = makeSession('s1')
 
     // Turn 1 holds a blocked call on the pinned route; turn 2 queues BEHIND it.
@@ -463,7 +463,7 @@ describe('session model override — explicit gate applies AFTER session resolut
     await flush()
     // The late old-route call must never deliver, and the queued delta must
     // never reach the adapter: a surviving runtime would produce both.
-    expect(inject).not.toHaveBeenCalled()
+    expect(commit).not.toHaveBeenCalled()
     expect(adapter.requests).toHaveLength(1)
 
     // Repairing the global pair serves the next delta on the NEW route. This
@@ -544,7 +544,7 @@ describe('session model override — enable-switch independence (spec §5.3)', (
       { provider: 'stub', model: 'stub-model' },
       [textReply('in flight'), textReply('after edit')],
     )
-    const { inject } = publishAgent(ctx, agents, 's1')
+    const { commit } = publishAgent(ctx, agents, 's1')
     const { session, log } = makeSession('s1')
 
     // Call in flight on the global route.
@@ -560,7 +560,7 @@ describe('session model override — enable-switch independence (spec §5.3)', (
     expect(textOf(status)).toContain('(session override)') // recorded as a pin
 
     adapter.release()
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
 
     // Protection: a later global default edit does NOT touch the pinned route.
     entry.commit(ctx, { provider: 'other', model: 'other-model' })
@@ -729,7 +729,7 @@ describe('session model override — route change effect (spec §5.3)', () => {
       { provider: 'stub', model: 'stub-model' },
       [textReply('old route note'), textReply('new route note')],
     )
-    const { inject } = publishAgent(ctx, agents, 's1')
+    const { commit } = publishAgent(ctx, agents, 's1')
     const { session, log } = makeSession('s1')
 
     // Turn 1 drains on the old route; turn 2 queues BEHIND the blocked call...
@@ -747,8 +747,8 @@ describe('session model override — route change effect (spec §5.3)', () => {
     // The late old-route call settles — its note must NEVER deliver.
     adapter.release()
     await flush()
-    expect(inject).not.toHaveBeenCalled()
-    expect(inject).toHaveBeenCalledTimes(0)
+    expect(commit).not.toHaveBeenCalled()
+    expect(commit).toHaveBeenCalledTimes(0)
 
     // Turn 3: served by the NEW runtime on the NEW route, and the delta is
     // only turn 3 (re-seed — no replay of turn 2's dropped backlog).
@@ -758,7 +758,7 @@ describe('session model override — route change effect (spec §5.3)', () => {
     expect(deltaTextOf(adapter.requests[1]!)).toContain('u3')
     expect(deltaTextOf(adapter.requests[1]!)).not.toContain('u2-backlog')
     expect(deltaTextOf(adapter.requests[1]!)).not.toContain('u1')
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
   })
 })
 

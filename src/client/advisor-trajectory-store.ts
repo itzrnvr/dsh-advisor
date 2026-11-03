@@ -31,6 +31,8 @@ export interface AdvisorTrajectoryTurn {
   readonly userText?: string
   readonly severity?: 'nit' | 'concern' | 'blocker'
   readonly note?: string
+  /** Whether the accepted note actually reached the primary session. */
+  readonly delivered?: boolean
   readonly deltaChars: number
   readonly historyTokens: number
   readonly systemChars: number

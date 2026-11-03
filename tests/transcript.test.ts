@@ -5,7 +5,7 @@
  * Contract under test:
  * - `DeltaRenderer.update(events)` advances a cursor over the session event
  *   log and renders only the newly appended messages as a role-annotated
- *   markdown delta (`Delta = { markdown, willContinue }`).
+ *   markdown delta (`Delta = { markdown, turn? }`).
  * - A prefix rewrite — `user/message` with `surfaceOp.op === 'replace'`,
  *   `compact/*` events (KD-5 triggers), or a fingerprint mismatch (defensive
  *   fallback) — resets the cursor and replays the full post-rewrite surface.
@@ -204,7 +204,6 @@ describe('DeltaRenderer — cursor advance on append', () => {
     const renderer = new DeltaRenderer()
     const delta = renderer.update(buildEvents(simpleTurn(1, 'fix the bug', 'I will fix it.')))
     expect(delta).toBeDefined()
-    expect(delta!.willContinue).toBe(false)
     expect(delta!.markdown).toContain('### Session update')
     expect(delta!.markdown).toContain('**user**: fix the bug')
     expect(delta!.markdown).toContain('**agent**: I will fix it.')
@@ -1159,18 +1158,19 @@ describe('SessionTranscriptObserver — review cadence (fork addition)', () => {
   }
 
   it('fires a mid-turn review on the NEXT step start, once N steps are complete', () => {
-    const deltas: Array<{ markdown: string; willContinue: boolean }> = []
+    const deltas: Array<{ markdown: string; turn?: number }> = []
     const observer = new SessionTranscriptObserver({
       maxDeltaMessages: 60,
       reviewEverySteps: 3,
       reviewEveryTurns: 1,
-      onDelta: (_sessionId, delta) => deltas.push({ markdown: delta.markdown, willContinue: delta.willContinue }),
+      onDelta: (_sessionId, delta) => deltas.push({ markdown: delta.markdown, turn: delta.turn }),
     })
 
     feed(observer, 's1', steppedTurn(1, 4))
 
-    // Step 4's start completes steps 1-3 → one mid-turn review of a1..a3.
-    const midTurn = deltas.find((delta) => delta.willContinue)
+    // Step 4's start completes steps 1-3 → one mid-turn review of a1..a3,
+    // attributed to the turn in progress (1) before that turn's turn/end.
+    const midTurn = deltas.find((delta) => delta.turn === 1 && !delta.markdown.includes('a4'))
     expect(midTurn).toBeDefined()
     expect(midTurn!.markdown).toContain('a1')
     expect(midTurn!.markdown).toContain('a2')
@@ -1178,22 +1178,20 @@ describe('SessionTranscriptObserver — review cadence (fork addition)', () => {
     expect(midTurn!.markdown).not.toContain('a4')
     // turn/end still reviews the remainder as a normal turn delta.
     const turnEndDelta = deltas.at(-1)!
-    expect(turnEndDelta.willContinue).toBe(false)
     expect(turnEndDelta.markdown).toContain('a4')
   })
 
   it('does not fire the step clock when reviewEverySteps is 0', () => {
-    const deltas: Array<{ willContinue: boolean }> = []
+    const deltas: Array<{ markdown: string }> = []
     const observer = new SessionTranscriptObserver({
       maxDeltaMessages: 60,
       reviewEverySteps: 0,
       reviewEveryTurns: 1,
-      onDelta: (_sessionId, delta) => deltas.push({ willContinue: delta.willContinue }),
+      onDelta: (_sessionId, delta) => deltas.push({ markdown: delta.markdown }),
     })
 
     feed(observer, 's1', steppedTurn(1, 5))
     expect(deltas).toHaveLength(1)
-    expect(deltas[0]!.willContinue).toBe(false)
   })
 
   it('the turn clock reviews only every Nth completed turn', () => {
@@ -1342,10 +1340,10 @@ describe('SessionTranscriptObserver — delta.turn attribution (fork addition)',
   })
 
   it('tags a mid-turn step review with the turn in progress', () => {
-    const deltas: Array<{ turn?: number; willContinue: boolean }> = []
+    const deltas: Array<{ turn?: number; markdown: string }> = []
     const observer = new SessionTranscriptObserver({
       maxDeltaMessages: 60,
-      onDelta: (_sessionId, delta) => deltas.push({ turn: delta.turn, willContinue: delta.willContinue }),
+      onDelta: (_sessionId, delta) => deltas.push({ turn: delta.turn, markdown: delta.markdown }),
       reviewEverySteps: 3,
       reviewEveryTurns: 1,
     })
@@ -1356,7 +1354,8 @@ describe('SessionTranscriptObserver — delta.turn attribution (fork addition)',
     specs.push(turnEnd(1))
     feed(observer, 's1', specs)
 
-    const mid = deltas.find((delta) => delta.willContinue)
+    // The mid-turn review covers steps 1-3 (not a4), attributed to turn 1.
+    const mid = deltas.find((delta) => delta.markdown.includes('a3') && !delta.markdown.includes('a4'))
     expect(mid?.turn).toBe(1)
   })
 })

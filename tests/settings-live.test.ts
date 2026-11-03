@@ -202,15 +202,15 @@ async function composeLiveHarness(
   return { ctx, adapter, entry }
 }
 
-/** Fake Agent with inject/steer spies; published via `agent/created`. */
+/** Fake Agent with steer + direct-commit spies; published via `agent/created`. */
 function makeFakeAgent(id = 's1'): {
   agent: Agent
-  inject: ReturnType<typeof vi.fn>
+  commit: ReturnType<typeof vi.fn>
   steer: ReturnType<typeof vi.fn>
 } {
-  const inject = vi.fn()
+  const commit = vi.fn()
   const steer = vi.fn()
-  return { agent: { id, inject, steer } as unknown as Agent, inject, steer }
+  return { agent: { id, session: { append: commit }, steer } as unknown as Agent, commit, steer }
 }
 
 /** A session whose `events` is a live log the feed loop grows in place. */
@@ -363,14 +363,14 @@ describe('settings live re-apply — latched config + runtime rebuild (Important
         ]),
       ],
     )
-    const { agent, steer, inject } = makeFakeAgent('s1')
+    const { agent, steer, commit } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
     // Pre-edit: the session runtime exists and calls go out with the ENTRY
     // route (stub / stub-model / the entry system prompt).
     feed(ctx, session, log, simpleTurn(1, 'first request', 'first reply'))
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
     expect(adapter.requests).toHaveLength(1)
     expect(adapter.requests[0]!.provider).toBe('stub')
     expect(adapter.requests[0]!.model).toBe('stub-model')
@@ -406,17 +406,17 @@ describe('settings live re-apply — latched config + runtime rebuild (Important
     for (let index = 0; index < 6; index++) {
       const turn = 3 + index
       feed(ctx, session, log, simpleTurn(turn, `turn ${turn} request`, `turn ${turn} reply`))
-      await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(2 + index))
+      await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(2 + index))
       expect(steer).toHaveBeenCalledTimes(1)
     }
     // 1 pre-edit nit + 6 downgraded concerns = 7 injects; still exactly one steer.
-    expect(inject).toHaveBeenCalledTimes(7)
+    expect(commit).toHaveBeenCalledTimes(7)
     expect(steer).toHaveBeenCalledTimes(1)
 
     // The seventh completed turn exhausts the 7-turn cooldown → steering resumes.
     feed(ctx, session, log, simpleTurn(9, 'ninth request', 'ninth reply'))
     await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(2))
-    expect(inject).toHaveBeenCalledTimes(7)
+    expect(commit).toHaveBeenCalledTimes(7)
     expect(adapter.requests).toHaveLength(9)
   })
 })
@@ -521,7 +521,7 @@ describe('settings live re-apply — conditional runtime rebuild (qc3 W-1 / qc1 
       [],
       gated,
     )
-    const { agent, inject, steer } = makeFakeAgent('s1')
+    const { agent, commit, steer } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
@@ -545,7 +545,7 @@ describe('settings live re-apply — conditional runtime rebuild (qc3 W-1 / qc1 
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(2))
     // The duplicate note is suppressed by the SURVIVING guard — a rebuilt
     // runtime would accept it again (inject would be 2).
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
     expect(steer).not.toHaveBeenCalled()
   })
 
@@ -557,7 +557,7 @@ describe('settings live re-apply — conditional runtime rebuild (qc3 W-1 / qc1 
         [...textReply('{"note":"after edit","severity":"nit"}')],
       ],
     )
-    const { agent, inject } = makeFakeAgent('s1')
+    const { agent, commit } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
@@ -572,7 +572,7 @@ describe('settings live re-apply — conditional runtime rebuild (qc3 W-1 / qc1 
     feed(ctx, session, log, simpleTurn(2, 'second request', 'second reply'))
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(2))
     expect(adapter.requests[1]!.system).toBe('custom')
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(2))
   })
 })
 
@@ -594,7 +594,7 @@ describe('settings live — idempotent /advisor on (GitHub issue #124 review)', 
       gated,
     )
     const handler = await registerCommands(ctx)
-    const { agent, inject, steer } = makeFakeAgent('s1')
+    const { agent, commit, steer } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
@@ -612,7 +612,7 @@ describe('settings live — idempotent /advisor on (GitHub issue #124 review)', 
 
     gated.release()
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(2))
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
     expect(steer).not.toHaveBeenCalled()
   })
 })
@@ -634,14 +634,14 @@ describe('settings live re-apply — proseFallback rebuild (KD-I4, issue #102)',
         [...textReply('{"note":"legacy budget ignored","severity":"nit"}')],
       ],
     )
-    const { agent, inject } = makeFakeAgent('s1')
+    const { agent, commit } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
     feed(ctx, session, log, simpleTurn(1, 'first request', 'first reply'))
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(1))
     expect('maxTokens' in adapter.requests[0]!).toBe(false)
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
   })
 
   it('a proseFallback edit rebuilds the runtime: prose replies start producing notes', async () => {
@@ -652,7 +652,7 @@ describe('settings live re-apply — proseFallback rebuild (KD-I4, issue #102)',
         [...textReply('another plain prose reply after enabling the fallback')],
       ],
     )
-    const { agent, inject } = makeFakeAgent('s1')
+    const { agent, commit } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
@@ -661,7 +661,7 @@ describe('settings live re-apply — proseFallback rebuild (KD-I4, issue #102)',
     feed(ctx, session, log, simpleTurn(1, 'first request', 'first reply'))
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(1))
     await flush()
-    expect(inject).not.toHaveBeenCalled()
+    expect(commit).not.toHaveBeenCalled()
 
     // Enabling proseFallback is runtime-affecting (KD-I4): the rebuilt runtime
     // carries the flag, so the next prose reply becomes a nit note through the
@@ -670,7 +670,7 @@ describe('settings live re-apply — proseFallback rebuild (KD-I4, issue #102)',
 
     feed(ctx, session, log, simpleTurn(2, 'second request', 'second reply'))
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(2))
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
   })
 })
 
@@ -801,7 +801,7 @@ describe('settings live re-apply — a committed pair unblocks the gate', () => 
       {}, // pairless entry: gate-blocked at load
       [[...textReply('{"note":"boot nit","severity":"nit"}')]],
     )
-    const { agent, inject } = makeFakeAgent('s1')
+    const { agent, commit } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
@@ -813,7 +813,7 @@ describe('settings live re-apply — a committed pair unblocks the gate', () => 
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(1))
     expect(adapter.requests[0]!.provider).toBe('stub')
     expect(adapter.requests[0]!.model).toBe('stub-model')
-    await vi.waitFor(() => expect(inject).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
   })
 })
 

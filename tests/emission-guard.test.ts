@@ -219,7 +219,7 @@ describe('createEmissionGuard — factory (plan T5)', () => {
 // ---------------------------------------------------------------------------
 
 /** A rendered transcript delta (shape produced by T3's DeltaRenderer). */
-const delta = (markdown: string): Delta => ({ markdown, willContinue: false })
+const delta = (markdown: string): Delta => ({ markdown })
 
 async function* streamOf(chunks: readonly StreamChunk[]): AsyncIterable<StreamChunk> {
   yield * chunks
@@ -253,7 +253,7 @@ function makeRuntime(
     sessionId: 'sess-test' as SessionId,
     systemPrompt: 'test system prompt',
     llm,
-    onNote: (note) => notes.push(note),
+    onNote: (note) => { notes.push(note) },
     ...overrides,
   })
   return { runtime, notes }

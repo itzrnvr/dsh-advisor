@@ -64,7 +64,7 @@ beforeEach(() => {
 const TEST_SYSTEM_PROMPT = 'You are an independent reviewer for a coding session.'
 
 /** A rendered transcript delta (shape produced by T3's DeltaRenderer). */
-const delta = (markdown: string): Delta => ({ markdown, willContinue: false })
+const delta = (markdown: string): Delta => ({ markdown })
 
 /**
  * Scripted fake for the runtime's `llm` option: records calls, replays responses.
@@ -250,7 +250,7 @@ function makeRuntime(llm: AdvisorLlm, overrides: Partial<AdvisorRuntimeOptions> 
     sessionId: 'sess-test' as SessionId,
     systemPrompt: TEST_SYSTEM_PROMPT,
     llm,
-    onNote: (note) => notes.push(note),
+    onNote: (note) => { notes.push(note) },
     retryBackoffMs: 0,
     ...overrides,
   })
@@ -293,6 +293,43 @@ describe('AdvisorRuntime — drain calls llm.stream once per delta with expected
     expect(direct).toContain('### Session update\n\n**user**: fix the bug')
     expect(runtime.status()).toBe('running')
     expect(runtime.pendingCount).toBe(0)
+  })
+
+  it('marks the trajectory record delivered=false when the delivery seam drops the note (no agent)', async () => {
+    // Fork addition pin: an extracted note whose onNote callback reports the
+    // delivery as dropped must surface as outcome 'note' with delivered:false
+    // — the Advisor tab renders "not delivered", never a note the chat never
+    // received as delivered.
+    const llm = new FakeLlm([{ chunks: textReply('{"note":"dropped in transit"}') }])
+    const records: AdvisorTurnRecord[] = []
+    const { runtime } = makeRuntime(llm, {
+      onNote: () => false,
+      onTurn: (record) => { records.push(record) },
+    })
+
+    runtime.enqueue(delta('### Session update\n\n**user**: work'))
+    await runtime.waitForDrain()
+
+    expect(records).toHaveLength(1)
+    expect(records[0]!.outcome).toBe('note')
+    expect(records[0]!.delivered).toBe(false)
+    expect(records[0]!.note).toBe('dropped in transit')
+  })
+
+  it('marks the trajectory record delivered=true when the delivery seam lands the note', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('{"note":"landed"}') }])
+    const records: AdvisorTurnRecord[] = []
+    const { runtime } = makeRuntime(llm, {
+      onNote: () => true,
+      onTurn: (record) => { records.push(record) },
+    })
+
+    runtime.enqueue(delta('### Session update\n\n**user**: work'))
+    await runtime.waitForDrain()
+
+    expect(records).toHaveLength(1)
+    expect(records[0]!.outcome).toBe('note')
+    expect(records[0]!.delivered).toBe(true)
   })
 
   it('carries the owning conversation id on every advisor request', async () => {
@@ -1363,7 +1400,7 @@ describe('AdvisorRuntime — composed with a real LlmRuntime + registered adapte
       sessionId: 'sess-test' as SessionId,
       systemPrompt: TEST_SYSTEM_PROMPT,
       llm: ctx.llm,
-      onNote: (note) => notes.push(note),
+      onNote: (note) => { notes.push(note) },
     })
     runtime.enqueue(delta('### Session update\n\n**agent**: wrote the tests'))
     await runtime.waitForDrain()
@@ -1430,7 +1467,7 @@ describe('AdvisorRuntime — capability-gated reasoningEffort against a real Llm
       sessionId: 'sess-test' as SessionId,
       systemPrompt: TEST_SYSTEM_PROMPT,
       llm: ctx.llm,
-      onNote: (note) => notes.push(note),
+      onNote: (note) => { notes.push(note) },
     })
     runtime.enqueue(delta('### Session update\n\n**agent**: wrote the tests'))
     await runtime.waitForDrain()
@@ -1705,7 +1742,7 @@ describe('AdvisorRuntime — reviewed-turn attribution (fork addition)', () => {
     const received: Array<number | undefined> = []
     const llm = new FakeLlm([{ chunks: textReply('{"note":"x"}') }])
     const { runtime } = makeRuntime(llm, {
-      onNote: (_note, turn) => received.push(turn),
+      onNote: (_note, turn) => { received.push(turn) },
     })
 
     runtime.enqueue({ ...delta('update'), turn: 7 })

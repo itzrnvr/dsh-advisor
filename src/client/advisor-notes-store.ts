@@ -23,7 +23,8 @@ export interface AdvisorNote {
   readonly at: number
   readonly severity: 'nit' | 'concern' | 'blocker'
   readonly text: string
-  readonly channel: 'inject' | 'steer'
+  /** How the note was delivered: a direct session-log commit, or a waking steer. */
+  readonly channel: 'commit' | 'steer'
   /** Turn the review belonged to (absent when the host could not attribute it). */
   readonly turn?: number
 }
@@ -173,7 +174,7 @@ export class AdvisorNotesController {
           && typeof note.at === 'number'
           && typeof note.text === 'string'
           && (note.severity === 'nit' || note.severity === 'concern' || note.severity === 'blocker')
-          && (note.channel === 'inject' || note.channel === 'steer')
+          && (note.channel === 'commit' || note.channel === 'steer')
         ))
         .map((note) => ({
           ...note,
