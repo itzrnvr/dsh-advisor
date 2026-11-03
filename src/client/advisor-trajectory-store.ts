@@ -155,12 +155,25 @@ export class AdvisorTrajectoryController {
       && Array.isArray((payload as { turns?: unknown }).turns)
     ) {
       const wire = payload as Exclude<AdvisorTrajectoryRpcPayload, { error: unknown }>
-      const turns = wire.turns.filter((turn): turn is AdvisorTrajectoryTurn => (
-        typeof turn === 'object' && turn !== null
-        && typeof turn.at === 'number'
-        && typeof turn.durationMs === 'number'
-        && (turn.outcome === 'note' || turn.outcome === 'no-note' || turn.outcome === 'failure' || turn.outcome === 'aborted')
-      ))
+      // Normalize at the poll boundary: the wire ships previews every few
+      // seconds, so both text slots are type-checked and capped here. Rows
+      // failing the outcome check are dropped (the host controls that union).
+      const turns = wire.turns
+        .filter((turn): turn is AdvisorTrajectoryTurn => (
+          typeof turn === 'object' && turn !== null
+          && typeof turn.at === 'number'
+          && typeof turn.durationMs === 'number'
+          && (turn.outcome === 'note' || turn.outcome === 'no-note' || turn.outcome === 'failure' || turn.outcome === 'aborted')
+        ))
+        .map((turn) => {
+          const userText = (turn as { userText?: unknown }).userText
+          const note = (turn as { note?: unknown }).note
+          return {
+            ...turn,
+            ...(typeof userText === 'string' ? { userText: userText.slice(0, 8_000) } : {}),
+            ...(typeof note === 'string' ? { note: note.slice(0, 2_000) } : {}),
+          }
+        })
       this.store.update((s) => {
         s.status = 'ready'
         s.turns = turns
