@@ -424,6 +424,33 @@ export interface AdvisorSuggestionFace {
  * descriptors into `ctx.typert.local`, which `claimsEndpoint` checks FIRST,
  * so claim + dispatch work regardless of module identity.
  */
+/**
+ * Validate one trajectoryEntry request and delegate to the elected owner.
+ * Exported so the validation branches are unit-testable without a gateway
+ * instance (the class method is a thin delegate).
+ */
+export function resolveTrajectoryEntry(
+  face: AdvisorTrajectoryFace | undefined,
+  sessionId: string,
+  at: number,
+): AdvisorTrajectoryEntryRpcResult {
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
+    return { error: { tag: 'advisor/rejected', message: 'advisor: getTrajectoryEntry requires a non-empty sessionId' } }
+  }
+  if (typeof at !== 'number' || !Number.isInteger(at) || at < 0) {
+    return { error: { tag: 'advisor/rejected', message: 'advisor: getTrajectoryEntry requires a non-negative integer at' } }
+  }
+  if (face === undefined) {
+    return {
+      error: {
+        tag: 'advisor/unavailable',
+        message: 'advisor: the trajectory surface is not owned by this gateway — no elected owner on this fiber',
+      },
+    }
+  }
+  return face.getTrajectoryEntry(sessionId, at)
+}
+
 export class AdvisorConfigGateway extends TypertRemoteService {
   private readonly bridge: AdvisorSettingsBridge
   /** The live settings service once the optional inject child activates. */
@@ -658,22 +685,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
    * answers `advisor/entry-unknown`.
    */
   getTrajectoryEntry(sessionId: string, at: number): AdvisorTrajectoryEntryRpcResult {
-    if (typeof sessionId !== 'string' || sessionId.length === 0) {
-      return { error: { tag: 'advisor/rejected', message: 'advisor: getTrajectoryEntry requires a non-empty sessionId' } }
-    }
-    if (typeof at !== 'number' || !Number.isInteger(at) || at < 0) {
-      return { error: { tag: 'advisor/rejected', message: 'advisor: getTrajectoryEntry requires a non-negative integer at' } }
-    }
-    const face = this.trajectoryFace()
-    if (face === undefined) {
-      return {
-        error: {
-          tag: 'advisor/unavailable',
-          message: 'advisor: the trajectory surface is not owned by this gateway — no elected owner on this fiber',
-        },
-      }
-    }
-    return face.getTrajectoryEntry(sessionId, at)
+    return resolveTrajectoryEntry(this.trajectoryFace(), sessionId, at)
   }
 
   /**
