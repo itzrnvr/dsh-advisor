@@ -56,7 +56,13 @@ describe('release gate — a red tree can never land a commit', () => {
     expect(wrapper).toContain("run('pnpm', ['typecheck'])")
     expect(wrapper).toContain("run('pnpm', ['test'])")
     expect(wrapper).toContain("run('pnpm', ['build'])")
-    expect(wrapper).toContain("run('git', ['commit', '-m', message])")
+    expect(wrapper).toContain("run('git', ['add', '-A'])")
+    // The MESSAGE cannot travel through a package-script argument: pnpm runs
+    // scripts through cmd.exe on Windows, which splits a multi-line argument at
+    // the newline — a multi-paragraph rationale silently landed as its first
+    // line. So git receives it through a FILE.
+    expect(wrapper).toContain("run('git', ['commit', '-F', messageFile])")
+    expect(wrapper).toContain('writeFileSync(messageFile')
     // The message is mandatory — every commit in this repo documents its change.
     expect(wrapper).toMatch(/message\.length === 0/)
     expect(wrapper).toContain('process.exit(2)')
