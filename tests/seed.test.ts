@@ -49,6 +49,10 @@ function turnEnd(turn: number): SessionEvent {
   return event('turn/end', { turn, reason: { kind: 'completed' } })
 }
 
+function turnStart(turn: number): SessionEvent {
+  return event('turn/start', { turn })
+}
+
 /** An assistant output — `assistant/message` DOES wrap in `.message`. */
 function assistantMessage(text: string): SessionEvent {
   return event('assistant/message', {
@@ -122,6 +126,40 @@ describe('notesFromSessionEvents — turn attribution', () => {
     ])
     expect(notes).toHaveLength(1)
     expect(notes[0]!.turn).toBeUndefined()
+  })
+
+  it('keeps mid-turn attribution across a steering human message (live-log case)', () => {
+    // Regression pin from a live session (index 238 of 249 notes): a human
+    // steer arriving MID an open turn used to reset the mid-turn attribution
+    // state, dropping the next note onto the already-closed turn. A human
+    // message while a turn is open is steering, not a boundary.
+    seq = 0
+    const notes = notesFromSessionEvents([
+      turnStart(1), humanMessage('p1'), assistantMessage('a1'), turnEnd(1),
+      turnStart(2), humanMessage('p2'), assistantMessage('a2'),
+      advisorMessage('[advisor:nit] mid-turn one'),
+      humanMessage('steer: change course'),
+      advisorMessage('[advisor:concern] after the steer'),
+      assistantMessage('a3'), turnEnd(2),
+    ])
+    expect(notes).toHaveLength(2)
+    expect(notes[0]!.turn).toBe(2)
+    expect(notes[1]!.turn).toBe(2)
+  })
+
+  it('attributes a note after the opening prompt but before any output to the closed turn', () => {
+    // Counter-case: with no assistant output yet in the open turn, the note
+    // is the review of the turn that just closed — steering must not change
+    // THAT rule (the open turn exists here too, via turn/start 2).
+    seq = 0
+    const notes = notesFromSessionEvents([
+      turnStart(1), humanMessage('p1'), assistantMessage('a1'), turnEnd(1),
+      turnStart(2), humanMessage('p2'),
+      advisorMessage('[advisor:concern] review of turn one'),
+      assistantMessage('a2'), turnEnd(2),
+    ])
+    expect(notes).toHaveLength(1)
+    expect(notes[0]!.turn).toBe(1)
   })
 
   it('ignores the old wrong `.message`-wrapped shape instead of matching it', () => {

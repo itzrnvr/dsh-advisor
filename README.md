@@ -149,6 +149,10 @@ The MVP deliberately drops full omp parity. Accepted gaps (tracked in the harnes
 | [docs/verification.md](docs/verification.md) | verification records: test matrix (16 files / 319 cases), typecheck/build, CI contract, real-environment steps |
 | [docs/release.md](docs/release.md) | release process: PR-driven Release prep + Release workflows, OIDC trusted publishing, version strategy, rollback |
 
+## Development note (local link installs)
+
+When a DSH profile installs this repo through a `link:` path (the profile's `node_modules/dsh-advisor` is a symlink into this checkout), changes ship by rebuilding (`pnpm build`) and reloading the GUI. **Do not run `dsh plugin install` against such a profile**: the install rewrites the profile's plugin registry (`cordis.patch.yml`) before it links, and one such rewrite re-enabled every disabled plugin row in a live profile (2026-11-03), costing the user a full restart. The symlink already IS the install; the registry rewrite adds nothing and is not safe to repeat.
+
 ## License
 
 Released under the **MIT** License — see [LICENSE](LICENSE). The LICENSE file is authoritative for copyright and license terms.

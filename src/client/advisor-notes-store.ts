@@ -33,7 +33,8 @@ export interface AdvisorNote {
 export interface AdvisorNotesState {
   /** idle → pending (fetch in flight) → ready; every failure latches unavailable. */
   status: 'idle' | 'pending' | 'ready' | 'unavailable'
-  /** Delivered notes, oldest → newest (bounded by the host, ≤ 30). */
+  /** Delivered notes, oldest → newest (the host's full derivation; every
+   * surface bounds its own view — the strip shows 3, a turn tail 5). */
   notes: AdvisorNote[]
   /** Whether the advisor is effectively on for this session. */
   enabled: boolean
@@ -44,8 +45,6 @@ export interface AdvisorNotesState {
   model?: string
   /** Epoch-ms of the last accepted note, when known. */
   lastActivityAt?: number
-  /** Whether the expanded note list is open. */
-  expanded: boolean
   /** Whether the user dismissed the strip for this page lifetime. */
   dismissed: boolean
 }
@@ -94,7 +93,6 @@ export class AdvisorNotesController {
     notes: [],
     enabled: false,
     runtimeStatus: 'disabled',
-    expanded: false,
     dismissed: false,
   })
 
@@ -129,12 +127,11 @@ export class AdvisorNotesController {
     this.timer = undefined
   }
 
-  /** Toggle the expanded note list. */
-  toggleExpanded(): void {
-    this.store.update((s) => { s.expanded = !s.expanded })
-  }
-
-  /** Hide the strip for this page lifetime (a reload brings it back). */
+  /**
+   * Hide the strip for now. A newly arriving concern/blocker re-arms it (see
+   * fetch) — interrupting advice the user has not seen must not stay hidden
+   * behind a dismiss clicked for an older batch.
+   */
   dismiss(): void {
     this.store.update((s) => { s.dismissed = true })
   }
@@ -188,9 +185,20 @@ export class AdvisorNotesController {
         model: typeof wire.model === 'string' ? wire.model : undefined,
         lastActivityAt: typeof wire.lastActivityAt === 'number' ? wire.lastActivityAt : undefined,
       }
+      // Dismiss re-arm: a concern/blocker NEWER than anything published lifts
+      // a dismissed strip — interrupting advice the user has not seen must
+      // not stay hidden behind a dismiss clicked for an older batch. Keyed on
+      // the UNTAGGED bucket: tagged notes render in turn tails, so re-arming
+      // for them would pop the strip only for it to render null.
+      const previous = this.store.getSnapshot()
+      const previousUntagged = previous.notes.filter((note) => note.turn === undefined)
+      const previousLastAt = previousUntagged.length > 0 ? previousUntagged[previousUntagged.length - 1]!.at : 0
+      const importantArrival = previous.dismissed
+        && notes.some((note) => note.turn === undefined && note.severity !== 'nit' && note.at > previousLastAt)
       // Change guard: identical payloads publish nothing. `lastActivityAt` is
-// excluded from the comparison (it moves on any accepted note, which already
-// changes `notes`) so a timestamp-only change cannot churn every tail.
+      // excluded from the comparison (it moves on any accepted note, which
+      // already changes `notes`) so a timestamp-only change cannot churn
+      // every tail.
       const signature = JSON.stringify({ notes: next.notes, enabled: next.enabled, runtimeStatus: next.runtimeStatus, provider: next.provider, model: next.model })
       if (signature === this.lastSignature && this.store.getSnapshot().status === 'ready') {
         const previousActivity = this.store.getSnapshot().lastActivityAt
@@ -208,6 +216,7 @@ export class AdvisorNotesController {
         s.provider = next.provider
         s.model = next.model
         s.lastActivityAt = next.lastActivityAt
+        if (importantArrival) s.dismissed = false
       })
       return
     }

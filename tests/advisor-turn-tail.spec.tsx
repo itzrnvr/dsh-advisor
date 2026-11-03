@@ -8,7 +8,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, fireEvent, within } from '@testing-library/react'
 import { AdvisorTurnTail } from '../src/client/advisor-turn-tail'
 import type { AdvisorNotesController, AdvisorNotesState } from '../src/client/advisor-notes-store'
 
@@ -27,7 +27,6 @@ const state = (notes: readonly unknown[]): AdvisorNotesState => ({
   notes: notes as AdvisorNotesState['notes'],
   enabled: true,
   runtimeStatus: 'running',
-  expanded: false,
   dismissed: false,
 })
 
@@ -40,7 +39,9 @@ function props(forState: AdvisorNotesState, turn: number): TailProps {
     sessionId: 's1',
     controller: { start: vi.fn(), stop: vi.fn() } as unknown as AdvisorNotesController,
     hooks: { snapshot: {} },
-    t: (key: string) => key,
+    t: (key: string, params?: Record<string, string | number>) => (
+      key === 'notesMore' ? `+${String(params?.count)} more` : key
+    ),
     useSnapshot: (selector: (value: AdvisorNotesState) => unknown) => selector(forState),
   } as unknown as TailProps
 }
@@ -59,5 +60,16 @@ describe('AdvisorTurnTail — inline note rows at the reviewed turn', () => {
   it('renders null for a turn with no notes', () => {
     const view = render(<AdvisorTurnTail {...props(state([note(1, 3)]), 7)} />)
     expect(view.container.textContent).toBe('')
+  })
+
+  it('collapses a turn with many notes behind a +N more reveal', () => {
+    const many = [1, 2, 3, 4, 5, 6, 7].map((at) => note(at, 3))
+    const view = render(<AdvisorTurnTail {...props(state(many), 3)} />)
+
+    // Five rows render expanded; the other two hide behind the reveal so a
+    // 57-note turn cannot become a wall in the flow.
+    expect(within(view.container).getAllByText('notesCollapse')).toHaveLength(5)
+    fireEvent.click(within(view.container).getByText('+2 more'))
+    expect(within(view.container).getAllByText('notesCollapse')).toHaveLength(7)
   })
 })

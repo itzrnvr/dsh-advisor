@@ -23,10 +23,16 @@
  * message (the durable source shape is untouched), so it is derived from the
  * note's position relative to turn boundaries:
  *
- * - a note committed AFTER the next turn's human prompt is the review of the
- *   turn that just closed → the last `turn/end` before it;
- * - a note committed while the agent is still working (no human prompt since
- *   the boundary) is a mid-turn step review → the turn that closes next;
+ * - a note committed AFTER the next turn's opening human prompt (and before
+ *   that turn produced output) is the review of the turn that just closed →
+ *   the last `turn/end` before it;
+ * - a note committed while the agent is still working is a mid-turn step
+ *   review → the turn that closes next (the OPEN turn while it runs);
+ * - a human message that arrives WHILE a turn is open is STEERING into that
+ *   turn, not a turn boundary: it does not reset the mid-turn attribution
+ *   state (without this rule a note following a mid-turn steer fell back to
+ *   the already-closed turn — one note in 249 did exactly that in a live
+ *   log); with no open turn the old reset semantics apply;
  * - agentic sessions with no turn/end at all stay turn-less (the client's
  *   session strip renders those).
  *
@@ -93,14 +99,22 @@ export function notesFromSessionEvents(events: readonly SessionEvent[]): SeededA
   let humanSinceEnd = false
   /** Assistant output already produced since the next turn's opening prompt. */
   let assistantSincePrompt = false
+  /** The turn a `turn/start` opened and no `turn/end` has closed yet. */
+  let openTurn: number | undefined
   /** Running pointer into `turnEnds` (both advance in seq order) — the pass stays O(events). */
   let turnEndIndex = 0
   for (const event of events) {
     if (event.type === 'turn/end') {
       const turn = turnOf(event)
       if (turn !== undefined) lastEndedTurn = turn
+      openTurn = undefined
       humanSinceEnd = false
       assistantSincePrompt = false
+      continue
+    }
+    if (event.type === 'turn/start') {
+      const turn = turnOf(event)
+      if (turn !== undefined) openTurn = turn
       continue
     }
     if (event.type === 'assistant/message') {
@@ -115,7 +129,13 @@ export function notesFromSessionEvents(events: readonly SessionEvent[]): SeededA
     const kind = (message as { readonly source?: { readonly kind?: string } }).source?.kind
     if (kind === 'user') {
       humanSinceEnd = true
-      assistantSincePrompt = false
+      // A human message while a turn is OPEN is steering into that turn, not
+      // a turn boundary: keep the mid-turn attribution state, or the next
+      // note would fall back to the already-closed turn (observed live: one
+      // note in 249 landed a turn early through a mid-turn steer). With no
+      // open turn (session start, turn-less agentic sessions) the old reset
+      // semantics apply.
+      if (openTurn === undefined) assistantSincePrompt = false
       continue
     }
     if (!isAdvisorMessage(message)) continue

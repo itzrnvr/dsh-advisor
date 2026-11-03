@@ -7,20 +7,30 @@
  * turn appear right in the message flow — no trajectory viewer, no separate
  * tab.
  *
- * The host attributes each delivered note to the last completed Agent turn
- * (`AdvisorNoteView.turn`), so this component simply filters the session's
- * notes by `turn.turn`. The polling controller is SHARED per session with
- * the dock fallback, so one poll feeds every surface.
+ * The host attributes each delivered note to the turn it reviewed
+ * (`AdvisorNoteView.turn`, derived from the session log), so this component
+ * simply filters the session's notes by `turn.turn`. The polling controller
+ * is SHARED per session with the dock fallback, so one poll feeds every
+ * surface.
+ *
+ * BOUNDED (fork fix): one turn can carry dozens of notes (57 observed in a
+ * live turn), and every row opens with its full body — an uncapped tail would
+ * be a wall. Past {@link TURN_TAIL_MAX} rows the tail collapses into a
+ * '+N more' reveal; the hidden rows stay one click away, nothing is lost.
  *
  * Renders null while there is nothing for this turn — an entry without
  * content is explicitly supported by the slot contract.
  */
 
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { AdvisorNotesController, AdvisorNotesState } from './advisor-notes-store.ts'
 import { AdvisorNoteRow } from './advisor-note-node.tsx'
 import type { AdvisorKey } from './locales.ts'
+import styles from './advisor-note-node.module.css'
+
+/** Most note rows one turn tail shows before collapsing into '+N more'. */
+const TURN_TAIL_MAX = 5
 
 /** Injected dependencies (one face per session scope binding). */
 export interface AdvisorTurnTailInjected {
@@ -50,7 +60,7 @@ export type AdvisorTurnTailProps =
   & AdvisorTurnTailInjected
   & {
     /** Synthesized locale seat for the `settings.advisor` namespace. */
-    readonly t: (key: AdvisorKey) => string
+    readonly t: (key: AdvisorKey, params?: Record<string, string | number>) => string
     /** Renderer-bound selector hook over the injected snapshot. */
     readonly useSnapshot: <T>(selector: (state: AdvisorNotesState) => T) => T
   }
@@ -62,6 +72,7 @@ export type AdvisorTurnTailProps =
  */
 export function AdvisorTurnTail(props: AdvisorTurnTailProps): ReactNode {
   const { controller, useSnapshot, t, turn } = props
+  const [showAll, setShowAll] = useState(false)
   // Subscribe to the exact slices this surface needs: the notes array only
   // changes when the host payload actually changed (the controller guards
   // identical polls), so a 4 s tick no longer re-renders every mounted tail.
@@ -80,11 +91,24 @@ export function AdvisorTurnTail(props: AdvisorTurnTailProps): ReactNode {
   // guarantees the note renders at the end of the turn it reviewed (the chat
   // node seat could not: the inbox commits the note inside the NEXT turn, and
   // the flow groups nodes by their turn location, not by anchorSeq alone).
+  const shown = showAll || turnNotes.length <= TURN_TAIL_MAX
+    ? turnNotes
+    : turnNotes.slice(0, TURN_TAIL_MAX)
+  const hidden = turnNotes.length - shown.length
   return (
     <>
-      {turnNotes.map((note, index) => (
+      {shown.map((note, index) => (
         <AdvisorNoteRow key={`${note.at}-${index}`} node={{ data: note }} t={t} />
       ))}
+      {hidden > 0 && (
+        <button
+          type="button"
+          className={styles.toggle ?? ''}
+          onClick={() => { setShowAll(true) }}
+        >
+          {t('notesMore', { count: hidden })}
+        </button>
+      )}
     </>
   )
 }

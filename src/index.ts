@@ -470,8 +470,6 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   const traceLog = new Map<string, AdvisorTrace[]>()
   const TRACE_LOG_MAX = 40
   const TRACE_ENTRY_MAX_CHARS = 200_000
-  /** Delivered-notes view bound (same bound the old in-memory log carried). */
-  const NOTES_VIEW_MAX = 30
   /**
    * Derivation cache (fork addition): the notes view is a pure projection of
    * the append-only session log, so `(event count, last seq)` identifies the
@@ -507,7 +505,12 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     }
     const inherited = Number(session.inheritedEventCount ?? 0)
     const scoped = inherited > 0 ? events.slice(inherited) : events
-    const notes = notesFromSessionEvents(scoped).slice(-NOTES_VIEW_MAX)
+    // NO global bound here: a global cap (the old 30) silently emptied the
+    // turn tails of every older turn in long sessions (249 notes observed
+    // live). The derivation is cached per log change and each consumer bounds
+    // its own view — the dock strip shows its last 3, a turn tail collapses
+    // past 5 rows.
+    const notes = notesFromSessionEvents(scoped)
     notesCache.set(sessionId, { count: events.length, lastSeq, notes })
     return notes
   }

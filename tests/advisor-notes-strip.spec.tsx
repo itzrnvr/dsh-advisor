@@ -31,7 +31,6 @@ const state = (notes: readonly unknown[], overrides: Partial<AdvisorNotesState> 
   notes: notes as AdvisorNotesState['notes'],
   enabled: true,
   runtimeStatus: 'running',
-  expanded: false,
   dismissed: false,
   ...overrides,
 })
@@ -44,7 +43,6 @@ function props(forState: AdvisorNotesState, controller?: Partial<AdvisorNotesCon
     controller: {
       start: vi.fn(),
       stop: vi.fn(),
-      toggleExpanded: vi.fn(),
       dismiss: vi.fn(),
       ...controller,
     } as unknown as AdvisorNotesController,
