@@ -64,6 +64,12 @@
 import { createAssistantMessage, createUserMessage, isQuotaExceededError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { ADVISOR_TASK_REMINDER } from './prompts.js'
 import { DEFAULT_HISTORY_MAX_TOKENS } from './limits.js'
+import {
+  ADVISOR_COMPACTION_LABEL,
+  compactConversation,
+  renderCompactableConversation,
+} from './advisor-compact.js'
+import type { CompactableMessage, CompactConversationResult } from './advisor-compact.js'
 import { EMPTY_RESPONSE_CODE, INVALID_CREDENTIAL_CODE, QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import type {
   FinishReason,
@@ -272,6 +278,11 @@ const EMPTY_REPLY_PLACEHOLDER = '(no reply)'
  */
 const DELTA_TRUNCATION_MARKER = '[earlier session update truncated to fit the model context]'
 /**
+ * Marker for the compaction fold: the start of this update lives in the
+ * summary above, so "truncated" would be inaccurate.
+ */
+const DELTA_HEAD_FOLD_MARKER = '[earlier part of this update is in the summary above]'
+/**
  * Rough token estimate for the history budget: ~4 characters per token for
  * prose and code. Exact counts are model-specific; this number only decides
  * when the conversation starts over, so an approximation is the right trade.
@@ -302,6 +313,8 @@ export interface AdvisorTurnRecord {
   readonly durationMs: number
   /** What the attempt produced. */
   readonly outcome: 'note' | 'no-note' | 'failure' | 'aborted'
+  /** Which call this row describes (fork addition); absent = review. */
+  readonly kind?: 'review' | 'compaction'
   /** Severity of an accepted note. */
   readonly severity?: AdviceNote['severity']
   /** Accepted note body (possibly capped). */
@@ -642,6 +655,25 @@ export class AdvisorRuntime {
    * the trajectory row. `undefined` before the first call.
    */
   private lastSentHistoryTokens: number | undefined
+  /**
+   * Estimated tokens per character, calibrated from provider-reported usage
+   * after every call (fork addition). Starts at the 4-chars/token convention;
+   * CJK/code content reports a higher ratio and the estimate follows.
+   */
+  private tokensPerChar = 0.25
+  /** Reactive net: a provider overflow asks the next attempt to compact first. */
+  private forceCompact = false
+  /**
+   * Conservative window guess for the reactive path when the adapter declares
+   * no context: starts at 64k and halves on each consecutive overflow, so the
+   * summarizer itself cannot be sized far above the real limit.
+   */
+  // Design fact: the evidence cap only ever shrinks this guess; it never grows
+  // back within a runtime. A too-small guess costs continuity (more frequent
+  // compactions), never correctness, so no growth policy is implemented.
+  private compactionWindowGuess = 64_000
+  /** Estimated tokens of the last request actually sent (failure evidence). */
+  private lastRequestEstimateTokens = 0
 
   /**
    * Append-only reviewer conversation: the EXACT user turn sent and the exact
@@ -711,16 +743,6 @@ export class AdvisorRuntime {
   /** Current per-session status (T7 `/advisor status` surface). */
   status(): AdvisorRuntimeStatus {
     return this.state
-  }
-
-  /**
-   * Effective reviewer-history budget in estimated tokens (fork addition):
-   * the configured value, clamped to the reviewer model's declared context
-   * window once that is known. Exposed for the Advisor tab so an early reset
-   * is legible, not mistaken for a malfunction.
-   */
-  get effectiveHistoryBudget(): number {
-    return this.historyBudgetTokens()
   }
 
   /** Number of deltas waiting to be drained (bounded by `maxQueued`). */
@@ -1020,12 +1042,13 @@ export class AdvisorRuntime {
       // call instead of wedging the drain ahead of the deadline-guarded
       // stream loop.
       const reasoningEffort = await this.resolveReasoningEffort(deadlineSignal)
-      // Fork addition: fit the request inside the declared context window
-      // BEFORE sending it. History is shed wholesale (never trimmed) and the
-      // delta is tail-truncated only when it alone would not fit.
-      this.fitHistoryToContext(userText)
-      userText = this.fitDeltaToContext(userText)
+      // Fork addition: compact-and-continue when the stored conversation plus
+      // this delta would cross the trigger. The result is ONE user turn
+      // (summary + newest content), preserving strict alternation.
+      userText = await this.prepareUserText(userText, deadlineSignal)
       this.lastSentHistoryTokens = this.historyTokens
+      this.lastRequestEstimateTokens = this.estimateTextTokens(this.systemPrompt)
+        + this.historyTokens + this.estimateTextTokens(userText)
       userMessage = createUserMessage({
         content: [{ type: 'text', text: userText }],
         source: { kind: 'user' },
@@ -1053,12 +1076,17 @@ export class AdvisorRuntime {
         else if (chunk.type === 'finish') finish = chunk.reason
       }
     } catch (error) {
-      return { kind: 'failure', failure: normalizeFailure(error) }
+      const failure = normalizeFailure(error)
+      if (this.isContextOverflow(failure.message)) this.forceCompact = true
+      return { kind: 'failure', failure }
     }
     if (finish === undefined) {
       return { kind: 'failure', failure: { message: 'advisor stream ended without a finish chunk', code: 'UNKNOWN' } }
     }
-    if (finish.kind === 'error') return { kind: 'failure', failure: finish.failure }
+    if (finish.kind === 'error') {
+      if (this.isContextOverflow(finish.failure.message)) this.forceCompact = true
+      return { kind: 'failure', failure: finish.failure }
+    }
     if (finish.kind === 'aborted') {
       // Our own dispose aborts the in-flight call; a provider-side abort is a
       // terminal failure like any other. A deadline timeout surfaced as a
@@ -1078,6 +1106,17 @@ export class AdvisorRuntime {
     // suppresses, or that yields no note, is still a turn the provider saw —
     // omitting it would desync the stored history from the model's own view
     // and change every later request's prefix.
+    // Calibrate the chars→tokens estimate from what the provider reported on
+    // THIS request: input + cache reads + cache writes over the characters we
+    // sent. Keeps CJK/code sessions from undercounting and leaning on the
+    // reactive overflow net.
+    const promptChars = this.systemPrompt.length + this.historyChars + userText.length
+    const promptTokens = (this.lastUsage?.inputTokens ?? 0)
+      + (this.lastUsage?.cacheReadTokens ?? 0)
+      + (this.lastUsage?.cacheWriteTokens ?? 0)
+    if (promptChars > 0 && promptTokens > 0) {
+      this.tokensPerChar = Math.min(1.5, Math.max(0.2, promptTokens / promptChars))
+    }
     this.appendHistory(userText, userMessage, text)
     // stop | max-tokens | tool-calls: extract from the collected text (KD-2;
     // no retry on parse failures — the frame must simply be absent/valid).
@@ -1200,36 +1239,20 @@ export class AdvisorRuntime {
    * AND leave two consecutive user messages, which strict
    * user/assistant-alternation providers reject as a 400.
    *
-   * Budget behavior: crossing the configured token budget clears the
-   * conversation and starts over. Trimming the oldest turns in place is
-   * deliberately not an option: it rewrites the prefix at the cut and makes
-   * the provider re-prefill everything after it, which is the cost this
-   * history exists to remove. One cold call after a reset is cheaper.
+   * Budget behavior (fork addition): the stored conversation has no hard reset
+   * here — the NEXT request compacts it (summary + continue) when it would
+   * cross the configured threshold or the model's window. `historyMaxTokens: 0`
+   * keeps no context at all: every review is cold.
    */
   private appendHistory(userText: string, userMessage: AdvisorHistoryMessage, replyText: string): void {
-    const budget = this.historyBudgetTokens()
-    // 0 = history disabled (either configured 0, or a context so small that
-    // history cannot fit): nothing is stored, so every review starts cold.
-    if (budget <= 0) {
-      this.history.length = 0
-      this.historyChars = 0
-      this.historyTokens = 0
+    if (this.historyMaxTokens <= 0) {
+      this.resetHistory()
       return
     }
     const hasReply = replyText.trim().length > 0
     const replyBody = hasReply ? replyText : EMPTY_REPLY_PLACEHOLDER
     const sizeChars = userText.length + replyBody.length
-    const sizeTokens = estimateTokens(sizeChars)
-    if (this.historyTokens + sizeTokens > budget) {
-      this.history.length = 0
-      this.historyChars = 0
-      this.historyTokens = 0
-      this.logger.debug('advisor: reviewer history reset (budget)', {
-        maxTokens: budget,
-        configuredMaxTokens: this.historyMaxTokens,
-        incomingTokens: sizeTokens,
-      })
-    }
+    const sizeTokens = this.estimateTextTokens(userText) + this.estimateTextTokens(replyBody)
     this.history.push(userMessage)
     this.history.push(createAssistantMessage({
       content: [{ type: 'text', text: replyBody }],
@@ -1240,74 +1263,206 @@ export class AdvisorRuntime {
   }
 
   /**
-   * Tokens a single request may spend BEFORE the reply: the declared context
-   * window minus the output reserve (the adapter's default cap, else 20% of
-   * the window) minus a 5% safety margin. `undefined` when the model declares
-   * no window — the configured budget is then the only bound.
+   * Estimated tokens for one text, calibrated from the provider's reported
+   * usage after each call (`tokensPerChar`), so CJK/code content does not
+   * silently undercount and cross the model's window.
    */
-  private promptBudgetTokens(): number | undefined {
-    const context = this.modelContextTokens
-    if (context === undefined || context <= 0) return undefined
-    const reserve = this.modelOutputReserve ?? Math.ceil(context * 0.2)
-    return Math.max(0, context - reserve - Math.ceil(context * 0.05))
-  }
-
-  /** Effective reviewer-history budget: configured, clamped to 75% of the prompt budget. */
-  private historyBudgetTokens(): number {
-    if (this.historyMaxTokens <= 0) return 0
-    const promptBudget = this.promptBudgetTokens()
-    if (promptBudget === undefined) return this.historyMaxTokens
-    return Math.min(this.historyMaxTokens, Math.floor(promptBudget * 0.75))
+  private estimateTextTokens(text: string): number {
+    return Math.ceil(text.length * this.tokensPerChar)
   }
 
   /**
-   * Self-heal before a request (fork addition): if the system prompt + stored
-   * history + this turn's delta would exceed the model's request budget, drop
-   * the history NOW. Sending it would fail the call (context overflow), retry
-   * once, and drop the review — whereas shedding history makes the review
-   * succeed, just cold. The configured 1M-token budget alone cannot prevent
-   * this: a 128k-context model overflows long before 1M.
+   * When to compact: the configured threshold, clamped to 85% of the model's
+   * declared window when known. 0 = never keep context (every review cold).
    */
-  private fitHistoryToContext(userText: string): void {
-    const promptBudget = this.promptBudgetTokens()
-    if (promptBudget === undefined || this.historyTokens === 0) return
-    const estimatedPrompt = this.historyTokens + estimateTokens(this.systemPrompt.length + userText.length)
-    if (estimatedPrompt <= promptBudget) return
+  private compactionTriggerTokens(): number {
+    if (this.historyMaxTokens <= 0) return 0
+    // Only a DECLARED window caps the configured threshold. An undeclared window
+    // must not override the user's 1M setting on big models: compaction stays
+    // reactive there (observed overflow), and the reactive path sizes from the
+    // conservative guess.
+    const byWindow = this.modelContextTokens === undefined
+      ? undefined
+      : Math.floor(this.modelContextTokens * 0.85)
+    return byWindow === undefined ? this.historyMaxTokens : Math.min(this.historyMaxTokens, byWindow)
+  }
+
+  /** The stored conversation as compactable messages. */
+  private historyConversation(): CompactableMessage[] {
+    const out: CompactableMessage[] = []
+    for (const message of this.history) {
+      const text = (message.content as readonly { type: string; text?: string }[])
+        .map((block) => (block.type === 'text' ? (block.text ?? '') : ''))
+        .join('')
+      if (text.length > 0) out.push({ role: message.role === 'assistant' ? 'assistant' : 'user', text })
+    }
+    return out
+  }
+
+  /** Drop the stored reviewer conversation. */
+  private resetHistory(): void {
     this.history.length = 0
     this.historyChars = 0
     this.historyTokens = 0
-    this.logger.debug('advisor: reviewer history reset (model context)', {
-      provider: this.provider,
-      model: this.model,
-      contextTokens: this.modelContextTokens,
-      promptBudget,
-      estimatedPrompt,
-    })
   }
 
   /**
-   * Tail-truncate one delta that alone (system prompt + delta, history already
-   * shed) exceeds the request budget. The newest work is kept, and a visible
-   * marker tells the reviewer the update is partial — otherwise it would
-   * silently judge a tail-cut transcript as if it were the whole turn.
+   * Make the next request fit its budget (fork addition): when the stored
+   * conversation + the new delta would cross the compaction trigger, summarize
+   * the old part with the SAME reviewer route and continue from
+   * `summary + newest content` in a SINGLE user turn — strict
+   * user/assistant alternation is preserved (the summary is not a second
+   * message beside the kept turns).
+   *
+   * One compaction call, retried once; a failed compaction falls back to a
+   * cold reset so the review still fires instead of being silently dropped.
    */
-  private fitDeltaToContext(userText: string): string {
-    const promptBudget = this.promptBudgetTokens()
-    if (promptBudget === undefined) return userText
-    const available = promptBudget - estimateTokens(this.systemPrompt.length) - this.historyTokens
-    const maxChars = Math.max(0, available * 4)
+  private async prepareUserText(userText: string, signal: AbortSignal): Promise<string> {
+    const force = this.forceCompact
+    this.forceCompact = false
+    // Uniform evidence-based cap: the failed request's own size bounds the real
+    // window. Runs BEFORE the cold path, so a cold-config session converges on
+    // its retry instead of re-sending the identical oversized request.
+    if (force && this.modelContextTokens === undefined && this.lastRequestEstimateTokens > 0) {
+      this.compactionWindowGuess = Math.max(
+        4_096,
+        Math.min(this.compactionWindowGuess, Math.floor(this.lastRequestEstimateTokens * 0.8)),
+      )
+    }
+    if (this.historyMaxTokens <= 0) {
+      this.resetHistory()
+      // Cold-review config still has to survive one oversized delta: keep the
+      // newest part, sized from the KNOWN window (tokens), not a fixed char
+      // cap that a CJK ratio can blow past.
+      if (!force) return userText
+      // Size the trim from the KNOWN window, or the conservative halving guess
+      // when the adapter declares none (a fixed 200k chars can exceed a real
+      // 128k limit under a calibrated CJK ratio).
+      const trimWindow = this.modelContextTokens ?? this.compactionWindowGuess
+      const maxChars = Math.max(1_000, Math.floor(
+        (trimWindow * 0.8 - this.estimateTextTokens(this.systemPrompt)) / this.tokensPerChar,
+      ))
+      return this.trimToChars(userText, maxChars)
+    }
+    const trigger = this.compactionTriggerTokens()
+    const estimated = this.estimateTextTokens(this.systemPrompt) + this.historyTokens + this.estimateTextTokens(userText)
+    if (!force && estimated <= trigger) return userText
+    return await this.compactAndContinue(userText, trigger, signal)
+  }
+
+  /** Keep the newest `maxChars` of a delta, with a visible partial marker. */
+  private trimToChars(userText: string, maxChars: number): string {
     if (userText.length <= maxChars) return userText
     const marker = `${DELTA_TRUNCATION_MARKER}\n\n`
     const keep = Math.max(0, maxChars - marker.length)
-    this.logger.debug('advisor: delta truncated to fit the model context', {
+    return `${marker}${keep === 0 ? '' : userText.slice(-keep)}`
+  }
+
+  /** One compact-and-continue pass over the stored conversation + the delta. */
+  private async compactAndContinue(userText: string, trigger: number, signal: AbortSignal): Promise<string> {
+    const startedAt = Date.now()
+    const window = this.modelContextTokens ?? this.compactionWindowGuess
+    // Trim-first rule for the summarizer itself: its input must fit ITS window
+    // with room for the summary (the same discipline as the review call).
+    const inputCharsMax = Math.max(1_000, Math.floor((window * 0.6) / this.tokensPerChar))
+    const historyText = renderCompactableConversation(this.historyConversation())
+    // The review re-sends the delta's TAIL and the fold marker says the head is
+    // in the summary — so the summarizer must see the HEAD (the part the review
+    // will not carry). If the delta alone exceeds the cap, summarize its head
+    // and drop the rest from the summarizer input with a visible marker; the
+    // remaining cap, if any, is filled with the NEWEST history.
+    const deltaHead = userText.length <= inputCharsMax
+      ? userText
+      : `${userText.slice(0, Math.max(0, inputCharsMax - DELTA_TRUNCATION_MARKER.length - 4))}\n\n${DELTA_TRUNCATION_MARKER}`
+    const historyRoom = Math.max(0, inputCharsMax - deltaHead.length)
+    const historyPart = historyRoom === 0
+      ? ''
+      : historyText.length <= historyRoom
+        ? historyText
+        : historyText.slice(-historyRoom)
+    const input = historyPart.length > 0 ? `${historyPart}\n\n${deltaHead}` : deltaHead
+    const run = (): Promise<CompactConversationResult | undefined> => compactConversation({
+      llm: this.llm,
       provider: this.provider,
       model: this.model,
-      contextTokens: this.modelContextTokens,
-      promptBudget,
-      deltaChars: userText.length,
-      keptChars: keep,
+      sessionId: this.sessionId,
+      input,
+      // Own budget fused with dispose (not the review's deadline): a slow
+      // summary must not consume the review call's timeout.
+      signal: this.controller.signal,
+      timeoutMs: this.callTimeoutMs,
+      logger: this.logger,
     })
-    return `${marker}${keep === 0 ? '' : userText.slice(-keep)}`
+    let result = await run()
+    if (result === undefined) result = await run()
+    const at = Date.now()
+    // Post-compaction review budget: the configured trigger, but never more
+    // than the conservative window guess when the adapter declared none.
+    const reviewBudget = this.modelContextTokens === undefined
+      ? Math.min(trigger, Math.floor(this.compactionWindowGuess * 0.8))
+      : trigger
+    if (result === undefined) {
+      // Cold-reset fallback: the review must still fire.
+      this.resetHistory()
+      this.recordCompaction(startedAt, at, undefined, true)
+      const budget = reviewBudget - this.estimateTextTokens(this.systemPrompt)
+      const maxChars = Math.max(0, Math.floor(budget / this.tokensPerChar))
+      const marker = `${DELTA_TRUNCATION_MARKER}\n\n`
+      if (userText.length <= maxChars) return userText
+      const keep = Math.max(0, maxChars - marker.length)
+      return `${marker}${keep === 0 ? '' : userText.slice(-keep)}`
+    }
+    this.resetHistory()
+    this.recordCompaction(startedAt, at, result.usage, false)
+    const label = `${ADVISOR_COMPACTION_LABEL}\n${result.summary}`
+    const headMarker = `${DELTA_HEAD_FOLD_MARKER}\n\n`
+    // The marker itself spends budget: subtract it before sizing the tail.
+    const budget = reviewBudget
+      - this.estimateTextTokens(this.systemPrompt)
+      - this.estimateTextTokens(label)
+      - this.estimateTextTokens(headMarker)
+    const maxChars = Math.max(0, Math.floor(budget / this.tokensPerChar))
+    // Whole delta fits: no partial marker, nothing is missing.
+    if (userText.length <= maxChars) return `${label}\n\n---\n\n${userText}`
+    const keep = Math.max(0, maxChars)
+    this.logger.debug('advisor: delta head folded into the compaction summary', {
+      omittedChars: userText.length - keep,
+    })
+    // slice(-0) returns the WHOLE string — send an empty tail instead.
+    return `${label}\n\n---\n\n${headMarker}${keep === 0 ? '' : userText.slice(-keep)}`
+  }
+
+  /** One Stats row for a compaction attempt (visible, never folded into a review row). */
+  private recordCompaction(startedAt: number, at: number, usage: TokenUsage | undefined, failed: boolean): void {
+    const record: AdvisorTurnRecord = {
+      at: startedAt,
+      durationMs: Math.max(0, at - startedAt),
+      outcome: failed ? 'failure' : 'note',
+      kind: 'compaction',
+      deltaChars: 0,
+      historyTokens: 0,
+      systemChars: this.systemPrompt.length,
+      ...(failed ? { error: 'compaction failed — reviewer conversation reset' } : {}),
+      ...(usage === undefined ? {} : {
+        usage: {
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          ...(usage.cacheReadTokens === undefined ? {} : { cacheReadTokens: usage.cacheReadTokens }),
+          ...(usage.cacheWriteTokens === undefined ? {} : { cacheWriteTokens: usage.cacheWriteTokens }),
+          ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
+        },
+      }),
+    }
+    try {
+      this.onTurn?.(record)
+    } catch (error) {
+      this.logger.debug('advisor: trajectory sink threw on compaction — contained', { error })
+    }
+  }
+
+  /** Provider overflow classification for the reactive compact-and-retry net. */
+  private isContextOverflow(message: string): boolean {
+    return /context length|context window|too many tokens|maximum context|reduce the length|input is too long|prompt is too long/i.test(message)
   }
 
   private buildOptions(

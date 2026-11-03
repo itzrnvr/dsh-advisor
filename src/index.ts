@@ -1300,10 +1300,6 @@ export function apply(ctx: Context, config: AdvisorConfig) {
         enabled: effective.enabled,
         runtimeStatus: runtime?.status() ?? 'disabled',
         historyMaxTokens: effective.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS,
-        // Fork addition: the configured budget clamped to the model's
-        // declared context window (the runtime knows it after resolution).
-        effectiveHistoryMaxTokens:
-          runtimes.get(sessionId)?.effectiveHistoryBudget ?? (effective.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS),
         ...(effective.provider === undefined ? {} : { provider: effective.provider }),
         ...(effective.model === undefined ? {} : { model: effective.model }),
       }

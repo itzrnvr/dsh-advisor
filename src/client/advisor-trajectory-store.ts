@@ -23,6 +23,8 @@ export interface AdvisorTrajectoryTurn {
   readonly at: number
   readonly durationMs: number
   readonly outcome: 'note' | 'no-note' | 'failure' | 'aborted'
+  /** Which call this row describes (fork addition); absent = review. */
+  readonly kind?: 'review' | 'compaction'
   readonly severity?: 'nit' | 'concern' | 'blocker'
   readonly note?: string
   readonly deltaChars: number
@@ -51,8 +53,6 @@ export interface AdvisorTrajectoryState {
   runtimeStatus: string
   /** Configured append-only history budget in estimated tokens. */
   historyMaxTokens: number
-  /** Effective budget: the configured value clamped to the model's window. */
-  effectiveHistoryMaxTokens: number
   /** The effective reviewer route, when resolved. */
   provider?: string
   model?: string
@@ -65,7 +65,6 @@ type AdvisorTrajectoryRpcPayload =
     readonly enabled: boolean
     readonly runtimeStatus: string
     readonly historyMaxTokens: number
-    readonly effectiveHistoryMaxTokens: number
     readonly provider?: string
     readonly model?: string
   }
@@ -102,7 +101,6 @@ export class AdvisorTrajectoryController {
     enabled: false,
     runtimeStatus: 'disabled',
     historyMaxTokens: DEFAULT_HISTORY_MAX_TOKENS,
-    effectiveHistoryMaxTokens: DEFAULT_HISTORY_MAX_TOKENS,
   })
 
   /** Fence token: a newer fetch makes every older settle stale. */
@@ -167,9 +165,6 @@ export class AdvisorTrajectoryController {
         s.enabled = wire.enabled === true
         s.runtimeStatus = typeof wire.runtimeStatus === 'string' ? wire.runtimeStatus : 'disabled'
         s.historyMaxTokens = typeof wire.historyMaxTokens === 'number' ? wire.historyMaxTokens : DEFAULT_HISTORY_MAX_TOKENS
-        s.effectiveHistoryMaxTokens = typeof wire.effectiveHistoryMaxTokens === 'number'
-          ? wire.effectiveHistoryMaxTokens
-          : s.historyMaxTokens
         s.provider = typeof wire.provider === 'string' ? wire.provider : undefined
         s.model = typeof wire.model === 'string' ? wire.model : undefined
       })

@@ -337,6 +337,8 @@ export interface AdvisorTurnView {
   readonly durationMs: number
   /** What the attempt produced. */
   readonly outcome: 'note' | 'no-note' | 'failure' | 'aborted'
+  /** Which call this row describes (fork addition); absent = review. */
+  readonly kind?: 'review' | 'compaction'
   readonly severity?: 'nit' | 'concern' | 'blocker'
   readonly note?: string
   /** Characters of the reviewed transcript delta. */
@@ -368,8 +370,6 @@ export type AdvisorTrajectoryRpcResult =
       readonly enabled: boolean
       readonly runtimeStatus: string
       readonly historyMaxTokens: number
-      /** Configured budget clamped to the model's declared window (fork addition). */
-      readonly effectiveHistoryMaxTokens: number
       readonly provider?: string
       readonly model?: string
     }

@@ -127,15 +127,7 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
         <Stat label={t('trajPromptTokens')} value={formatCount(totalPrompt)} />
         <Stat label={t('trajCachedTokens')} value={formatCount(totalCached)} />
         <Stat label={t('trajOutputTokens')} value={formatCount(totalOutput)} />
-        <Stat
-          label={t('trajHistoryBudget')}
-          value={state.effectiveHistoryMaxTokens < state.historyMaxTokens
-            ? t('trajBudgetOf', {
-              effective: formatCount(state.effectiveHistoryMaxTokens),
-              configured: formatCount(state.historyMaxTokens),
-            })
-            : `${formatCount(state.historyMaxTokens)} tok`}
-        />
+        <Stat label={t('trajHistoryBudget')} value={`${formatCount(state.historyMaxTokens)} tok`} />
       </div>
 
       {state.status === 'unavailable' && state.turns.length === 0
@@ -150,7 +142,7 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
                 return (
                   <li key={`${turn.at}-${index}`} className={styles.row ?? ''}>
                     <div className={styles.rowHead ?? ''}>
-                      <span className={styles.outcome ?? ''}>{t(outcomeKey(turn))}</span>
+                      <span className={styles.outcome ?? ''}>{t(turn.kind === 'compaction' ? 'trajCompaction' : outcomeKey(turn))}</span>
                       {turn.severity !== undefined && (
                         <span className={styles.outcome ?? ''}>
                           {turn.severity}
