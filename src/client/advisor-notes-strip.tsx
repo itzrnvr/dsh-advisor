@@ -16,7 +16,7 @@
  * lifetime.
  */
 
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { AdvisorNotesController, AdvisorNotesState } from './advisor-notes-store.ts'
 import { AdvisorNoteRow } from './advisor-note-node.tsx'
@@ -58,6 +58,10 @@ export function AdvisorNotesStrip(props: AdvisorNotesStripProps): ReactNode {
   const status = useSnapshot((s) => s.status)
   const notes = useSnapshot((s) => s.notes)
   const dismissed = useSnapshot((s) => s.dismissed)
+  // The strip sits in the host's `conversation.composer.dock` — a SIBLING BELOW
+  // the composer card — so it must never grow into the composer's space.
+  // Collapsed it is ONE line (title + count); the rows appear only on demand.
+  const [open, setOpen] = useState(false)
 
   useEffect(() => {
     controller.start()
@@ -66,17 +70,23 @@ export function AdvisorNotesStrip(props: AdvisorNotesStripProps): ReactNode {
 
   const untagged = notes.filter((note) => note.turn === undefined)
   if (status !== 'ready' || dismissed || untagged.length === 0) return null
-  // Bounded twice over: rows render collapsed by default (a header line each,
-  // expanded manually), and the section's height is capped by CSS with an
-  // internal scrollbar — a long agentic session can never push the composer
-  // off-screen.
+  // Bounded twice over: the list shows the newest rows (collapsed one-liners)
+  // inside a height-capped scroll box — the composer keeps its space even
+  // with a wall of notes behind it.
   const shown = untagged.slice(-MAX_STRIP_NOTES)
   const hidden = untagged.length - shown.length
 
   return (
     <section className={styles.wrap ?? ''} aria-label={t('notesTitle')}>
       <div className={styles.title ?? ''}>
-        <span>{t('notesTitle')}</span>
+        <button
+          type="button"
+          className={styles.toggle ?? ''}
+          aria-expanded={open}
+          onClick={() => { setOpen((value) => !value) }}
+        >
+          {t('notesTitle')} · {untagged.length}
+        </button>
         <button
           type="button"
           className={styles.dismiss ?? ''}
@@ -87,10 +97,14 @@ export function AdvisorNotesStrip(props: AdvisorNotesStripProps): ReactNode {
           ×
         </button>
       </div>
-      {shown.map((note) => (
-        <AdvisorNoteRow key={`${note.at}-${note.text.length}`} node={{ data: note }} t={t} defaultCollapsed />
-      ))}
-      {hidden > 0 && <div className={styles.more ?? ''}>{t('notesMore', { count: hidden })}</div>}
+      {open && (
+        <div className={styles.list ?? ''}>
+          {shown.map((note) => (
+            <AdvisorNoteRow key={`${note.at}-${note.text.length}`} node={{ data: note }} t={t} defaultCollapsed />
+          ))}
+          {hidden > 0 && <div className={styles.more ?? ''}>{t('notesMore', { count: hidden })}</div>}
+        </div>
+      )}
     </section>
   )
 }

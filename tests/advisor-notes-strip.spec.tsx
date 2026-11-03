@@ -60,21 +60,31 @@ describe('AdvisorNotesStrip — dock entry below the composer (fork fix)', () =>
     expect(view.container.textContent).toBe('')
   })
 
-  it('shows turn-less notes collapsed by default — bodies hidden until expanded', () => {
+  it('collapses to a single count line — the composer is never displaced', () => {
     const view = render(<AdvisorNotesStrip {...props(state([note(1), note(2)]))} />)
 
-    // The strip itself and the header rows are visible…
+    // The strip lives in the host's composer dock (a sibling BELOW the
+    // composer card), so collapsed it is ONE line: title + count. No note
+    // rows, no bodies — nothing that can push the composer up.
     expect(view.container.textContent).toContain('notesTitle')
-    // …but the note BODIES are not: rows start collapsed so the composer
-    // below/above is never displaced by expanded note text.
+    expect(view.container.textContent).toContain('2')
     expect(view.container.textContent).not.toContain('note body 1')
-    expect(view.container.textContent).not.toContain('note body 2')
+    expect(within(view.container).queryAllByText('notesExpand')).toHaveLength(0)
+  })
+
+  it('opens on demand, showing the newest rows as collapsed one-liners', () => {
+    const view = render(<AdvisorNotesStrip {...props(state([note(1), note(2)]))} />)
+
+    fireEvent.click(within(view.container).getByText(/notesTitle/))
+    // The rows appear — still collapsed (header + summary line only).
     expect(within(view.container).getAllByText('notesExpand')).toHaveLength(2)
+    expect(view.container.textContent).not.toContain('note body 1')
   })
 
   it('expands a row on toggle, revealing that note body only', () => {
     const view = render(<AdvisorNotesStrip {...props(state([note(1), note(2)]))} />)
 
+    fireEvent.click(within(view.container).getByText(/notesTitle/))
     fireEvent.click(within(view.container).getAllByText('notesExpand')[0]!)
     expect(view.container.textContent).toContain('note body 1')
     // The other row stays collapsed.
@@ -84,6 +94,7 @@ describe('AdvisorNotesStrip — dock entry below the composer (fork fix)', () =>
   it('caps the shown rows and counts the hidden remainder', () => {
     const view = render(<AdvisorNotesStrip {...props(state([note(1), note(2), note(3), note(4), note(5)]))} />)
 
+    fireEvent.click(within(view.container).getByText(/notesTitle/))
     // Only the newest 3 render; the older 2 collapse into '+N more'.
     expect(within(view.container).getAllByText('notesExpand')).toHaveLength(3)
     expect(view.container.textContent).toContain('+2 more')

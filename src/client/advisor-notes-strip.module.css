@@ -3,16 +3,19 @@
  * are never dropped on the floor by the turn-tail lookup. */
 
 .wrap {
-  /* Height bound (fork fix): the strip sits BELOW the composer card, so it
-   * must never push the composer up. Rows render collapsed by default (the
-   * component passes defaultCollapsed); this cap is the hard backstop for
-   * rows the user expands manually — the section scrolls instead of growing. */
-  max-height: 176px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  /* Height bound (fork fix): the strip sits in the host's composer dock —
+   * a SIBLING BELOW the composer card — so it must never push the composer
+   * up. Collapsed it is ONE line (title + count); the rows live in a capped
+   * scroll box that only opens on demand. */
   margin: 6px 0 2px;
   padding-top: 6px;
   border-top: 1px solid var(--dsw-alias-border-subtle, rgba(128, 128, 128, 0.18));
+}
+
+.list {
+  max-height: 176px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .title {
@@ -25,6 +28,21 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--dsw-alias-label-caption, #6b7280);
+}
+
+.toggle {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.toggle:hover {
+  color: var(--dsw-alias-label-secondary, inherit);
 }
 
 .dismiss {
