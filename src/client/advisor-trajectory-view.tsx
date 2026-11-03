@@ -154,6 +154,10 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
         <div className={styles.meta ?? ''}>
           <span>{t('trajModel')}: <span className={styles.metaStrong ?? ''}>{route}</span></span>
           <span>{t('trajStatusLabel')}: <span className={styles.metaStrong ?? ''}>{state.runtimeStatus}</span></span>
+          {/* Scope honesty: attempts live in the plugin's memory (they reset on a
+              plugin reload), unlike the delivered notes, which live in the
+              session log. Say so instead of implying a session-long ledger. */}
+          <span>{t('trajScope')}</span>
         </div>
       </header>
 

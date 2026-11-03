@@ -103,6 +103,14 @@ describe('AdvisorTrajectoryView — two-tab Advisor page (fork addition)', () =>
     expect(view.container.textContent).toContain('trajNotDelivered')
   })
 
+  it('states the ledger scope — attempts live in the plugin, not the transcript', () => {
+    const view = render(<AdvisorTrajectoryView {...props(state([turn({ kind: 'review', note: 'NOTE' })]))} />)
+    // The ledger is plugin-memory (it resets on a host/plugin restart) while
+    // the delivered notes live in the session log. The pane must say so
+    // instead of implying a session-long ledger.
+    expect(view.container.textContent).toContain('trajScope')
+  })
+
   it('shows the empty state when no calls exist', () => {
     const view = render(<AdvisorTrajectoryView {...props(state([]))} />)
     expect(view.container.textContent).toContain('trajEmpty')

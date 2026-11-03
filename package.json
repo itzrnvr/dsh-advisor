@@ -1,6 +1,6 @@
 {
   "name": "dsh-advisor",
-  "version": "0.6.43",
+  "version": "0.6.46",
   "type": "module",
   "description": "dsh plugin bundle porting the omp advisor subsystem: a per-session reviewer model that observes the primary transcript and injects severity-ranked advice (nit/concern/blocker).",
   "repository": {
@@ -38,7 +38,9 @@
     "build": "tsc -p tsconfig.build.json && node scripts/build-client.mjs",
     "prepare": "pnpm build",
     "prepack": "pnpm build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "gate": "pnpm typecheck && pnpm test && pnpm build",
+    "gate:commit": "node scripts/gate-commit.mjs"
   },
   "dsh": {
     "bundle": {
