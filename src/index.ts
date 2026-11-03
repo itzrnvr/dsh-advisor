@@ -682,7 +682,13 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     // inherited parent prefix so the first delta is the fork's own work.
     const runtimeSession = ctx.agents.get(sessionId as SessionId)?.session
     const inheritedPrefix = Number(runtimeSession?.inheritedEventCount ?? 0)
-    if (inheritedPrefix > 0) observer.seedTo(sessionId, inheritedPrefix)
+    // Review-forward: a fork is reviewed from the point its runtime is built,
+    // never by replaying the parent's inherited prefix (or a stale child-owned
+    // backlog). Same semantics as the /advisor-on seeding path.
+    if (inheritedPrefix > 0) {
+      const currentLength = runtimeSession?.snapshotEvents?.().length
+      if (currentLength !== undefined) observer.seedTo(sessionId, currentLength)
+    }
     runtimes.set(sessionId, runtime)
     runtimeSignatures.set(sessionId, runtimeSignature(sessionId))
     return runtime
