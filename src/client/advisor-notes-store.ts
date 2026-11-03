@@ -99,6 +99,8 @@ export class AdvisorNotesController {
 
   /** Fence token: a newer fetch makes every older settle stale. */
   private requestSeq = 0
+  /** Signature of the last published payload (change guard — no churn on polls). */
+  private lastSignature: string | undefined
 
   /** The mounted poll timer (owned by start/stop, not the component). */
   private timer: number | undefined
@@ -144,7 +146,12 @@ export class AdvisorNotesController {
    */
   async fetch(): Promise<void> {
     const seq = ++this.requestSeq
-    this.store.update((s) => { s.status = 'pending' })
+    // First load only: `pending` is a loading state, not a per-poll flip. A
+// persistently failing RPC must not oscillate pending↔unavailable, and a
+// loaded list must keep rendering untouched while a poll is in flight.
+    if (this.store.getSnapshot().status === 'idle') {
+      this.store.update((s) => { s.status = 'pending' })
+    }
     let payload: AdvisorNotesRpcPayload | undefined
     try {
       const result = await this.rpc.call('/api', 'advisor/notes', { args: { sessionId: this.sessionId } })
@@ -172,19 +179,41 @@ export class AdvisorNotesController {
           ...note,
           ...(typeof (note as { turn?: unknown }).turn === 'number' ? { turn: (note as { turn?: number }).turn } : {}),
         }))
+      const next = {
+        notes,
+        enabled: wire.enabled === true,
+        runtimeStatus: typeof wire.runtimeStatus === 'string' ? wire.runtimeStatus : 'disabled',
+        provider: typeof wire.provider === 'string' ? wire.provider : undefined,
+        model: typeof wire.model === 'string' ? wire.model : undefined,
+        lastActivityAt: typeof wire.lastActivityAt === 'number' ? wire.lastActivityAt : undefined,
+      }
+      // Change guard: identical payloads publish nothing. `lastActivityAt` is
+// excluded from the comparison (it moves on any accepted note, which already
+// changes `notes`) so a timestamp-only change cannot churn every tail.
+      const signature = JSON.stringify({ notes: next.notes, enabled: next.enabled, runtimeStatus: next.runtimeStatus, provider: next.provider, model: next.model })
+      if (signature === this.lastSignature && this.store.getSnapshot().status === 'ready') {
+        const previousActivity = this.store.getSnapshot().lastActivityAt
+        if (previousActivity !== next.lastActivityAt) {
+          this.store.update((s) => { s.lastActivityAt = next.lastActivityAt })
+        }
+        return
+      }
+      this.lastSignature = signature
       this.store.update((s) => {
         s.status = 'ready'
-        s.notes = notes
-        s.enabled = wire.enabled === true
-        s.runtimeStatus = typeof wire.runtimeStatus === 'string' ? wire.runtimeStatus : 'disabled'
-        s.provider = typeof wire.provider === 'string' ? wire.provider : undefined
-        s.model = typeof wire.model === 'string' ? wire.model : undefined
-        s.lastActivityAt = typeof wire.lastActivityAt === 'number' ? wire.lastActivityAt : undefined
+        s.notes = next.notes
+        s.enabled = next.enabled
+        s.runtimeStatus = next.runtimeStatus
+        s.provider = next.provider
+        s.model = next.model
+        s.lastActivityAt = next.lastActivityAt
       })
       return
     }
     // Tagged error, transport fold, malformed payload, or a throw: keep the
     // last good notes and let the next scheduled poll retry.
-    this.store.update((s) => { s.status = 'unavailable' })
+    if (this.store.getSnapshot().status !== 'unavailable') {
+      this.store.update((s) => { s.status = 'unavailable' })
+    }
   }
 }

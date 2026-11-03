@@ -1772,3 +1772,18 @@ describe('AdvisorRuntime — model-context clamp (fork addition)', () => {
     expect(textOfMessage(llm.calls[2]!.messages[0]!)).not.toContain('first')
   })
 })
+
+describe('AdvisorRuntime — reviewed-turn attribution (fork addition)', () => {
+  it('passes the delta turn to onNote', async () => {
+    const received: Array<number | undefined> = []
+    const llm = new FakeLlm([{ chunks: textReply('{"note":"x"}') }])
+    const { runtime } = makeRuntime(llm, {
+      onNote: (_note, turn) => received.push(turn),
+    })
+
+    runtime.enqueue({ ...delta('update'), turn: 7 })
+    await runtime.waitForDrain()
+
+    expect(received).toEqual([7])
+  })
+})

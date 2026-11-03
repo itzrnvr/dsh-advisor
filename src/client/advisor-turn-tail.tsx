@@ -62,15 +62,19 @@ export type AdvisorTurnTailProps =
  */
 export function AdvisorTurnTail(props: AdvisorTurnTailProps): ReactNode {
   const { controller, useSnapshot, t, turn } = props
-  const state = useSnapshot((s) => s)
+  // Subscribe to the exact slices this surface needs: the notes array only
+  // changes when the host payload actually changed (the controller guards
+  // identical polls), so a 4 s tick no longer re-renders every mounted tail.
+  const status = useSnapshot((s) => s.status)
+  const notes = useSnapshot((s) => s.notes)
 
   useEffect(() => {
     controller.start()
     return () => { controller.stop() }
   }, [controller])
 
-  const notes = state.notes.filter((note) => note.turn === turn.turn)
-  if (state.status !== 'ready' || notes.length === 0) return null
+  const turnNotes = notes.filter((note) => note.turn === turn.turn)
+  if (status !== 'ready' || turnNotes.length === 0) return null
 
   // Reuse the same collapsible note card as a chat row; the turn-tail seat
   // guarantees the note renders at the end of the turn it reviewed (the chat
@@ -78,7 +82,7 @@ export function AdvisorTurnTail(props: AdvisorTurnTailProps): ReactNode {
   // the flow groups nodes by their turn location, not by anchorSeq alone).
   return (
     <>
-      {notes.map((note, index) => (
+      {turnNotes.map((note, index) => (
         <AdvisorNoteRow key={`${note.at}-${index}`} node={{ data: note }} t={t} />
       ))}
     </>

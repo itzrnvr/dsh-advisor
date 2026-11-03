@@ -1323,3 +1323,40 @@ describe('SessionTranscriptObserver — deferred rewrite on skipped cadence roun
     expect(deltas[0]).not.toContain('prompt three')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Fork addition — reviewed-turn attribution on the delta
+// ---------------------------------------------------------------------------
+
+describe('SessionTranscriptObserver — delta.turn attribution (fork addition)', () => {
+  it('tags a turn/end review with the closed turn', () => {
+    const turns: Array<number | undefined> = []
+    const observer = new SessionTranscriptObserver({
+      maxDeltaMessages: 60,
+      onDelta: (_sessionId, delta) => turns.push(delta.turn),
+      reviewEverySteps: 0,
+      reviewEveryTurns: 1,
+    })
+    feed(observer, 's1', simpleTurn(1, 'hi', 'hello'))
+    expect(turns).toEqual([1])
+  })
+
+  it('tags a mid-turn step review with the turn in progress', () => {
+    const deltas: Array<{ turn?: number; willContinue: boolean }> = []
+    const observer = new SessionTranscriptObserver({
+      maxDeltaMessages: 60,
+      onDelta: (_sessionId, delta) => deltas.push({ turn: delta.turn, willContinue: delta.willContinue }),
+      reviewEverySteps: 3,
+      reviewEveryTurns: 1,
+    })
+    const specs: EventSpec[] = [turnStart(1), userMessage('go')]
+    for (let step = 1; step <= 4; step++) {
+      specs.push(stepStart(1, step), assistantMessage(`a${step}`), stepEnd(1, step))
+    }
+    specs.push(turnEnd(1))
+    feed(observer, 's1', specs)
+
+    const mid = deltas.find((delta) => delta.willContinue)
+    expect(mid?.turn).toBe(1)
+  })
+})

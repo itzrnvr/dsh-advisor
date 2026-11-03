@@ -207,7 +207,7 @@ export interface AdvisorRuntimeOptions {
    * Invoked once per extracted note that passes the T5 emission guard
    * (accepted = delivered to T6; suppressed notes are dropped silently).
    */
-  readonly onNote: (note: AdviceNote) => void
+  readonly onNote: (note: AdviceNote, turn?: number) => void
   /**
    * Optional per-attempt trajectory sink (fork addition). Called once for
    * every completed model attempt — notes, silent reviews, failures and
@@ -602,7 +602,7 @@ export class AdvisorRuntime {
   private readonly maxQueued: number
   private readonly llm: AdvisorLlm
   private readonly guard: EmissionGuard
-  private readonly onNote: (note: AdviceNote) => void
+  private readonly onNote: (note: AdviceNote, turn?: number) => void
   private readonly logger: AdvisorRuntimeLogger
   private readonly controller = new AbortController()
   /**
@@ -1119,7 +1119,7 @@ export class AdvisorRuntime {
         // onNote, so a throwing delivery seam cannot lose the activity
         // record) — surfaced by `/advisor status` as "last activity".
         this.lastActivityAt = Date.now()
-        this.onNote(note)
+        this.onNote(note, delta.turn)
       } else {
         this.logger.debug('advisor: note suppressed by emission guard', {
           note: note.note,

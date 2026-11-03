@@ -68,6 +68,7 @@ import { AdvisorRuntime } from './advisor-runtime.js'
 import type { AdviceNote, AdvisorTurnRecord } from './advisor-runtime.js'
 import { AdvisorDelivery } from './delivery.js'
 import { DEFAULT_ADVISOR_SYSTEM_PROMPT } from './prompts.js'
+import { seedNotesFromEvents } from './seed.js'
 import { DEFAULT_HISTORY_MAX_TOKENS } from './limits.js'
 import { advisorSuggestionFace, NextPromptManager } from './next-prompt.js'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
@@ -480,39 +481,9 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     if (adviceLog.has(sessionId)) return
     const session = ctx.agents.get(sessionId as SessionId)?.session
     if (session === undefined || typeof session.snapshotEvents !== 'function') return
-    const seeded: AdvisorNoteView[] = []
-    let lastEndedTurn: number | undefined
-    for (const event of session.snapshotEvents()) {
-      if (event.type === 'turn/end') {
-        lastEndedTurn = (event as unknown as { data?: { turn?: number } }).data?.turn ?? lastEndedTurn
-        continue
-      }
-      if (event.type !== 'user/message') continue
-      const message = (event as unknown as {
-        data?: {
-          message?: {
-            source?: { kind?: string }
-            content?: readonly { type?: string; text?: string }[]
-          }
-        }
-        time?: number
-      }).data?.message
-      if (message === undefined || message.source?.kind !== 'advisor') continue
-      const text = (message.content ?? [])
-        .filter((block) => block.type === 'text' && typeof block.text === 'string')
-        .map((block) => block.text as string)
-        .join('\n')
-      const match = /^\[advisor:(nit|concern|blocker)\]\s*([\s\S]*)$/.exec(text)
-      if (match === null || match[2].trim().length === 0) continue
-      seeded.push({
-        at: (event as unknown as { time?: number }).time ?? Date.now(),
-        severity: match[1] as 'nit' | 'concern' | 'blocker',
-        text: match[2].trim(),
-        channel: 'inject',
-        ...(lastEndedTurn === undefined ? {} : { turn: lastEndedTurn }),
-      })
-    }
-    adviceLog.set(sessionId, seeded.slice(-ADVICE_LOG_MAX))
+    // Latch even an empty result: getNotes runs on every poll, and re-running
+    // the scan (or re-appending) would churn the log.
+    adviceLog.set(sessionId, seedNotesFromEvents(session.snapshotEvents()).slice(-ADVICE_LOG_MAX))
   }
   // Next-prompt predictor (plan dsh-advisor-next-prompt-n12, T1): one per
   // fiber, next to the runtimes map. The gate re-reads the resolver SSOT on
@@ -627,7 +598,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // exchange would cross it.
       historyMaxTokens: globalResolved.historyMaxTokens,
       llm: appRootLlm(),
-      onNote: (note: AdviceNote) => {
+      onNote: (note: AdviceNote, reviewedTurn?: number) => {
         // Accepted notes only — the runtime's emission guard (T5) already
         // filtered suppressed ones. T6 routes the accepted note to the primary
         // agent (inject/steer); delivery throws stay contained in the runtime
@@ -642,7 +613,11 @@ export function apply(ctx: Context, config: AdvisorConfig) {
         // `channel === undefined` means the delivery was dropped (no live agent),
         // so only an actually delivered note is recorded.
         if (channel !== undefined) {
-          const turn = lastTurn.get(sessionId)
+          // Fork fix: attribute the note to the turn the runtime REVIEWED
+          // (carried on the delta), never to whatever turn is latest when the
+          // async review finishes — that race put notes after the next user
+          // message. The `lastTurn` fallback only covers older call paths.
+          const turn = reviewedTurn ?? lastTurn.get(sessionId)
           const entry: AdvisorNoteView = {
             at: Date.now(),
             severity: note.severity,
@@ -1272,6 +1247,11 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   // defined keys (the wire validator rejects present-as-undefined values).
   notesControl = {
     getNotes: (sessionId) => {
+      // Cold log (e.g. after a plugin reload/remount): rehydrate from the
+      // session's own committed advisor messages BEFORE answering, so opening
+      // an older session shows the notes it already received instead of an
+      // empty list that never fills until a new review runs.
+      seedAdviceLog(sessionId)
       const effective = effectiveConfig(sessionId)
       const runtime = runtimes.get(sessionId)
       return {

@@ -78,6 +78,17 @@ export interface Delta {
    * the MVP (see the task-3 report for the rationale).
    */
   readonly willContinue: boolean
+  /**
+   * Agent turn this delta reviews (fork addition). Set by the observer:
+   * `turn/end` reviews carry the closed turn, step reviews carry the turn in
+   * progress, and agentic rounds (no turn numbering) leave it undefined.
+   *
+   * The runtime forwards it to `onNote`, so a note is attributed to the turn
+   * it actually REVIEWED — never to whatever turn happens to be the latest
+   * when the asynchronous review finishes (the old attribution raced turn
+   * boundaries and made notes appear after the next user message).
+   */
+  readonly turn?: number
 }
 
 /** Options for one {@link DeltaRenderer}. */
@@ -205,6 +216,22 @@ function renderMessage(message: Message): string {
     }
   }
   return parts.length > 0 ? `**agent**: ${parts.join('\n')}` : '**agent**: <empty>'
+}
+
+/**
+ * Turn number of the turn IN PROGRESS, read from the newest `step/start` (or
+ * `turn/start`) in the log. Used to attribute a mid-turn step review — never
+ * to find a CLOSED turn (that is {@link findLastMessageTurnEnd}).
+ */
+function currentTurnOf(events: readonly SessionEvent[]): number | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event === undefined) continue
+    if (event.type !== 'step/start' && event.type !== 'turn/start') continue
+    const turn = (event.data as { readonly turn?: unknown }).turn
+    if (typeof turn === 'number') return turn
+  }
+  return undefined
 }
 
 /**
@@ -667,7 +694,12 @@ export class SessionTranscriptObserver {
       }
       this.turnsSinceReview.delete(sessionId)
       const delta = this.rendererFor(sessionId).update(events)
-      if (delta !== undefined) this.options.onDelta(sessionId, delta)
+      if (delta !== undefined) {
+        // turn/end data always carries a numeric turn in the union; guard
+        // anyway so a malformed event can never publish a non-numeric turn.
+        const closedTurn = event.type === 'turn/end' ? event.data.turn : undefined
+        this.options.onDelta(sessionId, typeof closedTurn === 'number' ? { ...delta, turn: closedTurn } : delta)
+      }
       return
     }
     // KD-N4-5 reply-complete gate (agentic sessions, no turn/end): fire only
@@ -703,7 +735,13 @@ export class SessionTranscriptObserver {
     const delta = isRewriteEvent(event)
       ? renderer.update(events)
       : renderer.update(events, true)
-    if (delta !== undefined) this.options.onDelta(sessionId, delta)
+    if (delta !== undefined) {
+      // Agentic rounds have no turn/end, but they usually DO emit step/start,
+      // so anchor the note to the round's turn when one is derivable. Truly
+      // turn-less sessions fall back to the client's session strip.
+      const turn = currentTurnOf(events)
+      this.options.onDelta(sessionId, turn === undefined ? delta : { ...delta, turn })
+    }
   }
 
   /**
@@ -722,7 +760,15 @@ export class SessionTranscriptObserver {
     this.stepsSinceReview.set(sessionId, 1)
     const delta = this.rendererFor(sessionId).update(events)
     // `willContinue` marks a mid-turn review: the agent is still working.
-    if (delta !== undefined) this.options.onDelta(sessionId, { ...delta, willContinue: true })
+    // The turn is the one in progress (from the step that just started).
+    if (delta !== undefined) {
+      const turn = currentTurnOf(events)
+      this.options.onDelta(sessionId, {
+        ...delta,
+        willContinue: true,
+        ...(turn === undefined ? {} : { turn }),
+      })
+    }
   }
 
   /** Lazy per-session renderer creation, shared by both trigger modes. */

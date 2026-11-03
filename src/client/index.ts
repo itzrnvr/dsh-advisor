@@ -58,6 +58,7 @@ import { AdvisorSessionModelController, AdvisorSettingsStore, refreshIfLoaded } 
 import { NextPromptOverlay } from './next-prompt-overlay.tsx'
 import { AdvisorSuggestionController } from './next-prompt-store.ts'
 import { AdvisorTurnTail } from './advisor-turn-tail.tsx'
+import { AdvisorNotesStrip } from './advisor-notes-strip.tsx'
 import { AdvisorTrajectoryView } from './advisor-trajectory-view.tsx'
 import { advisorTrajectoryControllerFor } from './advisor-trajectory-store.ts'
 import { advisorNotesControllerFor } from './advisor-notes-store.ts'
@@ -353,6 +354,26 @@ export function apply(ctx: ClientContext): void {
         }
       },
     }, AdvisorTurnTail)
+  })
+
+  // Fork addition: fallback strip for TURN-LESS notes only (agentic sessions
+  // that never emit turn/end, so no turn number exists). Turn-tagged notes
+  // render in their turn's tail and never appear here — one owner per note.
+  ctx.slots.inject('conversation.composer.dock' as never, function* () {
+    yield (ctx.slots as any).register({
+      name: 'conversation.composer.dock',
+      id: `${BUNDLE_NAME}#notes-strip`,
+      order: 30,
+      locale: NS,
+      inject: (sessionId: string) => {
+        const notesController = advisorNotesControllerFor(sessionId, connection.rpc)
+        return {
+          sessionId,
+          controller: notesController,
+          hooks: { snapshot: notesController.store },
+        }
+      },
+    }, AdvisorNotesStrip)
   })
 
   // Fork addition: the Advisor tab — the reviewer's OWN session ledger beside

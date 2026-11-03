@@ -1,0 +1,17 @@
+/* Advisor session fallback strip (fork addition) — the dock entry that shows
+ * only turn-less notes (agentic sessions), so they are never dropped on the
+ * floor by the turn-tail lookup. */
+
+.wrap {
+  margin: 6px 0 2px;
+  padding-top: 6px;
+  border-top: 1px solid var(--dsw-alias-border-subtle, rgba(128, 128, 128, 0.18));
+}
+
+.title {
+  font-size: 10.5px;
+  line-height: 16px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dsw-alias-label-caption, #6b7280);
+}
