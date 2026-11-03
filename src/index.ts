@@ -412,6 +412,18 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     const session = ctx.agents.get(sessionId as SessionId)?.session
     return (session?.header?.delegationDepth ?? 0) > 0
   }
+  /**
+   * Forked session predicate (fork addition): a fork (sidebar Fork, or a
+   * sidechat's native fork) carries `header.parentSession`. The parent already
+   * owns the review thread; reviewing a clone duplicates notes and can wake
+   * the clone, and the split view inherited the parent's notes. Forks are
+   * therefore never advised, and their notes surface stays empty.
+   */
+  const isForkedSession = (sessionId: string): boolean => {
+    const session = ctx.agents.get(sessionId as SessionId)?.session
+    const header = session?.header as { readonly parentSession?: unknown } | undefined
+    return typeof header?.parentSession === 'string' && header.parentSession.length > 0
+  }
   const mainSessionOnlyEnabled = (): boolean => {
     try {
       return sourceConfig().mainSessionOnly !== false
@@ -420,6 +432,8 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     }
   }
   const sessionExcluded = (sessionId: string): boolean => {
+    // Forked sessions (a sidechat is a native fork) are never reviewed.
+    if (isForkedSession(sessionId)) return true
     if (!mainSessionOnlyEnabled()) return false
     return isDelegatedSession(sessionId)
   }
@@ -1247,6 +1261,13 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   // defined keys (the wire validator rejects present-as-undefined values).
   notesControl = {
     getNotes: (sessionId) => {
+      // Forked sessions (a sidechat is a native fork) inherit the parent's
+      // committed advisor messages. They must not surface there: the clone has
+      // no review thread of its own, and rendering the parent's notes in the
+      // split view duplicates them and destabilises the embedded conversation.
+      if (isForkedSession(sessionId)) {
+        return { notes: [], enabled: false, runtimeStatus: 'disabled' }
+      }
       // Cold log (e.g. after a plugin reload/remount): rehydrate from the
       // session's own committed advisor messages BEFORE answering, so opening
       // an older session shows the notes it already received instead of an

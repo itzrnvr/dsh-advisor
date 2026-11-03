@@ -95,6 +95,7 @@ export const en = {
   notesDismiss: 'Dismiss advisor notes',
   notesCollapse: 'Collapse',
   notesExpand: 'Expand',
+  notesMore: '+{count} more',
   // Advisor tab (fork addition): the reviewer's own session — header tab
   // label plus the ledger copy. The tab shows one row per model attempt with
   // the tokens the provider reported (prompt / cached / output), latency and
@@ -200,6 +201,7 @@ export const zh: typeof en = {
   notesDismiss: '关闭顾问建议',
   notesCollapse: '收起',
   notesExpand: '展开',
+  notesMore: '+{count} 条',
   advisorTab: '顾问',
   trajHeading: '顾问会话',
   trajHint: '审阅者自己的调用：每次尝试发送了什么、有多少由提供商的 prefix 缓存命中、以及代价。',

@@ -128,7 +128,7 @@ export class AdvisorTrajectoryController {
   stop(): void {
     this.mounts = Math.max(0, this.mounts - 1)
     if (this.mounts > 0 || this.timer === undefined) return
-    window.clearInterval(this.timer)
+    window.window.clearInterval(this.timer)
     this.timer = undefined
   }
 

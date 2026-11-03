@@ -16,6 +16,9 @@ import { AdvisorNoteRow } from './advisor-note-node.tsx'
 import type { AdvisorKey } from './locales.ts'
 import styles from './advisor-notes-strip.module.css'
 
+/** Most untagged notes the strip shows (older ones collapse into '+N more'). */
+const MAX_STRIP_NOTES = 3
+
 /** Injected dependencies (one face per session scope binding). */
 export interface AdvisorNotesStripInjected {
   /** The session this occurrence is bound to. */
@@ -55,13 +58,18 @@ export function AdvisorNotesStrip(props: AdvisorNotesStripProps): ReactNode {
 
   const untagged = notes.filter((note) => note.turn === undefined)
   if (status !== 'ready' || untagged.length === 0) return null
+  // Bounded: the strip sits under the composer (and in the sidechat split), so
+  // a long agentic session must not push the composer off-screen.
+  const shown = untagged.slice(-MAX_STRIP_NOTES)
+  const hidden = untagged.length - shown.length
 
   return (
     <section className={styles.wrap ?? ''} aria-label={t('notesTitle')}>
       <div className={styles.title ?? ''}>{t('notesTitle')}</div>
-      {untagged.map((note, index) => (
+      {shown.map((note, index) => (
         <AdvisorNoteRow key={`${note.at}-${index}`} node={{ data: note }} t={t} />
       ))}
+      {hidden > 0 && <div className={styles.more ?? ''}>{t('notesMore', { count: hidden })}</div>}
     </section>
   )
 }

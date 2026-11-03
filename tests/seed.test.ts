@@ -73,7 +73,11 @@ describe('seedNotesFromEvents — turn attribution on rehydrate', () => {
       humanMessage('fix it'),
       assistantMessage('working'),
       turnEnd(1),
-      // Turn 2 is running (no human prompt since the boundary): a step review.
+      // Turn 2 opens with its own prompt and already produced output: a step
+      // review committed mid-turn must attach to the turn IN PROGRESS (2),
+      // not to the turn that closed (1).
+      humanMessage('turn two'),
+      assistantMessage('step one output'),
       advisorMessage('[advisor:nit] tighten the loop'),
       assistantMessage('more work'),
       turnEnd(2),

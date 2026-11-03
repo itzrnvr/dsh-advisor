@@ -65,11 +65,18 @@ export function seedNotesFromEvents(events: readonly SessionEvent[]): SeededAdvi
   const notes: SeededAdvisorNote[] = []
   let lastEndedTurn: number | undefined
   let humanSinceEnd = false
+  /** Assistant output already produced since the next turn's opening prompt. */
+  let assistantSincePrompt = false
   for (const event of events) {
     if (event.type === 'turn/end') {
       const turn = (event.data as { readonly turn?: unknown }).turn
       if (typeof turn === 'number') lastEndedTurn = turn
       humanSinceEnd = false
+      assistantSincePrompt = false
+      continue
+    }
+    if (event.type === 'assistant/message') {
+      if (humanSinceEnd) assistantSincePrompt = true
       continue
     }
     if (event.type !== 'user/message') continue
@@ -82,6 +89,7 @@ export function seedNotesFromEvents(events: readonly SessionEvent[]): SeededAdvi
     const kind = message?.source?.kind
     if (kind === 'user') {
       humanSinceEnd = true
+      assistantSincePrompt = false
       continue
     }
     if (kind !== 'advisor' && kind !== 'plugin:advisor') continue
@@ -91,10 +99,14 @@ export function seedNotesFromEvents(events: readonly SessionEvent[]): SeededAdvi
       .join('\n')
     const match = NOTE_PATTERN.exec(text)
     if (match === null || match[2].trim().length === 0) continue
-    // Mid-turn reviews take the turn that closes NEXT; turn-end reviews take
-    // the turn that just closed (a human prompt was seen after the boundary).
-    const nextEnd = humanSinceEnd ? undefined : turnEnds.find((entry) => entry.seq > event.seq)
-    const turn = humanSinceEnd ? lastEndedTurn : (nextEnd?.turn ?? lastEndedTurn)
+    // Two deliveries share the "after a human prompt" position:
+    // - a turn/end review is drained at the START of the next turn, before
+    //   that turn produced any output → the turn that just CLOSED;
+    // - a mid-turn (step) review commits only after the running turn already
+    //   produced assistant output → the turn in progress, i.e. the one that
+    //   closes NEXT.
+    const nextEnd = turnEnds.find((entry) => entry.seq > event.seq)
+    const turn = assistantSincePrompt ? nextEnd?.turn : lastEndedTurn
     const at = (event as { readonly time?: unknown }).time
     // A row without an event time cannot be placed in time; skip it rather
     // than render it as 1970.

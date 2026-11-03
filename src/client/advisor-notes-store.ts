@@ -103,7 +103,7 @@ export class AdvisorNotesController {
   private lastSignature: string | undefined
 
   /** The mounted poll timer (owned by start/stop, not the component). */
-  private timer: number | undefined
+  private timer: ReturnType<typeof setInterval> | undefined
 
   /** Mount count: the controller is shared across surfaces (dock + turn tails). */
   private mounts = 0
@@ -117,14 +117,14 @@ export class AdvisorNotesController {
     this.mounts += 1
     if (this.timer !== undefined) return
     void this.fetch()
-    this.timer = window.setInterval(() => { void this.fetch() }, ADVISOR_NOTES_POLL_MS)
+    this.timer = setInterval(() => { void this.fetch() }, ADVISOR_NOTES_POLL_MS)
   }
 
   /** Release one mount; polling stops when the last surface unmounts. */
   stop(): void {
     this.mounts = Math.max(0, this.mounts - 1)
     if (this.mounts > 0 || this.timer === undefined) return
-    window.clearInterval(this.timer)
+    clearInterval(this.timer)
     this.timer = undefined
   }
 

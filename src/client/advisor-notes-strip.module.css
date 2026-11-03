@@ -15,3 +15,9 @@
   text-transform: uppercase;
   color: var(--dsw-alias-label-caption, #6b7280);
 }
+.more {
+  margin: 4px 0 0;
+  font-size: 10.5px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-caption, #6b7280);
+}
