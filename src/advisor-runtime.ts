@@ -10,9 +10,14 @@
  * - a FIFO queue of pending transcript deltas (bounded — spec §6 "bounded
  *   backlog"; drop-newest when full);
  * - a serialized async drain loop: one `llm.stream` call per delta with
- *   `{ provider, model, sessionId, system, messages: [user delta] }` and
- *   `purpose` left UNSET (KD-5 — an advisor call is an ordinary conversation
- *   request, so it carries the owning conversation's id). NO
+ *   `{ provider, model, sessionId, system, messages: [...history, newTurn] }`
+ *   and `purpose` left UNSET (KD-5 — an advisor call is an ordinary
+ *   conversation request, so it carries the owning conversation's id). The
+ *   history is append-only: each completed exchange pushes the exact user
+ *   turn and the exact assistant reply, so every request is a strict
+ *   byte-prefix extension of the previous one and the provider's prompt cache
+ *   can reuse it (fork addition; bounded by {@link ADVISOR_HISTORY_MAX_CHARS},
+ *   reset wholesale on overflow — never trimmed). NO
  *   `maxTokens` is sent (2026-10-18 user ruling, superseding the KD-I1
  *   budget: on OpenAI-compatible APIs `max_tokens` caps reasoning + content
  *   together, so with thinking models the budget intermittently starved the
