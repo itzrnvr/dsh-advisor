@@ -48,4 +48,19 @@ describe('AdvisorNoteRow — collapsible note card (fork addition)', () => {
     fireEvent.click(scoped.getByRole('button', { name: 'notesExpand' }))
     expect(container.textContent).toContain(text)
   })
+
+  it('shows the committed summary instead of the body when collapsed (dsh-ttsr pattern)', () => {
+    // The committed message carries a one-line account (source.summary) — the
+    // same field dsh-ttsr uses — so a collapsed row still says what the note
+    // was about instead of going blank.
+    const { container } = render(
+      <AdvisorNoteRow
+        node={{ data: { text: 'the long body', severity: 'concern', at: Date.now(), summary: '[concern] short account' } }}
+        t={(key) => key}
+        defaultCollapsed
+      />,
+    )
+    expect(container.textContent).toContain('[concern] short account')
+    expect(container.textContent).not.toContain('the long body')
+  })
 })

@@ -27,6 +27,8 @@ export interface AdvisorNote {
   readonly channel: 'commit' | 'steer'
   /** Turn the review belonged to (absent when the host could not attribute it). */
   readonly turn?: number
+  /** The committed message's one-line account (`source.summary`, TTSR-style). */
+  readonly summary?: string
 }
 
 /** The strip's snapshot. */
@@ -176,6 +178,9 @@ export class AdvisorNotesController {
         .map((note) => ({
           ...note,
           ...(typeof (note as { turn?: unknown }).turn === 'number' ? { turn: (note as { turn?: number }).turn } : {}),
+          ...(typeof (note as { summary?: unknown }).summary === 'string'
+            ? { summary: (note as { summary: string }).summary }
+            : {}),
         }))
       const next = {
         notes,

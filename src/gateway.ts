@@ -297,6 +297,12 @@ export interface AdvisorNoteView {
   readonly channel: 'commit' | 'steer'
   /** Agent turn the review belonged to (fork addition; absent when unknown). */
   readonly turn?: number
+  /**
+   * The committed message's own one-line account (`source.summary`, the
+   * field dsh-ttsr uses for its reminders) — shown on a collapsed row so
+   * the note says what it was about without being opened.
+   */
+  readonly summary?: string
 }
 
 /**

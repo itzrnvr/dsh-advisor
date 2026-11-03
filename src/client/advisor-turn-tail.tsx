@@ -91,24 +91,30 @@ export function AdvisorTurnTail(props: AdvisorTurnTailProps): ReactNode {
   // guarantees the note renders at the end of the turn it reviewed (the chat
   // node seat could not: the inbox commits the note inside the NEXT turn, and
   // the flow groups nodes by their turn location, not by anchorSeq alone).
+  //
+  // NEWEST WINDOW when a turn carries more than the cap: the notes a user has
+  // just watched arrive in the dock strip (the open turn) must not vanish when
+  // that turn closes — the newest ones stay visible and the OLDER ones wait
+  // behind the reveal above them. Order INSIDE the window stays chronological
+  // (oldest → newest), so the cards read as they were given.
   const shown = showAll || turnNotes.length <= TURN_TAIL_MAX
     ? turnNotes
-    : turnNotes.slice(0, TURN_TAIL_MAX)
+    : turnNotes.slice(-TURN_TAIL_MAX)
   const hidden = turnNotes.length - shown.length
   return (
     <>
-      {shown.map((note, index) => (
-        <AdvisorNoteRow key={`${note.at}-${index}`} node={{ data: note }} t={t} />
-      ))}
       {hidden > 0 && (
         <button
           type="button"
           className={styles.toggle ?? ''}
           onClick={() => { setShowAll(true) }}
         >
-          {t('notesMore', { count: hidden })}
+          {t('notesEarlier', { count: hidden })}
         </button>
       )}
+      {shown.map((note) => (
+        <AdvisorNoteRow key={`${note.at}-${note.text.length}`} node={{ data: note }} t={t} />
+      ))}
     </>
   )
 }

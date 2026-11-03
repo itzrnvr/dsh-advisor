@@ -87,8 +87,8 @@ export function AdvisorNotesStrip(props: AdvisorNotesStripProps): ReactNode {
           ×
         </button>
       </div>
-      {shown.map((note, index) => (
-        <AdvisorNoteRow key={`${note.at}-${index}`} node={{ data: note }} t={t} defaultCollapsed />
+      {shown.map((note) => (
+        <AdvisorNoteRow key={`${note.at}-${note.text.length}`} node={{ data: note }} t={t} defaultCollapsed />
       ))}
       {hidden > 0 && <div className={styles.more ?? ''}>{t('notesMore', { count: hidden })}</div>}
     </section>

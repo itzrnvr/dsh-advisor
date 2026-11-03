@@ -162,6 +162,26 @@ describe('notesFromSessionEvents — turn attribution', () => {
     expect(notes[0]!.turn).toBe(1)
   })
 
+  it('carries the committed summary through the derivation (collapsed-row preview)', () => {
+    // The committed message carries a one-line account (source.summary — the
+    // dsh-ttsr pattern); the derivation must surface it so a collapsed row
+    // can show it.
+    seq = 0
+    const notes = notesFromSessionEvents([
+      humanMessage('fix it'),
+      assistantMessage('done'),
+      turnEnd(1),
+      event('user/message', {
+        id: 'note-1',
+        role: 'user',
+        content: [{ type: 'text', text: '[advisor:concern] check the edge' }],
+        source: { kind: 'advisor', form: 'notice', summary: '[concern] check the edge' },
+      }, 2_000, 'append'),
+    ])
+    expect(notes).toHaveLength(1)
+    expect(notes[0]!.summary).toBe('[concern] check the edge')
+  })
+
   it('ignores the old wrong `.message`-wrapped shape instead of matching it', () => {
     // Regression pin: the ORIGINAL buggy fixtures (message wrapped in
     // `.message`) must never be re-accepted — that shape does not exist on

@@ -97,3 +97,18 @@
   overflow-wrap: anywhere;
   user-select: text;
 }
+
+/* Collapsed row: the one-line account the committed message carries
+ * (source.summary — the dsh-ttsr pattern), never the full body. */
+.summary {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-secondary, inherit);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

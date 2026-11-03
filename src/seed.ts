@@ -61,6 +61,12 @@ export interface SeededAdvisorNote {
   readonly text: string
   readonly channel: 'commit' | 'steer'
   readonly turn?: number
+  /**
+   * The committed message's own one-line account (`source.summary`) — the
+   * same field dsh-ttsr puts on its injected reminders, so a collapsed row
+   * can show WHAT the note was about without opening it.
+   */
+  readonly summary?: string
 }
 
 /** `[advisor:<severity>] <note>` — the one durable cue the message carries. */
@@ -78,6 +84,16 @@ function textOf(message: Message): string {
 function turnOf(event: SessionEvent): number | undefined {
   const turn = (event.data as { readonly turn?: unknown }).turn
   return typeof turn === 'number' ? turn : undefined
+}
+
+/**
+ * The committed message's own one-line account (`source.summary`) — the field
+ * dsh-ttsr sets on its injected reminders so a collapsed row can say what
+ * the injection was about. Absent on older notes (pre-summary) → undefined.
+ */
+function summaryOf(message: Message): string | undefined {
+  const summary = (message.source as { readonly summary?: unknown }).summary
+  return typeof summary === 'string' && summary.trim().length > 0 ? summary.trim() : undefined
 }
 
 /**
@@ -160,6 +176,7 @@ export function notesFromSessionEvents(events: readonly SessionEvent[]): SeededA
       text: match[2].trim(),
       channel: 'commit',
       ...(turn === undefined ? {} : { turn }),
+      ...(summaryOf(message) === undefined ? {} : { summary: summaryOf(message) }),
     })
   }
   return notes

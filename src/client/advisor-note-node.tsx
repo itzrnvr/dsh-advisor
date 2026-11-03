@@ -19,6 +19,12 @@ export interface AdvisorNoteData {
   readonly text: string
   readonly severity: NoteSeverity
   readonly at: number
+  /**
+   * The committed message's one-line account (`source.summary`) — the same
+   * field dsh-ttsr puts on its reminders, so a collapsed row still says what
+   * the note was about (TTSR parity).
+   */
+  readonly summary?: string
 }
 
 /** Props the turn-tail renderer binds for one note row. */
@@ -68,7 +74,13 @@ export function AdvisorNoteRow(props: AdvisorNoteRowProps): ReactNode {
           {toggleLabel}
         </button>
       </div>
-      {collapsed ? null : <p className={styles['text']}>{data.text}</p>}
+      {collapsed
+        // Collapsed: the one-line account the committed message carries
+        // (dsh-ttsr's collapsed-row pattern) instead of the full body.
+        ? (data.summary === undefined
+          ? null
+          : <p className={styles['summary']}>{data.summary}</p>)
+        : <p className={styles['text']}>{data.text}</p>}
     </section>
   )
 }
