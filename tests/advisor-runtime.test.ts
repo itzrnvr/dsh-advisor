@@ -1072,9 +1072,12 @@ describe('AdvisorRuntime — failure policy (KD-5)', () => {
     // not latched and is not reused (n4 QC N-5 / qc3 S-2).
     expect(llm.resolveSignals[1]!.aborted).toBe(false)
     // Attempt 2 re-resolved 'off' — the option is back on the retry, the note
-    // is delivered, and the whole drain stayed deadline-bounded.
-    expect(llm.calls).toHaveLength(2)
-    expect(llm.calls[1]!.reasoningEffort).toBe(ReasoningEffortId('off'))
+    // is delivered, and the whole drain stayed deadline-bounded. The aborted
+    // first attempt never started a doomed stream call: the preparation
+    // deadline classified it as a transient timeout first, so only attempt 2
+    // reaches the provider (one call, not two).
+    expect(llm.calls).toHaveLength(1)
+    expect(llm.calls[0]!.reasoningEffort).toBe(ReasoningEffortId('off'))
     expect(notes).toEqual([{ note: 'resolution bounded', severity: 'nit' }])
     expect(runtime.status()).toBe('running')
   })

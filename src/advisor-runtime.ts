@@ -1083,13 +1083,10 @@ export class AdvisorRuntime {
     this.lastSentHistoryTokens = undefined
     this.lastSentUserText = ''
     this.lastFullReply = ''
-    // Call-level deadline (dsh-timeout): fuses the runtime's dispose signal
-    // with a whole-call timer. The fused signal is passed to the provider
-    // (AbortSignal honored) AND raced per chunk below, so a hung stream cannot
-    // wedge the drain even when the provider ignores the signal. A timeout is
-    // a transient failure — KD-5 retry(1) → drop (qc2 W-4 / qc3 W-1).
-    using deadlineHandle = deadline(this.controller.signal, this.callTimeoutMs, ADVISOR_CALL_TIMEOUT)
-    const deadlineSignal = deadlineHandle.signal
+    // Preparation (capability lookup + compaction) runs under its OWN deadline,
+    // fused with dispose; the review stream gets a fresh deadline afterwards, so
+    // a slow summary cannot consume the review call's budget.
+    let deadlineSignal: AbortSignal = this.controller.signal
     // The new turn, built ONCE: the exact same message object goes into the
     // request and into the append-only history after the call succeeds, so
     // what is stored is byte-identical to what the provider saw. Both are
@@ -1107,15 +1104,32 @@ export class AdvisorRuntime {
       // adapter capability lookup that honors cancellation aborts with the
       // call instead of wedging the drain ahead of the deadline-guarded
       // stream loop.
-      const reasoningEffort = await this.resolveReasoningEffort(deadlineSignal)
-      // Fork addition: compact-and-continue when the stored conversation plus
-      // this delta would cross the trigger. The result is ONE user turn
-      // (summary + newest content), preserving strict alternation.
-      userText = await this.prepareUserText(userText, deadlineSignal)
+      let reasoningEffort: ReasoningEffortId | undefined
+      let preparationTimedOut = false
+      {
+        using preparation = deadline(this.controller.signal, this.callTimeoutMs, ADVISOR_CALL_TIMEOUT)
+        reasoningEffort = await this.resolveReasoningEffort(preparation.signal)
+        // Fork addition: compact-and-continue when the stored conversation plus
+        // this delta would cross the trigger. The result is ONE user turn
+        // (summary + newest content), preserving strict alternation.
+        userText = await this.prepareUserText(userText, preparation.signal)
+        preparationTimedOut = timeoutOf(preparation.signal, ADVISOR_CALL_TIMEOUT) !== undefined
+      }
+      if (preparationTimedOut) {
+        // Classified against the PREPARATION signal: a hung lookup/compaction
+        // is the same transient timeout class the review stream produces.
+        return {
+          kind: 'failure',
+          failure: { message: `advisor preparation timed out after ${this.callTimeoutMs}ms`, code: 'TIMEOUT' },
+        }
+      }
       this.lastSentUserText = userText
       this.lastSentHistoryTokens = this.historyTokens
       this.lastRequestEstimateTokens = this.estimateTextTokens(this.systemPrompt)
         + this.historyTokens + this.estimateTextTokens(userText)
+      // Review deadline starts HERE, after preparation.
+      using reviewDeadline = deadline(this.controller.signal, this.callTimeoutMs, ADVISOR_CALL_TIMEOUT)
+      deadlineSignal = reviewDeadline.signal
       userMessage = createUserMessage({
         content: [{ type: 'text', text: userText }],
         source: { kind: 'user' },
