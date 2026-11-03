@@ -1910,7 +1910,8 @@ describe('AdvisorRuntime — full trace sink (fork addition)', () => {
       { chunks: textReply('Compacted summary.') },
       { chunks: textReply('{"note":"two"}') },
     ])
-    const { runtime } = makeRuntime(llm, { historyMaxTokens: 100, onTrace: (trace) => traces.push(trace) })
+    const turns: AdvisorTurnRecord[] = []
+    const { runtime } = makeRuntime(llm, { historyMaxTokens: 100, onTrace: (trace) => traces.push(trace), onTurn: (record) => turns.push(record) })
 
     runtime.enqueue(delta('first update'))
     await runtime.waitForDrain()
@@ -1919,5 +1920,8 @@ describe('AdvisorRuntime — full trace sink (fork addition)', () => {
 
     const compaction = traces.find((trace) => trace.kind === 'compaction')
     expect(compaction?.summary).toContain('Compacted summary.')
+    // Expand lookups key on the SAME at as the polled turn row (start time).
+    const compactionTurn = turns.find((turn) => turn.kind === 'compaction')
+    expect(compaction?.at).toBe(compactionTurn?.at)
   })
 })
