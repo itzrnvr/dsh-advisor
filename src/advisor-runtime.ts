@@ -1459,7 +1459,7 @@ export class AdvisorRuntime {
       // Cold-reset fallback: the review must still fire.
       this.resetHistory()
       this.recordCompaction(startedAt, at, undefined, true)
-      this.emitTrace({ at, kind: 'compaction', error: 'compaction failed — reviewer conversation reset' })
+      this.emitTrace({ at: startedAt, kind: 'compaction', error: 'compaction failed — reviewer conversation reset' })
       const budget = reviewBudget - this.estimateTextTokens(this.systemPrompt)
       const maxChars = Math.max(0, Math.floor(budget / this.tokensPerChar))
       const marker = `${DELTA_TRUNCATION_MARKER}\n\n`
@@ -1469,7 +1469,7 @@ export class AdvisorRuntime {
     }
     this.resetHistory()
     this.recordCompaction(startedAt, at, result.usage, false, result.summary)
-    this.emitTrace({ at, kind: 'compaction', summary: result.summary })
+    this.emitTrace({ at: startedAt, kind: 'compaction', summary: result.summary })
     const label = `${ADVISOR_COMPACTION_LABEL}\n${result.summary}`
     const headMarker = `${DELTA_HEAD_FOLD_MARKER}\n\n`
     // The marker itself spends budget: subtract it before sizing the tail.
