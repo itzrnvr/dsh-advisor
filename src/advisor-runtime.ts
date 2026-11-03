@@ -56,7 +56,7 @@
  * @module dsh-advisor/advisor-runtime
  */
 
-import { createUserMessage, isQuotaExceededError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createUserMessage, isQuotaExceededError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { ADVISOR_TASK_REMINDER } from './prompts.js'
 import { EMPTY_RESPONSE_CODE, INVALID_CREDENTIAL_CODE, QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import type {
@@ -213,6 +213,16 @@ const ADVISOR_CALL_TIMEOUT = 'ADVISOR_CALL_TIMEOUT'
 const MAX_TRANSIENT_ATTEMPTS = 1
 /** Consecutive dropped deltas after which the pending backlog is flushed (KD-5). */
 const MAX_CONSECUTIVE_DROPS = 3
+/**
+ * Upper bound for the append-only reviewer conversation (~15k tokens). Larger
+ * histories buy continuity at the price of re-reading the whole session on
+ * every review; the bound exists so a long session cannot make each call
+ * arbitrarily expensive. Crossing it RESETS the conversation (never trims it):
+ * dropping the oldest turns in place would rewrite the message prefix and
+ * invalidate the provider's cache from the cut onward, which is the exact cost
+ * this history exists to avoid.
+ */
+const ADVISOR_HISTORY_MAX_CHARS = 60_000
 
 // ---------------------------------------------------------------------------
 // KD-2 — JSON-frame note extraction
@@ -462,6 +472,11 @@ type CallResult =
   | { readonly kind: 'aborted' }
   | { readonly kind: 'failure'; readonly failure: LlmFailure }
 
+/** One message of the append-only reviewer conversation. */
+type AdvisorHistoryMessage =
+  | ReturnType<typeof createUserMessage>
+  | ReturnType<typeof createAssistantMessage>
+
 /**
  * Per-session advisor runtime: queue deltas, async drain, `llm.stream` call,
  * JSON-frame note extraction, and the KD-5 failure policy. All async work is
@@ -498,6 +513,19 @@ export class AdvisorRuntime {
   private readonly reasoningEffortCache = new Map<string, readonly LlmReasoningEffortInfo[]>()
   /** One-shot latch for the undeclared-configured-effort warn line (log-once per runtime). */
   private reasoningEffortWarned = false
+
+  /**
+   * Append-only reviewer conversation: the EXACT user turn sent and the exact
+   * assistant reply received, in order. Every later request carries this same
+   * byte sequence unchanged, so the provider's prefix-based prompt cache can
+   * reuse the whole conversation instead of re-reading it — only the new turn
+   * is billed at the full rate. Entries are never edited or re-rendered after
+   * being appended: any change to an earlier message moves the divergence
+   * point to the front and forces a full re-prefill.
+   */
+  private readonly history: AdvisorHistoryMessage[] = []
+  /** Total characters stored in {@link history} (the maintenance budget). */
+  private historyChars = 0
 
   private readonly queue: Delta[] = []
   private state: AdvisorRuntimeStatus = 'running'
@@ -777,6 +805,14 @@ export class AdvisorRuntime {
     // a transient failure — KD-5 retry(1) → drop (qc2 W-4 / qc3 W-1).
     using deadlineHandle = deadline(this.controller.signal, this.callTimeoutMs, ADVISOR_CALL_TIMEOUT)
     const deadlineSignal = deadlineHandle.signal
+    // The new turn, built ONCE: the exact same message object goes into the
+    // request and into the append-only history after the call succeeds, so
+    // what is stored is byte-identical to what the provider saw.
+    const userText = this.userTextFor(delta)
+    const userMessage = createUserMessage({
+      content: [{ type: 'text', text: userText }],
+      source: { kind: 'user' },
+    })
     try {
       // Capability-gate `reasoningEffort` (qc2 W-1 / qc1 W-1 / qc3 F-3):
       // resolve the model's declared efforts ONCE per (provider, model) and
@@ -788,7 +824,7 @@ export class AdvisorRuntime {
       // call instead of wedging the drain ahead of the deadline-guarded
       // stream loop.
       const reasoningEffort = await this.resolveReasoningEffort(deadlineSignal)
-      const stream = this.llm.stream(this.buildOptions(delta, deadlineSignal, reasoningEffort))
+      const stream = this.llm.stream(this.buildOptions(userMessage, deadlineSignal, reasoningEffort))
       const iterator = stream[Symbol.asyncIterator]()
       for (;;) {
         const next = await raceIteratorNext(iterator, deadlineSignal)
@@ -830,6 +866,12 @@ export class AdvisorRuntime {
       if (this.disposed || this.controller.signal.aborted) return { kind: 'aborted' }
       return { kind: 'failure', failure: finish.failure }
     }
+    // The call completed: make the exchange part of the append-only
+    // conversation BEFORE extraction. A reply the emission guard later
+    // suppresses, or that yields no note, is still a turn the provider saw —
+    // omitting it would desync the stored history from the model's own view
+    // and change every later request's prefix.
+    this.appendHistory(userText, userMessage, text)
     // stop | max-tokens | tool-calls: extract from the collected text (KD-2;
     // no retry on parse failures — the frame must simply be absent/valid).
     // KD-I3 drop classification (issue #102): an EMPTY trimmed reply is an
@@ -932,7 +974,52 @@ export class AdvisorRuntime {
     )
   }
 
-  private buildOptions(delta: Delta, signal: AbortSignal, reasoningEffort: ReasoningEffortId | undefined): GenerateOptions {
+  /** The exact user-message text for one review; stored verbatim in history. */
+  private userTextFor(delta: Delta): string {
+    // Task reminder AFTER the delta: the last instruction wins, and
+    // "above" points at the transcript. A prefix reminder was followed
+    // unreliably on code-heavy deltas (the model continued the code).
+    return `${delta.markdown}\n\n---\n${ADVISOR_TASK_REMINDER}`
+  }
+
+  /**
+   * Append one completed exchange to the reviewer conversation. Called for
+   * EVERY successful model call — including a reply that later yields no note
+   * or is suppressed by the emission guard — because the provider processed
+   * that turn and the stored conversation must match what it saw.
+   *
+   * Budget behavior: crossing {@link ADVISOR_HISTORY_MAX_CHARS} clears the
+   * conversation and starts over. Trimming the oldest turns in place is
+   * deliberately not an option: it rewrites the prefix at the cut and makes
+   * the provider re-prefill everything after it, which is the cost this
+   * history exists to remove. One cold call after a reset is cheaper.
+   */
+  private appendHistory(userText: string, userMessage: AdvisorHistoryMessage, replyText: string): void {
+    const hasReply = replyText.trim().length > 0
+    const size = userText.length + (hasReply ? replyText.length : 0)
+    if (this.historyChars + size > ADVISOR_HISTORY_MAX_CHARS) {
+      this.history.length = 0
+      this.historyChars = 0
+      this.logger.debug('advisor: reviewer history reset (budget)', {
+        maxChars: ADVISOR_HISTORY_MAX_CHARS,
+        incomingChars: size,
+      })
+    }
+    this.history.push(userMessage)
+    if (hasReply) {
+      this.history.push(createAssistantMessage({
+        content: [{ type: 'text', text: replyText }],
+        source: { provider: this.provider, model: this.model },
+      }))
+    }
+    this.historyChars += size
+  }
+
+  private buildOptions(
+    userMessage: ReturnType<typeof createUserMessage>,
+    signal: AbortSignal,
+    reasoningEffort: ReasoningEffortId | undefined,
+  ): GenerateOptions {
     return {
       provider: this.provider,
       model: this.model,
@@ -942,13 +1029,11 @@ export class AdvisorRuntime {
       // — refuse a request without it, so the advisor call carries the owning
       // session id.
       sessionId: this.sessionId,
-      messages: [createUserMessage({
-        // Task reminder AFTER the delta: the last instruction wins, and
-        // "above" points at the transcript. A prefix reminder was followed
-        // unreliably on code-heavy deltas (the model continued the code).
-        content: [{ type: 'text', text: `${delta.markdown}\n\n---\n${ADVISOR_TASK_REMINDER}` }],
-        source: { kind: 'user' },
-      })],
+      // Append-only reviewer conversation: system + history + the new turn.
+      // The history is the exact sequence of earlier requests/replies, never
+      // re-rendered, so each call is a strict extension of the previous
+      // prefix and the provider cache can reuse it.
+      messages: [...this.history, userMessage],
       // Reasoning effort (plan dsh-advisor-reasoning-effort RD-1/RD-2): the
       // advisor's job is a short structured note, so the SMALLEST thinking
       // weight the resolved model declares is the default — reasoning-heavy

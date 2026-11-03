@@ -221,7 +221,7 @@ function makeSession(id = 's1'): { session: Session; log: SessionEvent[] } {
 
 /** Text of the single user delta message the runtime sends the model. */
 function deltaTextOf(options: GenerateOptions): string {
-  const block = options.messages[0]!.content[0]!
+  const block = options.messages[options.messages.length - 1]!.content[0]!
   return block.type === 'text' ? block.text : ''
 }
 

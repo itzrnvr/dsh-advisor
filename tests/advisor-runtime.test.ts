@@ -326,7 +326,7 @@ describe('AdvisorRuntime — drain calls llm.stream once per delta with expected
     ])
     expect(llm.calls).toHaveLength(2)
     const textOf = (options: GenerateOptions): string => {
-      const block = options.messages[0]!.content[0]!
+      const block = options.messages[options.messages.length - 1]!.content[0]!
       const raw = block.type === 'text' ? block.text : ''
       return raw.replace(/\n\n---\n(Reviewer|Prediction) task:[\s\S]*$/, '')
     }
@@ -1174,7 +1174,7 @@ describe('AdvisorRuntime — bounded backlog drop-newest (spec §6)', () => {
 
   /** Delta markdown carried by one recorded `llm.stream` call (drain-test pattern). */
   const textOf = (options: GenerateOptions): string => {
-    const block = options.messages[0]!.content[0]!
+    const block = options.messages[options.messages.length - 1]!.content[0]!
     const raw = block.type === 'text' ? block.text : ''
     return raw.replace(/\n\n---\n(Reviewer|Prediction) task:[\s\S]*$/, '')
   }
@@ -1500,3 +1500,85 @@ function minimalTurn(): EventSpec[] {
     { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
   ]
 }
+
+// ---------------------------------------------------------------------------
+// Append-only reviewer conversation (fork) — provider prefix-cache reuse
+// ---------------------------------------------------------------------------
+
+/** Text of the first content block of one request message. */
+const textOfMessage = (message: { content: readonly unknown[] }): string => {
+  const block = message.content[0] as { type: string; text?: string }
+  return block.type === 'text' ? block.text ?? '' : ''
+}
+
+describe('AdvisorRuntime — append-only reviewer conversation', () => {
+  it('sends system + history + the new turn, and earlier messages never change', async () => {
+    const llm = new FakeLlm([
+      { chunks: textReply('{"note":"first note","severity":"nit"}') },
+      { chunks: textReply('{"note":"second note","severity":"concern"}') },
+    ])
+    const { runtime } = makeRuntime(llm)
+
+    runtime.enqueue(delta('first update'))
+    await runtime.waitForDrain()
+    runtime.enqueue(delta('second update'))
+    await runtime.waitForDrain()
+
+    expect(llm.calls).toHaveLength(2)
+    const first = llm.calls[0]!
+    const second = llm.calls[1]!
+    expect(first.messages).toHaveLength(1)
+    // Turn 2 = turn 1 (untouched) + its assistant reply + the new turn.
+    expect(second.messages).toHaveLength(3)
+    expect(second.messages[0]).toBe(first.messages[0])
+    expect(second.messages[1]!.role).toBe('assistant')
+    expect(textOfMessage(second.messages[1]!)).toBe('{"note":"first note","severity":"nit"}')
+    expect(second.messages[2]!.role).toBe('user')
+    const newTurn = textOfMessage(second.messages[2]!)
+    expect(newTurn).toContain('second update')
+    expect(newTurn).not.toContain('first update')
+  })
+
+  it('stores a turn the extractor dropped, so history matches what the provider saw', async () => {
+    const llm = new FakeLlm([
+      { chunks: textReply('not a JSON frame at all') },
+      { chunks: textReply('{"note":"second"}') },
+    ])
+    const { runtime } = makeRuntime(llm)
+
+    runtime.enqueue(delta('first update'))
+    await runtime.waitForDrain()
+    runtime.enqueue(delta('second update'))
+    await runtime.waitForDrain()
+
+    expect(llm.calls).toHaveLength(2)
+    expect(llm.calls[1]!.messages).toHaveLength(3)
+    expect(llm.calls[1]!.messages[1]!.role).toBe('assistant')
+    expect(textOfMessage(llm.calls[1]!.messages[1]!)).toBe('not a JSON frame at all')
+  })
+
+  it('resets the whole conversation at the budget instead of trimming the oldest turns', async () => {
+    const big = 'x'.repeat(40_000)
+    const llm = new FakeLlm([
+      { chunks: textReply('{"note":"one"}') },
+      { chunks: textReply('{"note":"two"}') },
+      { chunks: textReply('{"note":"three"}') },
+    ])
+    const { runtime } = makeRuntime(llm)
+
+    runtime.enqueue(delta(`first ${big}`))
+    await runtime.waitForDrain()
+    runtime.enqueue(delta(`second ${big}`))
+    await runtime.waitForDrain()
+    runtime.enqueue(delta('third update'))
+    await runtime.waitForDrain()
+
+    expect(llm.calls).toHaveLength(3)
+    const third = llm.calls[2]!
+    // Two turns would exceed the 60k budget: the second call wiped the first
+    // exchange, so the third call holds only turn 2 + its reply + turn 3.
+    expect(third.messages).toHaveLength(3)
+    expect(textOfMessage(third.messages[0]!)).toContain('second')
+    expect(textOfMessage(third.messages[0]!)).not.toContain('first')
+  })
+})
