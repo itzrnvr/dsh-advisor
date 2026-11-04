@@ -37,6 +37,18 @@
  *   renders those today — the turn tails need a turn, and the above-composer
  *   strip that once showed untagged notes was removed in 0.6.49).
  *
+ * HOST FACT (verified 2026-11-04 against the shipped chat bundle,
+ * `tailData()`): the host's turn-tail node EXISTS ONLY ONCE THE TURN ENDED —
+ * `tailData` returns null while a turn is open, so `conversation.chat.turnTail`
+ * never renders for the running turn. Do NOT re-propose an "openTurn
+ * fallback" that renders untagged notes under the live turn's tail: the slot
+ * is not mounted there, the change would be dead code and cost a restart
+ * cycle to discover that (it happened). The only live-turn surfaces the host
+ * offers plugins are outside the chat flow (`conversation.input.dock` above
+ * the composer — removed by user ruling 0.6.49 — and `conversation.view`
+ * tabs). Untagged notes therefore become visible exactly when their turn
+ * closes and the derivation tags them.
+ *
  * `at` comes from the session event's own time (never Date.now()) so rows
  * keep their original timestamp. The delivery channel is genuinely
  * unrecoverable from the message (a steer and a committed note write the same
