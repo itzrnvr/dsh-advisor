@@ -58,6 +58,8 @@ import { AdvisorSessionModelController, AdvisorSettingsStore, refreshIfLoaded } 
 import { NextPromptOverlay } from './next-prompt-overlay.tsx'
 import { AdvisorSuggestionController } from './next-prompt-store.ts'
 import { AdvisorTurnTail } from './advisor-turn-tail.tsx'
+import { AdvisorNoteRow } from './advisor-note-node.tsx'
+import { ADVISOR_NOTE_KIND, CHAT_NODE_SLOT, buildAdvisorNoteDefinition } from './advisor-inline-note.ts'
 import { advisorNotesControllerFor } from './advisor-notes-store.ts'
 import { AdvisorTrajectoryView } from './advisor-trajectory-view.tsx'
 import { advisorTrajectoryControllerFor } from './advisor-trajectory-store.ts'
@@ -331,14 +333,25 @@ export function apply(ctx: ClientContext): void {
 
   })
 
-  // Fork addition: advisor notes render inline at the END OF THE TURN THEY
-  // REVIEWED. The chat-node seat could not guarantee that: the inbox commits
-  // a note inside the NEXT turn and the flow groups nodes by their turn
-  // location (not anchorSeq), so the note landed after the new user message.
-  // The turn-tail seat lives inside the reviewed turn's own layout.
-  // Mirrors the known-good composer-dock registration above: a generator
-  // passed to inject, yielding the disposer from the ROOT slot registry.
-  ctx.slots.inject('conversation.chat.turnTail' as never, function* () {
+  // 0.6.50 — INLINE LIVE NOTES (user ruling 2026-11-04: notes must render
+  // inline, in the order they arrive, between steps — not after the turn
+  // closes). The advisor's committed `user/message` events are hidden context
+  // rows in the host flow, and the host renders turn tails ONLY after
+  // turn/end (HOST FACT in src/seed.ts) — so the note is contributed as its
+  // OWN chat node through the conversation engine's public definition API:
+  // kind `advisor-note`, published immediately at the event's position, and
+  // drawn by the keyed `conversation.chat.node` entry below (the host routes
+  // every node kind through that slot). The card is the same
+  // readable row the tails used.
+  //
+  // Defensive either/or with NO activation-order assumption: the closed-turn
+  // tail seat (0.6.49 behavior — notes grouped at the turn boundary) mounts
+  // first and hands back its disposer; the inline child fiber, whenever it
+  // activates (synchronously in every shipped tree where the conversation
+  // bundle composes before plugin clients, or late if the engine ever appears
+  // after apply), disposes the tail on success. Never both surfaces — no
+  // double render, no race. A failed inline registration leaves the tail.
+  const tailSeatDisposer = ctx.slots.inject('conversation.chat.turnTail' as never, function* () {
     yield (ctx.slots as any).register({
       name: 'conversation.chat.turnTail',
       id: `${BUNDLE_NAME}#turn-tail`,
@@ -353,6 +366,47 @@ export function apply(ctx: ClientContext): void {
         }
       },
     }, AdvisorTurnTail)
+  })
+  // The child declares BOTH services it touches: `uiConversation` (the gate)
+  // and `slots` (the keyed renderer registration) — activation waits for the
+  // pair, so the callback's property reads cannot hit a missing service.
+  ctx.inject(['uiConversation', 'slots'] as never, (cctx: any) => {
+    // The engine's register returns an idempotent disposer (conversation
+    // bundle registerDefinition). Hold it: if the SECOND half of the inline
+    // surface (the keyed node renderer) fails, the definition must be
+    // withdrawn too — an orphan `advisor-note` node kind would otherwise
+    // render through the host's JSON fallback (raw data inline) while the
+    // tail stays mounted, showing every note twice in two shapes.
+    let definitionDisposer: (() => void) | undefined
+    try {
+      const registered = cctx.uiConversation.events.register(buildAdvisorNoteDefinition())
+      if (typeof registered === 'function') definitionDisposer = registered as () => void
+      cctx.slots.inject(CHAT_NODE_SLOT as never, function* (): Generator<unknown> {
+        yield (cctx.slots as any).register({
+          name: CHAT_NODE_SLOT,
+          id: `${BUNDLE_NAME}#note-node`,
+          // Keyed dispatch: the host renders this entry for every chat node
+          // whose kind === entryKey (renderSlot opts, ui-chat line 3815).
+          entryKey: ADVISOR_NOTE_KIND,
+          locale: NS,
+          inject: (owner: { readonly node?: { readonly id?: string; readonly data?: unknown } }) => ({
+            node: { id: owner?.node?.id, data: owner?.node?.data },
+          }),
+        }, AdvisorNoteRow)
+      })
+      // Inline won: retire the fallback tail seat (its per-session note
+      // controllers stop polling with it — the inline nodes need no store).
+      tailSeatDisposer()
+    } catch (error) {
+      // Roll back the half-state: withdraw the definition if it landed, keep
+      // the tail seat. A wrong-shape guess can never break the chat flow.
+      try {
+        definitionDisposer?.()
+      } catch {
+        // Disposal failure changes nothing: the tail stays either way.
+      }
+      ctx.logger('advisor').warn('inline advisor notes unavailable — staying on turn tails', { error })
+    }
   })
 
   // 0.6.49: the above-composer notes strip is REMOVED (user ruling: "why is

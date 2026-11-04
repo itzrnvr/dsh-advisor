@@ -28,12 +28,20 @@ them with the two `extract-asar-*.cjs` scripts from the installed desktop
   `conversation.chat.turnTail` NEVER renders for a running turn. A plugin
   "openTurn fallback" on that seat is dead code (verified 2026-11-04 after a
   restart cycle was already spent on the idea — see the HOST FACT block in
-  `src/seed.ts`).
+  `src/seed.ts`). Live inline notes instead ride the conversation engine's
+  public node-definition API (`uiConversation.events.register`; function-form
+  `match` is supported per `resolve()`, and `register` returns an idempotent
+  disposer) plus the keyed `conversation.chat.node` entry the host renders
+  for every node kind — an orphaned definition would show raw JSON through
+  the fallback, so a half-failed inline registration MUST withdraw it.
 - **`agent/pre-step` is an awaited waterfall** that runs AFTER `inbox.claim`
   and BEFORE `step/start` + the step's model call; a steer inserted during a
   pre-step hold is claimed one step late, while a `session.append` during the
   hold joins the held step's own request (`buildRequest` derives from the
   surface). This is why the 0.6.48 gate commits while holding.
 - **Advisor messages never render as chat bubbles** — the host's
-  `isVisibleChatNode` hides producer-kind context nodes; the tails (and the
-  former strip) are the only surfaces.
+  `isVisibleChatNode` hides producer-kind context nodes. The rendered note
+  card is a SEPARATE, plugin-contributed node (kind `advisor-note`, 0.6.50)
+  that passes the filter because the plugin owns its visibility; the advisor
+  message row itself stays hidden. Surfaces: the inline card (live), the
+  tails (fallback / grouped), the Advisor tab.

@@ -1,28 +1,29 @@
 // @vitest-environment jsdom
 /**
- * Client seat registrations (0.6.49).
+ * Client seat registrations (0.6.50).
  *
- * The advisor occupies THREE seats:
+ * The advisor's chat surfaces, and WHERE they sit is a product decision the
+ * user pushed on hard twice ("why below composer" → strip removed 0.6.49 →
+ * "THEY SHOULD IMMEDIATELY RENDER INLINE ... IN BETWEEN STEPS" 0.6.50):
  *
- * - `conversation.chat.turnTail`  — the note cards at the end of the turn a
- *   note reviewed (in the message flow, closed turns only);
- * - `conversation.composer.dock`  — the next-prompt tip (a composer
- *   affordance — it stays);
- * - `conversation.view`           — the Advisor tab.
+ * - PRIMARY (inline live notes): a `advisor-note` chat-node DEFINITION via
+ *   the conversation engine's public events.register, plus the keyed
+ *   `conversation.chat.node` entry rendering the card at the event's own
+ *   position — live, mid-turn, in arrival order.
+ * - FALLBACK (no engine service — older shells): the
+ *   `conversation.chat.turnTail` entry (notes grouped at the closed turn).
+ *   The tail seat is registered at apply ALWAYS; the inline child disposes
+ *   it when it activates (never both — and never a half-inline: a failed
+ *   renderer registration withdraws the definition too).
+ * - `conversation.composer.dock` — the next-prompt tip (always).
+ * - `conversation.view` — the Advisor tab (always).
  *
- * The above-composer LIVE notes strip (`conversation.input.dock`, the
- * 0.6.43–0.6.48 seat) is REMOVED per the 2026-11-04 user ruling ("why is
- * there an expandable advisor tab above the composer. Remove that"). Notes
- * now surface in the chat flow alone: an open turn's notes appear under that
- * turn the moment it closes (the notes derivation re-attributes them from
- * `turn === undefined` to the closing turn — the one-owner rule).
- *
- * The test invokes the REAL client plugin against a mocked slot registry and
- * asserts the registration objects — not a text proximity check, which an
- * unrelated string could satisfy.
+ * The test invokes the REAL client plugin against a mocked slot registry /
+ * engine and asserts the registration objects + disposer calls — not text
+ * proximity.
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { apply } from '../src/client/index'
 
 /** What a seat registration declares. */
@@ -30,6 +31,7 @@ interface SeatDeclaration {
   name?: string
   id?: string
   order?: number
+  entryKey?: string
 }
 
 /** One collected seat: the slot it was INJECTED into, plus its declaration. */
@@ -39,43 +41,87 @@ interface CollectedSeat {
   readonly declaration: SeatDeclaration
 }
 
-/** Run the client plugin against a mocked slot registry and collect the seats. */
-function collectRegistrations(): { registrations: CollectedSeat[]; errors: string[] } {
+interface MockOutcome {
+  registrations: CollectedSeat[]
+  errors: string[]
+  /** Definitions handed to uiConversation.events.register (when mocked). */
+  definitions: unknown[]
+  /** Whether the events.register disposer was called (half-failure rollback). */
+  definitionDisposed: boolean
+}
+
+/** Run the client plugin against a mocked slot registry (+ optional engine). */
+function collectRegistrations(options: {
+  engine?: boolean
+  /** Make the keyed node registration throw AFTER the definition landed. */
+  failNodeSlot?: boolean
+} = {}): MockOutcome {
   const registrations: CollectedSeat[] = []
   const errors: string[] = []
+  const definitions: unknown[] = []
+  let definitionDisposed = false
+  const engine = options.engine === false
+    ? undefined
+    : {
+        events: {
+          register: (definition: unknown) => {
+            definitions.push(definition)
+            return () => {
+              definitionDisposed = true
+            }
+          },
+        },
+      }
   const services: Record<string, unknown> = {
     // The plugin resolves its transport once at apply time.
     connection: { rpc: { call: async () => ({ ok: false }) } },
+    ...(engine !== undefined ? { uiConversation: engine } : {}),
   }
-  const ctx = {
+  const ctx: Record<string, unknown> = {
     slots: {
-      // The plugin registers through ctx.slots.inject(name, generator) — the
-      // generator yields ctx.slots.register(declaration).
       inject: (name: string, factory: () => Generator<unknown>) => {
+        if (options.failNodeSlot === true && name === 'conversation.chat.node') {
+          throw new Error('mock: keyed slot rejected')
+        }
+        let collected: CollectedSeat | undefined
         try {
           const declaration = factory().next().value as SeatDeclaration | undefined
           if (declaration !== undefined && typeof declaration === 'object') {
-            // Keep the INJECTED slot next to the declaration: a seat can
-            // declare one name while being injected into another.
-            registrations.push({ injectedInto: name, declaration })
+            collected = { injectedInto: name, declaration }
+            registrations.push(collected)
           }
         } catch (error) {
           errors.push(`${name}: ${error instanceof Error ? error.message : String(error)}`)
         }
-        return () => {}
+        // Real slots.inject returns a disposer; removing the collected entry
+        // models its effect so the test can OBSERVE the tail retirement when
+        // the inline surface activates.
+        return () => {
+          if (collected === undefined) return
+          const index = registrations.indexOf(collected)
+          if (index >= 0) registrations.splice(index, 1)
+        }
       },
       register: (declaration: SeatDeclaration) => declaration,
     },
     get: (key: string) => services[key],
-    // The locale dictionary registration face (ctx.locale.register + the
-    // active-language probe the tab label uses).
+    // Conditional child fiber: activates synchronously when every named
+    // service is present — either in the service registry (uiConversation)
+    // or as a context face (slots), mirroring the real scope-chain lookup.
+    inject: (names: readonly string[], cb: (child: unknown) => void) => {
+      if (names.every((name) => services[name] !== undefined || name in ctx)) {
+        try {
+          cb(proxied)
+        } catch (error) {
+          errors.push(`inject: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      return () => {}
+    },
     locale: {
       register: () => () => {},
       getLocale: () => ({ active: 'en' }),
     },
-    // Event face: connection/reset listeners register through ctx.on and
-    // return their disposer; the pushed-invalidation face subscribes through
-    // ctx.remote.$on (settings/document-updated, llm/adapters-updated).
     on: () => () => {},
     remote: { $on: () => () => {} },
     effect: (fn: () => unknown) => {
@@ -88,41 +134,70 @@ function collectRegistrations(): { registrations: CollectedSeat[]; errors: strin
     },
     logger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
   }
-  apply(ctx as never)
-  return { registrations, errors }
+  // Child/root proxy: service properties resolve from the registry, faces
+  // come from the mock itself.
+  const proxied = new Proxy(ctx, {
+    get: (target, key: string) => (key in target ? target[key] : services[key]),
+  })
+  apply(proxied as never)
+  return { registrations, errors, definitions, definitionDisposed }
 }
 
-describe('client seat registrations — no advisor surface above the composer', () => {
-  it('applies clean against the full mock (no swallowed registration failures)', () => {
-    // The errors channel is the silent-drop surface: an apply-time throw
-    // (undefined slot face, register failure) means a UI surface never
-    // mounts while the tab keeps working — the exact failure class that
-    // makes notes "disappear from chat". Nothing may land in it.
-    const { errors } = collectRegistrations()
-    expect(errors).toEqual([])
-  })
+/** The tail seat entry currently collected (id-based), or undefined. */
+function tailSeat(outcome: MockOutcome) {
+  return outcome.registrations.find((r) => r.declaration.id === 'dsh-advisor#turn-tail')
+}
 
+describe('client seat registrations — inline live notes with tail fallback', () => {
   it('registers NOTHING into the input dock (the notes strip was removed, 0.6.49)', () => {
-    const { registrations } = collectRegistrations()
-    const strip = registrations.find((r) => r.declaration.id === 'dsh-advisor#notes-strip')
+    const outcome = collectRegistrations()
+    const strip = outcome.registrations.find((r) => r.declaration.id === 'dsh-advisor#notes-strip')
     expect(strip).toBeUndefined()
-    const dock = registrations.filter((r) => r.injectedInto === 'conversation.input.dock')
+    const dock = outcome.registrations.filter((r) => r.injectedInto === 'conversation.input.dock')
     expect(dock).toEqual([])
   })
 
-  it('keeps the next-prompt tip in the composer dock', () => {
-    const { registrations, errors } = collectRegistrations()
-    // The bundle id is shared by the session-header action and the
-    // composer-dock tip, so the seat is what distinguishes them.
-    const tip = registrations.find((r) => r.declaration.id === 'dsh-advisor' && r.injectedInto === 'conversation.composer.dock')
-    expect(tip, `next-prompt tip seat (mock errors: ${errors.join(' | ')})`).toBeDefined()
+  it('with the engine: contributes the advisor-note definition + keyed node entry', () => {
+    const outcome = collectRegistrations({ engine: true })
+    expect(outcome.errors).toEqual([])
+    expect(outcome.definitions).toHaveLength(1)
+    const definition = outcome.definitions[0] as { kind?: string; target?: string }
+    expect(definition.kind).toBe('advisor-note')
+    expect(definition.target).toBe('chat')
+    const nodeEntry = outcome.registrations.find((r) => r.declaration.id === 'dsh-advisor#note-node')
+    expect(nodeEntry?.injectedInto).toBe('conversation.chat.node')
+    expect(nodeEntry?.declaration.entryKey).toBe('advisor-note')
+    // Never both: the tail seat registered at apply was DISPOSED when the
+    // inline child activated (the mock disposer removes the collected entry).
+    expect(tailSeat(outcome)).toBeUndefined()
   })
 
-  it('keeps the note cards in the turn tail and the Advisor tab in the view roster', () => {
-    const { registrations } = collectRegistrations()
-    const tail = registrations.find((r) => r.declaration.id === 'dsh-advisor#turn-tail')
-    expect(tail?.injectedInto).toBe('conversation.chat.turnTail')
-    const tab = registrations.find((r) => r.declaration.id === 'dsh-advisor#advisor-trajectory')
+  it('without the engine (older shell): the turn tail stays, no node entry, no definition', () => {
+    const outcome = collectRegistrations({ engine: false })
+    expect(outcome.definitions).toHaveLength(0)
+    expect(tailSeat(outcome)?.injectedInto).toBe('conversation.chat.turnTail')
+    const nodeEntry = outcome.registrations.find((r) => r.declaration.id === 'dsh-advisor#note-node')
+    expect(nodeEntry).toBeUndefined()
+  })
+
+  it('half-failure rollback: a rejected node slot withdraws the definition (no orphan JSON nodes)', () => {
+    const outcome = collectRegistrations({ engine: true, failNodeSlot: true })
+    expect(outcome.definitions).toHaveLength(1)
+    // The definition disposer MUST have been called — an orphan advisor-note
+    // node kind would render through the host's JSON fallback while the
+    // tail stays mounted (double display in two shapes).
+    expect(outcome.definitionDisposed).toBe(true)
+    const nodeEntry = outcome.registrations.find((r) => r.declaration.id === 'dsh-advisor#note-node')
+    expect(nodeEntry).toBeUndefined()
+    // Rollback keeps the fallback: the tail seat stays mounted.
+    expect(tailSeat(outcome)?.injectedInto).toBe('conversation.chat.turnTail')
+  })
+
+  it('keeps the next-prompt tip in the composer dock and the Advisor tab in the view roster', () => {
+    const outcome = collectRegistrations({ engine: true })
+    const tip = outcome.registrations.find((r) => r.declaration.id === 'dsh-advisor' && r.injectedInto === 'conversation.composer.dock')
+    expect(tip).toBeDefined()
+    const tab = outcome.registrations.find((r) => r.declaration.id === 'dsh-advisor#advisor-trajectory')
     expect(tab?.injectedInto).toBe('conversation.view')
   })
 })

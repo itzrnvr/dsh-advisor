@@ -326,6 +326,16 @@ function fakeRuntime(scripted: Scripted) {
       resetHandlers.add(handler)
       return () => { resetHandlers.delete(handler) }
     },
+    // Conditional child fiber (0.6.50 inline notes): activates synchronously
+    // only when every named service is present. This harness provides no
+    // `uiConversation`, so the inline child stays dormant and the plugin
+    // falls back to the turn-tail seat — the pre-0.6.50 behavior these
+    // card tests pin.
+    inject: (names: readonly string[], cb: (child: unknown) => void): (() => void) => {
+      if (!names.every((name) => name in ctx || services[name] !== undefined)) return () => {}
+      cb(new Proxy(ctx, {}))
+      return () => {}
+    },
   }
   /** Fire one forwarded Host event into the remote subscription table. */
   const fireRemote = (event: string): void => {
