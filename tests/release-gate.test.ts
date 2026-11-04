@@ -63,6 +63,15 @@ describe('release gate — a red tree can never land a commit', () => {
     // line. So git receives it through a FILE.
     expect(wrapper).toContain("run('git', ['commit', '-F', messageFile])")
     expect(wrapper).toContain('writeFileSync(messageFile')
+    // ORDER matters: `run` exits the process on failure, so a scratch dir
+    // created BEFORE the gate would leak on every red gate (the finally never
+    // runs). The gate steps must precede mkdtempSync.
+    const buildAt = wrapper.indexOf("run('pnpm', ['build'])")
+    // Anchor the call site, not the import statement ('mkdtempSync' alone
+    // matches the import line, which is legitimately above the gate steps).
+    const scratchAt = wrapper.indexOf('const scratch = mkdtempSync')
+    expect(buildAt).toBeGreaterThan(-1)
+    expect(scratchAt, 'scratch dir is created only after the gate').toBeGreaterThan(buildAt)
     // The message is mandatory — every commit in this repo documents its change.
     expect(wrapper).toMatch(/message\.length === 0/)
     expect(wrapper).toContain('process.exit(2)')

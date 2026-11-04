@@ -44,6 +44,8 @@ function readMessage(argv) {
     return readFileSync(args[1], 'utf8').trim()
   }
   if (args.length > 0) return args.join(' ').trim()
+  // Piped stdin only: reading a TTY would hang forever with no message.
+  if (process.stdin.isTTY) return ''
   try {
     return readFileSync(0, 'utf8').trim()
   } catch {
@@ -81,13 +83,17 @@ function run(command, args) {
   }
 }
 
+// The gate FIRST, and only then any scratch state: `run` exits the process on
+// failure, which would skip a `finally` and leak the scratch dir on every red
+// gate. The message file is written only once the tree is known green.
+run('pnpm', ['typecheck'])
+run('pnpm', ['test'])
+run('pnpm', ['build'])
+
 const scratch = mkdtempSync(join(tmpdir(), 'dsh-advisor-commit-'))
-const messageFile = join(scratch, 'message.txt')
 try {
+  const messageFile = join(scratch, 'message.txt')
   writeFileSync(messageFile, `${message}\n`, 'utf8')
-  run('pnpm', ['typecheck'])
-  run('pnpm', ['test'])
-  run('pnpm', ['build'])
   run('git', ['add', '-A'])
   run('git', ['commit', '-F', messageFile])
   console.log('gate-commit: committed')
