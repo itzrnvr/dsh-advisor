@@ -1,0 +1,247 @@
+/* Advisor overview timeline (fork addition) — the 50px strip above the
+ * advisor ledger. Mirrors the built-in DSH Trajectory overview: three 14px
+ * lanes in a 44px caption gutter, 8px spans, a drag/focus selection band and
+ * a hairline hover line. Colours come from the host's --dsw-alias-* tokens;
+ * every use carries a hex fallback so the strip stays legible in isolation. */
+
+.root {
+  position: relative;
+  z-index: 1;
+  isolation: isolate;
+  flex: none;
+  min-width: 0;
+  user-select: none;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l2, #e5e7eb);
+}
+
+.plot {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  height: 50px;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-layer-2, #fafafa);
+}
+
+.labels {
+  position: relative;
+  min-width: 0;
+  border-right: 0.5px solid var(--dsw-alias-border-l1, #eceef1);
+  color: var(--dsw-alias-label-caption, #6b7280);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.labels span {
+  position: absolute;
+  right: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 8px;
+  white-space: nowrap;
+}
+
+/* Lanes sit at lane * 14 + 7 in the 50px plot. */
+.labels span:nth-child(1) { top: 7px; }
+.labels span:nth-child(2) { top: 21px; }
+.labels span:nth-child(3) { top: 35px; }
+
+.track {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.track:focus-visible {
+  outline: 1px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #4176e6));
+  outline-offset: -1px;
+}
+
+.track[data-panning='true'] {
+  cursor: grabbing;
+}
+
+/* Zoomed/panned projection: full domain in percent of the visible window. */
+.lanes {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--advisor-domain-left, 0%);
+  width: var(--advisor-domain-width, 100%);
+  z-index: 2;
+}
+
+.span {
+  position: absolute;
+  box-sizing: border-box;
+  height: 8px;
+  /* 3px box = 1px transparent gap border + the 2px minimum painted bar. */
+  min-width: 3px;
+  border-right: 1px solid transparent;
+  border-radius: 1px;
+  background-color: var(--dsw-alias-label-secondary, #61666b);
+  background-clip: padding-box;
+  opacity: 1;
+}
+
+.span[data-lane='0'] { top: 7px; }
+.span[data-lane='1'] { top: 21px; }
+.span[data-lane='2'] { top: 35px; }
+
+.span[data-advisor-span='prompt'] {
+  background-color: var(--dsw-alias-state-business-primary, #4176e6);
+}
+
+.span[data-advisor-span='note'] {
+  background-color: color-mix(
+    in srgb,
+    var(--dsw-alias-brand-primary-new-colorprimary-new-color, #4176e6) 60%,
+    var(--dsw-alias-state-error-secondary, #f25a5a)
+  );
+}
+
+.span[data-advisor-span='silent'] {
+  background-color: var(--dsw-alias-label-secondary, #61666b);
+  opacity: 0.6;
+}
+
+.span[data-advisor-span='error'] {
+  background-color: var(--dsw-alias-state-error-primary, #ec1313);
+}
+
+.span[data-advisor-span='compaction'] {
+  background-color: var(--dsw-alias-label-secondary, #61666b);
+  opacity: 0.78;
+}
+
+/* An active range fades the spans it excludes. Declared after the kind
+ * colours so it wins the opacity tie. */
+.span[data-selected='false'] {
+  opacity: 0.2;
+}
+
+.span[data-current='true'] {
+  z-index: 1;
+  opacity: 1;
+  box-shadow:
+    0 0 0 1px var(--dsw-alias-bg-layer-2, #fafafa),
+    0 0 0 2px var(--dsw-alias-state-business-primary, #4176e6);
+}
+
+.span[data-hovered='true']:not([data-current='true']) {
+  z-index: 1;
+  opacity: 1;
+  box-shadow:
+    0 0 0 1px var(--dsw-alias-bg-layer-2, #fafafa),
+    0 0 0 2px color-mix(in srgb, var(--dsw-alias-state-business-primary, #4176e6) 80%, transparent);
+}
+
+.selection {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  left: var(--advisor-selection-left, 0%);
+  width: var(--advisor-selection-width, 0%);
+  min-width: 1px;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary, #4176e6) 12%, transparent);
+}
+
+.selection[data-dragging='true'] {
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary, #4176e6) 18%, transparent);
+}
+
+.selectionEdges {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  bottom: 0;
+  left: var(--advisor-selection-left, 0%);
+  width: var(--advisor-selection-width, 0%);
+  min-width: 1px;
+  pointer-events: none;
+}
+
+.selectionEdges::before,
+.selectionEdges::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--dsw-alias-state-business-primary, #4176e6);
+}
+
+.selectionEdges::before { left: 0; }
+.selectionEdges::after { right: 0; }
+
+.selectionEdges[data-dragging='true']::before,
+.selectionEdges[data-dragging='true']::after {
+  width: 2px;
+}
+
+.hoverLine {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  pointer-events: none;
+  background: var(--dsw-alias-state-business-primary, #4176e6);
+  left: clamp(0px, calc(var(--advisor-hover-left, 0%) - 1px), calc(100% - 2px));
+}
+
+/* Tooltip floats BELOW the strip (the plot itself clips its children), in an
+ * overlay aligned with the track so a percentage left matches the span. */
+.tooltipOverlay {
+  position: absolute;
+  z-index: 6;
+  top: 100%;
+  left: 44px;
+  right: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.tooltip {
+  position: absolute;
+  top: 4px;
+  left: clamp(72px, var(--advisor-tooltip-left, 50%), calc(100% - 72px));
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-width: 240px;
+  padding: 4px 7px;
+  border: 0.5px solid var(--dsw-alias-border-l2, #e5e7eb);
+  border-radius: var(--dsw-radius-md, 6px);
+  background: var(--dsw-alias-bg-layer-1, #ffffff);
+  color: var(--dsw-alias-label-primary, #111827);
+  box-shadow: 0 4px 12px color-mix(in srgb, #000000 16%, transparent);
+  font-size: 11px;
+  line-height: 15px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.tooltipTitle {
+  font-weight: 600;
+}
+
+.tooltipDetail {
+  color: var(--dsw-alias-label-secondary, #61666b);
+  overflow-wrap: anywhere;
+}
+
+.tooltipMeta {
+  color: var(--dsw-alias-label-caption, #6b7280);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .lanes {
+    transition: left 0.12s ease-out;
+  }
+}
