@@ -178,13 +178,6 @@ export interface AdvisorRuntimeOptions {
   readonly sessionId: SessionId
   /** System prompt sent with every advisor call (config override or KD-2 default). */
   readonly systemPrompt: string
-  /**
-   * Fork addition — the session's FIRST human request, captured at runtime
-   * construction. Prepended to every review as a "Scope anchor" so the
-   * reviewer can judge proportionality against what the user actually asked
-   * for, instead of only grading the latest delta on internal consistency.
-   */
-  readonly sessionAsk?: string
   /** Backoff for the single transient retry (KD-5); default 1000ms. */
   readonly retryBackoffMs?: number
   /**
@@ -653,8 +646,6 @@ export class AdvisorRuntime {
   /** Owning conversation's session id; see {@link AdvisorRuntimeOptions.sessionId}. */
   private readonly sessionId: SessionId
   private readonly systemPrompt: string
-  /** Fork addition — first human request, the proportionality anchor. */
-  private readonly sessionAsk: string | undefined
   private readonly proseFallback: boolean
   /** Configured effort id, normalized: `undefined` = automatic (smallest declared). */
   private readonly reasoningEffort: string | undefined
@@ -775,7 +766,6 @@ export class AdvisorRuntime {
     this.model = options.model
     this.sessionId = options.sessionId
     this.systemPrompt = options.systemPrompt
-    this.sessionAsk = options.sessionAsk?.replace(/\s+/g, ' ').trim().slice(0, 600) || undefined
     this.proseFallback = options.proseFallback ?? false
     // Empty/whitespace = automatic, identical to an absent option: the config
     // snapshot already normalizes it, and re-checking here keeps a direct
@@ -1358,21 +1348,10 @@ export class AdvisorRuntime {
 
   /** The exact user-message text for one review; stored verbatim in history. */
   private userTextFor(delta: Delta): string {
-    // Scope anchor BEFORE the delta: the reviewer must judge this update
-    // against what the user actually asked for, not only against its own
-    // internal consistency. This is the guard against the "analyse one
-    // session → five reports + four subagents" failure mode.
-    const anchor = this.sessionAsk === undefined
-      ? ''
-      : `### Scope anchor\nThe user's original request for this session:\n"${this.sessionAsk}"\n\n`
-        + 'Judge this update against that request. Is the work still proportional to it? '
-        + 'If the agent has expanded beyond it — extra reports, subagents, audits, refactors, '
-        + 'scrubs, or cleanup nobody asked for — that is a scope breach: say so as a BLOCKER '
-        + 'and tell the agent to stop and deliver what was asked.\n\n'
     // Task reminder AFTER the delta: the last instruction wins, and
     // "above" points at the transcript. A prefix reminder was followed
     // unreliably on code-heavy deltas (the model continued the code).
-    return `${anchor}${delta.markdown}\n\n---\n${ADVISOR_TASK_REMINDER}`
+    return `${delta.markdown}\n\n---\n${ADVISOR_TASK_REMINDER}`
   }
 
   /**
