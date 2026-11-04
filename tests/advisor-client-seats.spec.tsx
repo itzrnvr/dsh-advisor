@@ -31,6 +31,7 @@ interface SeatDeclaration {
   name?: string
   id?: string
   order?: number
+  key?: string
   entryKey?: string
 }
 
@@ -79,13 +80,21 @@ function collectRegistrations(options: {
   }
   const ctx: Record<string, unknown> = {
     slots: {
-      inject: (name: string, factory: () => Generator<unknown>) => {
+      inject: (name: string, factory: () => unknown) => {
         if (options.failNodeSlot === true && name === 'conversation.chat.node') {
           throw new Error('mock: keyed slot rejected')
         }
         let collected: CollectedSeat | undefined
         try {
-          const declaration = factory().next().value as SeatDeclaration | undefined
+          // The real machinery accepts BOTH factory idioms: a generator
+          // yielding the register result (the advisor's older entries) and a
+          // plain function returning it (the reference plugin's chat.node
+          // form, 0.6.51).
+          const produced = factory()
+          const raw = typeof (produced as Generator<unknown>)?.next === 'function'
+            ? (produced as Generator<unknown>).next().value
+            : produced
+          const declaration = raw as SeatDeclaration | undefined
           if (declaration !== undefined && typeof declaration === 'object') {
             collected = { injectedInto: name, declaration }
             registrations.push(collected)
@@ -102,7 +111,25 @@ function collectRegistrations(options: {
           if (index >= 0) registrations.splice(index, 1)
         }
       },
-      register: (declaration: SeatDeclaration) => declaration,
+      register: (declaration: SeatDeclaration) => {
+        // Strict mirror of the live Slots contract (verified via
+        // Slots.listSubTree): the keyed `conversation.chat.node` slot
+        // requires `key` (the owner dispatches by node.kind under the SAME
+        // string) and accepts only {name, key, locale}. An unknown field —
+        // e.g. the `entryKey` this wiring once carried — must fail HERE, at
+        // test time, instead of silently never rendering.
+        if (declaration.name === 'conversation.chat.node') {
+          if (typeof declaration.key !== 'string' || declaration.key.length === 0) {
+            throw new Error('mock: conversation.chat.node registration requires "key" (string)')
+          }
+          for (const field of Object.keys(declaration)) {
+            if (field !== 'name' && field !== 'key' && field !== 'locale') {
+              throw new Error(`mock: unknown registration option "${field}" on conversation.chat.node`)
+            }
+          }
+        }
+        return declaration
+      },
     },
     get: (key: string) => services[key],
     // Conditional child fiber: activates synchronously when every named
@@ -164,9 +191,13 @@ describe('client seat registrations — inline live notes with tail fallback', (
     const definition = outcome.definitions[0] as { kind?: string; target?: string }
     expect(definition.kind).toBe('advisor-note')
     expect(definition.target).toBe('chat')
-    const nodeEntry = outcome.registrations.find((r) => r.declaration.id === 'dsh-advisor#note-node')
+    // The keyed entry carries `key` — the field the live slot contract
+    // requires and the owner dispatches by (node.kind). The `entryKey` this
+    // wiring once carried was the wrong field and rendered nothing.
+    const nodeEntry = outcome.registrations.find((r) => r.declaration.key === 'advisor-note')
     expect(nodeEntry?.injectedInto).toBe('conversation.chat.node')
-    expect(nodeEntry?.declaration.entryKey).toBe('advisor-note')
+    expect(nodeEntry?.declaration.name).toBe('conversation.chat.node')
+    expect(nodeEntry?.declaration.entryKey).toBeUndefined()
     // Never both: the tail seat registered at apply was DISPOSED when the
     // inline child activated (the mock disposer removes the collected entry).
     expect(tailSeat(outcome)).toBeUndefined()
@@ -176,7 +207,7 @@ describe('client seat registrations — inline live notes with tail fallback', (
     const outcome = collectRegistrations({ engine: false })
     expect(outcome.definitions).toHaveLength(0)
     expect(tailSeat(outcome)?.injectedInto).toBe('conversation.chat.turnTail')
-    const nodeEntry = outcome.registrations.find((r) => r.declaration.id === 'dsh-advisor#note-node')
+    const nodeEntry = outcome.registrations.find((r) => r.declaration.key === 'advisor-note')
     expect(nodeEntry).toBeUndefined()
   })
 
@@ -187,7 +218,7 @@ describe('client seat registrations — inline live notes with tail fallback', (
     // node kind would render through the host's JSON fallback while the
     // tail stays mounted (double display in two shapes).
     expect(outcome.definitionDisposed).toBe(true)
-    const nodeEntry = outcome.registrations.find((r) => r.declaration.id === 'dsh-advisor#note-node')
+    const nodeEntry = outcome.registrations.find((r) => r.declaration.key === 'advisor-note')
     expect(nodeEntry).toBeUndefined()
     // Rollback keeps the fallback: the tail seat stays mounted.
     expect(tailSeat(outcome)?.injectedInto).toBe('conversation.chat.turnTail')

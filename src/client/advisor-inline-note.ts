@@ -143,19 +143,10 @@ export function buildAdvisorNoteDefinition() {
     },
     /**
      * Idempotent update (engine contract verified: replay rebuilds state
-     * from the existing matches array and never re-opens a context, so this
-     * is only reached if a future engine ever folds another match into this
-     * one-context id): re-derive from the delivered event — the same note
-     * for the same seq, a different valid note row replaces it cleanly.
-     * Never throws.
+     * from the existing matches array and never re-opens a context). The
+     * reference implementation's exact form — state is already correct.
      */
-    update: (context: { readonly state?: AdvisorInlineNote }, match: { readonly event?: unknown }) => {
-      try {
-        return deriveInlineNote(match?.event) ?? context.state
-      } catch {
-        return context.state
-      }
-    },
+    update: (context: { readonly state?: AdvisorInlineNote }) => context.state,
     /** Live: publish the node the moment the note commits — no turn boundary. */
     publication: () => 'immediate' as const,
     /**
