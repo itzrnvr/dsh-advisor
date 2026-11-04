@@ -243,12 +243,14 @@ describe('AdvisorSessionOverrides (raw per-session enable override)', () => {
     expect(overrides.enableOverride('s2')).toBe(true) // explicit on is distinguishable from no override
   })
 
-  it('clear removes the override, falling back to undefined (inherit the config default)', () => {
+  it('clear keeps the persisted override (durable across disposal)', () => {
     const overrides = new AdvisorSessionOverrides()
     overrides.set('s1', false)
     expect(overrides.enableOverride('s1')).toBe(false)
     overrides.clear('s1')
-    expect(overrides.enableOverride('s1')).toBeUndefined()
+    // Fork addition: `/advisor on|off` is persisted, so disposing the session
+    // surface must not silently turn the reviewer back to the config default.
+    expect(overrides.enableOverride('s1')).toBe(false)
   })
 })
 
@@ -998,16 +1000,17 @@ describe('AdvisorSessionOverrides — model pair API (spec §5.3)', () => {
     expect(overrides.modelGeneration('s1')).toBe(1)
   })
 
-  it('clear wipes enable + pair + generation together (dispose)', () => {
+  it('clear keeps enable + pair for reopen and drops only the generation fence', () => {
     const overrides = new AdvisorSessionOverrides()
     overrides.set('s1', false)
     overrides.setModel('s1', { provider: 'p', model: 'm' })
     overrides.beginModelGeneration('s1')
     overrides.clear('s1')
-    // The enable override is wiped with the rest: the session inherits the
-    // config default again (no override).
-    expect(overrides.enableOverride('s1')).toBeUndefined()
-    expect(overrides.model('s1')).toBeUndefined()
+    // Fork addition: the enable override and pin are durable, so a disposed
+    // session keeps its `/advisor off` and its pinned model when reopened.
+    expect(overrides.enableOverride('s1')).toBe(false)
+    expect(overrides.model('s1')).toEqual({ provider: 'p', model: 'm' })
+    // The generation fence is still wiped: an in-flight validation is stale.
     expect(overrides.modelGeneration('s1')).toBe(0)
   })
 

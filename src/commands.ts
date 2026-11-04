@@ -169,6 +169,19 @@ export interface AdvisorModelPair {
   readonly model: string
 }
 
+/** Persisted per-session override (fork addition). */
+export interface AdvisorPersistedOverride {
+  readonly enabled?: boolean
+  readonly model?: AdvisorModelPair
+  /** Write time, used to bound the snapshot to the newest entries. */
+  readonly at?: number
+}
+
+/** Persisted override state: one entry per session holding any override. */
+export interface AdvisorPersistedState {
+  readonly sessions: Record<string, AdvisorPersistedOverride>
+}
+
 /**
  * Where a session's effective reviewer route comes from (spec §5.3):
  * `session` = a pinned `AdvisorModelPair`, `global` = the composed global
@@ -191,17 +204,66 @@ export type AdvisorModelSource = 'session' | 'global'
  *   set/reset supersedes unresolved older work, and dispose/owner teardown
  *   (which wipe the counter) can never be undone by a delayed completion.
  *
- * Nothing here touches the persisted config. All maps are keyed by session id
- * and hold only LIVE sessions' state: `clear` runs on `agent/disposed` /
- * `session/disposed`, `clearModel` runs on reset (an emptied entry is
- * removed), and `disposeAll` runs on owner teardown — state stays
- * O(live overrides), with no historical SessionId accumulation and no
- * TTL/GC job.
+ * Fork addition — DURABLE overrides. The maps are restored from the persisted
+ * snapshot at boot and written back after every mutation (`snapshot` +
+ * `onChange`). `clear` still runs on `agent/disposed` / `session/disposed`, but
+ * it now keeps the enable override and model pin (only the generation fence is
+ * dropped), so a reopened session keeps `/advisor on` and its pin. `disposeAll`
+ * wipes the in-memory maps on owner teardown; the snapshot file outlives it and
+ * is pruned to the newest 2000 entries — that bound, not liveness, is what keeps
+ * memory finite now.
  */
 export class AdvisorSessionOverrides {
   private readonly enables = new Map<string, boolean>()
   private readonly models = new Map<string, AdvisorModelPair>()
   private readonly generations = new Map<string, number>()
+
+  /**
+   * Fork addition — durable snapshot hooks. `initial` restores the snapshot
+   * written by the previous process at boot; `onChange` receives a fresh
+   * snapshot after every mutation so the caller can persist it. Both are
+   * optional: tests and memory-only hosts keep the old behaviour.
+   * @param options - restored state and the change observer.
+   */
+  constructor(private readonly options: {
+    readonly initial?: AdvisorPersistedState
+    readonly onChange?: (state: AdvisorPersistedState) => void
+  } = {}) {
+    for (const [sessionId, entry] of Object.entries(options.initial?.sessions ?? {})) {
+      if (entry === null || typeof entry !== 'object') continue
+      if (typeof entry.enabled === 'boolean') this.enables.set(sessionId, entry.enabled)
+      const pair = entry.model
+      if (pair !== undefined && typeof pair.provider === 'string' && typeof pair.model === 'string') {
+        this.models.set(sessionId, { provider: pair.provider, model: pair.model })
+      }
+    }
+  }
+
+  /** The override snapshot to persist (only sessions holding state). */
+  snapshot(): AdvisorPersistedState {
+    const sessions: Record<string, AdvisorPersistedOverride> = {}
+    for (const sessionId of this.overrideSessionIds()) {
+      const enabled = this.enables.get(sessionId)
+      const model = this.models.get(sessionId)
+      sessions[sessionId] = {
+        ...(enabled === undefined ? {} : { enabled }),
+        ...(model === undefined ? {} : { model }),
+      }
+    }
+    return { sessions }
+  }
+
+  /** Notify the persistence hook after a mutation. */
+  private changed(): void {
+    const state = this.snapshot()
+    const at = Date.now()
+    const stamped: AdvisorPersistedState = {
+      sessions: Object.fromEntries(
+        Object.entries(state.sessions).map(([sessionId, entry]) => [sessionId, { ...entry, at }]),
+      ),
+    }
+    this.options.onChange?.(stamped)
+  }
 
   /**
    * The session's RAW enable override — `undefined` when it has none, so the
@@ -214,6 +276,7 @@ export class AdvisorSessionOverrides {
   /** Set the enable override for one session. */
   set(sessionId: string, enabled: boolean): void {
     this.enables.set(sessionId, enabled)
+    this.changed()
   }
 
   /** The session's pinned model pair, or `undefined` when it inherits. */
@@ -224,6 +287,7 @@ export class AdvisorSessionOverrides {
   /** Commit the (already validated) atomic pair for one session. */
   setModel(sessionId: string, pair: AdvisorModelPair): void {
     this.models.set(sessionId, pair)
+    this.changed()
   }
 
   /**
@@ -232,7 +296,9 @@ export class AdvisorSessionOverrides {
    * inheriting (a reset no-op).
    */
   clearModel(sessionId: string): boolean {
-    return this.models.delete(sessionId)
+    const removed = this.models.delete(sessionId)
+    if (removed) this.changed()
+    return removed
   }
 
   /**
@@ -262,9 +328,13 @@ export class AdvisorSessionOverrides {
    * invalidates any in-flight validation for the session (captured values are
    * ≥ 1 and can never again match the post-clear default 0).
    */
+  /**
+   * Session disposal cleanup. Fork addition: the enable override and model pin
+   * are PERSISTED, so they now survive disposal (a reopened session keeps
+   * `/advisor on` and its pin); only the generation fence is dropped, which
+   * still invalidates any in-flight validation for the session.
+   */
   clear(sessionId: string): void {
-    this.enables.delete(sessionId)
-    this.models.delete(sessionId)
     this.generations.delete(sessionId)
   }
 

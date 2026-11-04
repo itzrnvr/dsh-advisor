@@ -69,6 +69,7 @@ import type { AdviceNote, AdvisorTrace, AdvisorTurnRecord } from './advisor-runt
 import { AdvisorDelivery } from './delivery.js'
 import { DEFAULT_ADVISOR_SYSTEM_PROMPT } from './prompts.js'
 import { findTraceEntry, renderTraceEntry } from './trace-entry.js'
+import { AttemptStore, SessionStateStore } from './persist.js'
 import { notesFromSessionEvents } from './seed.js'
 import { DEFAULT_HISTORY_MAX_TOKENS } from './limits.js'
 import { advisorSuggestionFace, NextPromptManager } from './next-prompt.js'
@@ -383,7 +384,14 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   // usable pair re-derives the disabled-with-reason through the resolver, so
   // `/advisor status` shows the reason (spec §5.2; qc3 I-1) — the gate itself
   // still blocks every runtime (the resolver is the SSOT for the gate).
-  const overrides = new AdvisorSessionOverrides()
+  const sessionState = new SessionStateStore()
+  // Fork addition: per-session `/advisor on|off` and model pins are persisted,
+  // so a plugin reinstall or host restart no longer silently turns the
+  // reviewer off for every existing session.
+  const overrides = new AdvisorSessionOverrides({
+    initial: sessionState.load(),
+    onChange: (state) => { sessionState.save(state) },
+  })
   /**
    * The effective on/off switch for one session. Applies the SAME AND as
    * `safeEffective` on one session-scoped resolution — the session's complete
@@ -473,6 +481,25 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   const traceLog = new Map<string, AdvisorTrace[]>()
   const TRACE_LOG_MAX = 40
   const TRACE_ENTRY_MAX_CHARS = 200_000
+  /**
+   * Fork addition — durable attempt history. The in-memory rings above are
+   * hydrated from disk the first time a session is touched, and every new
+   * attempt/trace is appended back, so reinstalling the plugin no longer wipes
+   * the Advisor tab's usage data.
+   */
+  const attemptStore = new AttemptStore()
+  const hydratedTrajectory = new Set<string>()
+  const hydrateTrajectory = (sessionId: string): void => {
+    if (hydratedTrajectory.has(sessionId)) return
+    hydratedTrajectory.add(sessionId)
+    const stored = attemptStore.load(sessionId)
+    if (stored.turns.length > 0 && trajectoryLog.get(sessionId) === undefined) {
+      trajectoryLog.set(sessionId, stored.turns)
+    }
+    if (stored.traces.length > 0 && traceLog.get(sessionId) === undefined) {
+      traceLog.set(sessionId, stored.traces)
+    }
+  }
   /**
    * Derivation cache (fork addition): the notes view is a pure projection of
    * the append-only session log, so `(event count, last seq)` identifies the
@@ -649,15 +676,18 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // (tokens incl. cache reads, duration, outcome). The callback is
       // observational — the runtime contains a throw from it.
       onTurn: (record: AdvisorTurnRecord) => {
+        hydrateTrajectory(sessionId)
         const log = trajectoryLog.get(sessionId)
         if (log === undefined) trajectoryLog.set(sessionId, [record])
         else {
           log.push(record)
           if (log.length > TRAJECTORY_LOG_MAX) log.splice(0, log.length - TRAJECTORY_LOG_MAX)
         }
+        attemptStore.appendTurn(sessionId, record)
       },
       // Fork addition: retain the FULL text separately, for expand-on-demand.
       onTrace: (trace: AdvisorTrace) => {
+        hydrateTrajectory(sessionId)
         const log = traceLog.get(sessionId)
         const capped = (value: string | undefined): string | undefined =>
           value === undefined ? undefined : value.slice(0, TRACE_ENTRY_MAX_CHARS)
@@ -675,6 +705,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
           log.push(entry)
           if (log.length > TRACE_LOG_MAX) log.splice(0, log.length - TRACE_LOG_MAX)
         }
+        attemptStore.appendTrace(sessionId, entry)
       },
     })
     // Seeded forks start their review thread at the fork point: skip the
@@ -912,6 +943,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     suggestions.disposeSession(agent.id)
     trajectoryLog.delete(agent.id)
     traceLog.delete(agent.id)
+    hydratedTrajectory.delete(agent.id)
     notesCache.delete(agent.id)
   }, { global: true })
   ctx.on('session/disposed', (session: Session) => {
@@ -922,6 +954,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     suggestions.disposeSession(session.id)
     trajectoryLog.delete(session.id)
     traceLog.delete(session.id)
+    hydratedTrajectory.delete(session.id)
     notesCache.delete(session.id)
   }, { global: true })
 
@@ -1363,6 +1396,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   // present-as-undefined values).
   trajectoryControl = {
     getTrajectory: (sessionId) => {
+      hydrateTrajectory(sessionId)
       const effective = effectiveConfig(sessionId)
       const runtime = runtimes.get(sessionId)
       return {
@@ -1376,6 +1410,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     },
     // Fork addition: expand-on-demand full text of one row.
     getTrajectoryEntry: (sessionId, id) => {
+      hydrateTrajectory(sessionId)
       // Keyed by the attempt's timestamp, NOT the polled array index: the turn
       // ring and the full-text ring have different bounds, so an index would
       // silently point at another attempt once either wraps.
