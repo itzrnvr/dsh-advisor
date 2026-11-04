@@ -346,11 +346,10 @@ export function apply(ctx: ClientContext): void {
   //
   // Defensive either/or with NO activation-order assumption: the closed-turn
   // tail seat (0.6.49 behavior — notes grouped at the turn boundary) mounts
-  // first and hands back its disposer; the inline child fiber, whenever it
-  // activates (synchronously in every shipped tree where the conversation
-  // bundle composes before plugin clients, or late if the engine ever appears
-  // after apply), disposes the tail on success. Never both surfaces — no
-  // double render, no race. A failed inline registration leaves the tail.
+  // first and hands back its disposer; the inline registration below, when
+  // the engine is present, disposes the tail on success. Never both
+  // surfaces — no double render. A failed inline registration leaves the
+  // tail.
   const tailSeatDisposer = ctx.slots.inject('conversation.chat.turnTail' as never, function* () {
     yield (ctx.slots as any).register({
       name: 'conversation.chat.turnTail',
@@ -367,33 +366,50 @@ export function apply(ctx: ClientContext): void {
       },
     }, AdvisorTurnTail)
   })
-  // The child declares BOTH services it touches: `uiConversation` (the gate)
-  // and `slots` (the keyed renderer registration) — activation waits for the
-  // pair, so the callback's property reads cannot hit a missing service.
-  ctx.inject(['uiConversation', 'slots'] as never, (cctx: any) => {
-    // The engine's register returns an idempotent disposer (conversation
-    // bundle registerDefinition). Hold it: if the SECOND half of the inline
-    // surface (the keyed node renderer) fails, the definition must be
-    // withdrawn too — an orphan `advisor-note` node kind would otherwise
-    // render through the host's JSON fallback (raw data inline) while the
-    // tail stays mounted, showing every note twice in two shapes.
+  // Inline activation — the reference idiom (dsh-agy-link's
+  // installTranslationUi, a shipped third-party chat-node contributor):
+  // DEFENSIVE SERVICE LOOKUP, not a child fiber. `ctx.get('uiConversation')`
+  // with a `ctx[name]` fallback, both contained; the engine's
+  // events.register disposer is kept so a HALF-registered inline surface
+  // (definition landed, keyed renderer failed) is withdrawn entirely — an
+  // orphan `advisor-note` kind would otherwise render raw JSON through the
+  // host's fallback while the tail stays mounted (every note twice in two
+  // shapes).
+  const engineService = ((): { readonly events: { readonly register: (definition: unknown) => unknown } } | undefined => {
+    try {
+      const fromGet = (ctx as unknown as { get?: (key: string) => unknown }).get?.('uiConversation')
+      if (fromGet !== undefined && fromGet !== null) return fromGet as never
+    } catch {
+      // Fall through to the direct property read.
+    }
+    try {
+      const direct = (ctx as unknown as Record<string, unknown>)['uiConversation']
+      return direct === undefined || direct === null ? undefined : direct as never
+    } catch {
+      return undefined
+    }
+  })()
+  if (
+    engineService !== undefined
+    && engineService.events !== undefined
+    && typeof engineService.events.register === 'function'
+  ) {
     let definitionDisposer: (() => void) | undefined
     try {
-      const registered = cctx.uiConversation.events.register(buildAdvisorNoteDefinition())
+      const registered = engineService.events.register(buildAdvisorNoteDefinition())
       if (typeof registered === 'function') definitionDisposer = registered as () => void
-      cctx.slots.inject(CHAT_NODE_SLOT as never, function* (): Generator<unknown> {
-        yield (cctx.slots as any).register({
-          name: CHAT_NODE_SLOT,
-          id: `${BUNDLE_NAME}#note-node`,
-          // Keyed dispatch: the host renders this entry for every chat node
-          // whose kind === entryKey (renderSlot opts, ui-chat line 3815).
-          entryKey: ADVISOR_NOTE_KIND,
-          locale: NS,
-          inject: (owner: { readonly node?: { readonly id?: string; readonly data?: unknown } }) => ({
-            node: { id: owner?.node?.id, data: owner?.node?.data },
-          }),
-        }, AdvisorNoteRow)
-      })
+      // Keyed renderer: the registration field is `key` (the live
+      // Slots.listSubTree contract: `registration: [{name: "key", required:
+      // true}]`; the owner dispatches renderSlot with entryKey = node.kind —
+      // the declaration must carry the SAME string under `key`). NO inject
+      // face: the card reads `props.node.data` / `props.t` straight from the
+      // owner props. Plain-arrow factory — the reference implementation's
+      // exact form for this slot.
+      ctx.slots.inject(CHAT_NODE_SLOT as never, () => (ctx.slots as any).register({
+        name: CHAT_NODE_SLOT,
+        key: ADVISOR_NOTE_KIND,
+        locale: NS,
+      }, AdvisorNoteRow))
       // Inline won: retire the fallback tail seat (its per-session note
       // controllers stop polling with it — the inline nodes need no store).
       tailSeatDisposer()
@@ -407,7 +423,12 @@ export function apply(ctx: ClientContext): void {
       }
       ctx.logger('advisor').warn('inline advisor notes unavailable — staying on turn tails', { error })
     }
-  })
+  } else {
+    // Seat mocks and minimal host harnesses may not expose a logger.
+    if (typeof ctx.logger === 'function') {
+      ctx.logger('advisor').debug('uiConversation service not found — staying on turn tails')
+    }
+  }
 
   // 0.6.49: the above-composer notes strip is REMOVED (user ruling: "why is
   // there an expandable advisor tab above the composer. Remove that"). The
