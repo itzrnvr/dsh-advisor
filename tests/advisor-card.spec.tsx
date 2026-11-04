@@ -311,10 +311,16 @@ function fakeRuntime(scripted: Scripted) {
       },
       bind: (): never => { throw new Error('test: apply must not bind t — the card t seat comes from PropsLocale') },
     },
+    // 0.6.51 inline-notes activation is a DEFENSIVE SERVICE LOOKUP, not a
+    // child fiber: the wiring calls `ctx.get('uiConversation')` and falls
+    // back to `ctx['uiConversation']`. This harness provides neither, so
+    // the lookup returns undefined and the plugin keeps the turn-tail seat —
+    // the pre-0.6.50 behavior these card tests pin.
     get: (key: string): unknown => {
       if (key === 'connection') return { rpc: scripted.rpc }
       return services[key]
     },
+    logger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
     effect: (fn: () => unknown): (() => void) => {
       const disposer = fn()
       const stop = typeof disposer === 'function' ? disposer as () => void : () => {}
@@ -325,16 +331,6 @@ function fakeRuntime(scripted: Scripted) {
       if (event !== 'connection/reset') throw new Error(`test: unexpected event ${event}`)
       resetHandlers.add(handler)
       return () => { resetHandlers.delete(handler) }
-    },
-    // Conditional child fiber (0.6.50 inline notes): activates synchronously
-    // only when every named service is present. This harness provides no
-    // `uiConversation`, so the inline child stays dormant and the plugin
-    // falls back to the turn-tail seat — the pre-0.6.50 behavior these
-    // card tests pin.
-    inject: (names: readonly string[], cb: (child: unknown) => void): (() => void) => {
-      if (!names.every((name) => name in ctx || services[name] !== undefined)) return () => {}
-      cb(new Proxy(ctx, {}))
-      return () => {}
     },
   }
   /** Fire one forwarded Host event into the remote subscription table. */
