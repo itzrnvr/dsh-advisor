@@ -91,10 +91,8 @@ export const en = {
   unlimitedDelta: 'No message limit',
   unlimitedDeltaHint: 'Send the whole delta window to the reviewer (0 = unlimited). Uncheck to cap it at 60 messages.',
   notesTitle: 'Advisor',
-  notesDismiss: 'Dismiss advisor notes',
   notesCollapse: 'Collapse',
   notesExpand: 'Expand',
-  notesMore: '+{count} more',
   notesEarlier: '+{count} earlier',
   // Advisor tab (fork addition): the reviewer's own session — header tab
   // label plus the ledger copy. The tab shows one row per model attempt with
@@ -205,10 +203,8 @@ export const zh: typeof en = {
   unlimitedDelta: '不限制消息数',
   unlimitedDeltaHint: '把完整 delta 窗口发给审阅模型（0 = 无限制）。取消勾选则限制为 60 条消息。',
   notesTitle: '顾问',
-  notesDismiss: '关闭顾问建议',
   notesCollapse: '收起',
   notesExpand: '展开',
-  notesMore: '+{count} 条',
   notesEarlier: '还有 {count} 条更早的',
   advisorTab: '顾问',
   trajHeading: '顾问会话',

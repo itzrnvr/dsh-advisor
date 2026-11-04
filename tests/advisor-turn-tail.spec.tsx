@@ -2,7 +2,7 @@
 /**
  * Advisor turn-tail row (fork addition) — pins the shared note card's default
  * in the message flow: turn-tail rows render EXPANDED (full note body), while
- * the dock strip passes defaultCollapsed so its rows open header-only. The
+ * turn tails pass defaultCollapsed so their rows open header-only. The
  * two seats must not drift: a collapsed-default regression here would hide
  * delivered advice behind a toggle in the flow.
  */
@@ -27,7 +27,6 @@ const state = (notes: readonly unknown[]): AdvisorNotesState => ({
   notes: notes as AdvisorNotesState['notes'],
   enabled: true,
   runtimeStatus: 'running',
-  dismissed: false,
 })
 
 type TailProps = Parameters<typeof AdvisorTurnTail>[0]
@@ -71,7 +70,7 @@ describe('AdvisorTurnTail — inline note rows at the reviewed turn', () => {
     const view = render(<AdvisorTurnTail {...props(state(many), 3)} />)
 
     // The newest window stays visible — those are the notes the user just
-    // watched arrive in the dock strip — so a 57-note turn cannot become a
+    // watched arrive in the open turn — so a 57-note turn cannot become a
     // wall in the flow. Order inside the window stays chronological
     // (oldest → newest), and the older notes wait behind the reveal above.
     const bodies = within(view.container).getAllByText(/note body /).map((el) => el.textContent)

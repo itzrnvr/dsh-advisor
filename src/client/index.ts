@@ -58,10 +58,9 @@ import { AdvisorSessionModelController, AdvisorSettingsStore, refreshIfLoaded } 
 import { NextPromptOverlay } from './next-prompt-overlay.tsx'
 import { AdvisorSuggestionController } from './next-prompt-store.ts'
 import { AdvisorTurnTail } from './advisor-turn-tail.tsx'
-import { AdvisorNotesStrip } from './advisor-notes-strip.tsx'
+import { advisorNotesControllerFor } from './advisor-notes-store.ts'
 import { AdvisorTrajectoryView } from './advisor-trajectory-view.tsx'
 import { advisorTrajectoryControllerFor } from './advisor-trajectory-store.ts'
-import { advisorNotesControllerFor } from './advisor-notes-store.ts'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { en, zh, type AdvisorKey } from './locales.ts'
 
@@ -356,28 +355,14 @@ export function apply(ctx: ClientContext): void {
     }, AdvisorTurnTail)
   })
 
-  // Fork addition: the LIVE advisor notes — the notes of the turn that is
-  // STILL RUNNING (a turn tail only exists once the turn closes). They sit in
-  // the host's `conversation.input.dock` — the zone row ABOVE the composer
-  // card's input, beside the host's own todo/queue rows — so live advice
-  // lands in the visible conversation area instead of under the composer,
-  // where it used to push the composer up.
-  ctx.slots.inject('conversation.input.dock' as never, function* () {
-    yield (ctx.slots as any).register({
-      name: 'conversation.input.dock',
-      id: `${BUNDLE_NAME}#notes-strip`,
-      order: 30,
-      locale: NS,
-      inject: (sessionId: string) => {
-        const notesController = advisorNotesControllerFor(sessionId, connection.rpc)
-        return {
-          sessionId,
-          controller: notesController,
-          hooks: { snapshot: notesController.store },
-        }
-      },
-    }, AdvisorNotesStrip)
-  })
+  // 0.6.49: the above-composer notes strip is REMOVED (user ruling: "why is
+  // there an expandable advisor tab above the composer. Remove that"). The
+  // delivered notes live in the conversation flow alone: the per-turn tails
+  // (conversation.chat.turnTail) group each turn's notes under it, and the
+  // shared notes controller (advisor-notes-store) keeps polling
+  // /api/advisor/notes for exactly that surface. The
+  // `conversation.input.dock` seat is left untouched — no advisor entry
+  // above the composer at all.
 
   // Fork addition: the Advisor tab — the reviewer's OWN session ledger beside
   // Chat and Trajectory (`conversation.view` is the header's view roster; a

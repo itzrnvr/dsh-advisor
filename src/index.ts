@@ -226,7 +226,8 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     ((ctx as unknown as { root?: { get?: (k: string) => unknown } }).root?.get?.('llm') as typeof ctx.llm) ?? ctx.llm
   let sessionControl: AdvisorSessionGatewayFace | undefined
   let suggestionControl: AdvisorSuggestionFace | undefined
-  // Fork addition: the delivered-notes face served to the in-chat Advisor strip.
+  // Fork addition: the delivered-notes face served to the in-chat turn tails
+  // (the above-composer strip was removed in 0.6.49).
   let notesControl: AdvisorNotesFace | undefined
   // Fork addition: the advisor-trajectory face served to the Advisor tab.
   let trajectoryControl: AdvisorTrajectoryFace | undefined
@@ -476,7 +477,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
    * Derivation cache (fork addition): the notes view is a pure projection of
    * the append-only session log, so `(event count, last seq)` identifies the
    * log contents and a repeat poll with unchanged log reuses the derived
-   * array — the 4 s strip poll never rescans a 27k-event fork. No writable
+   * array — the 4 s notes poll never rescans a 27k-event fork. No writable
    * note state: a longer log (or a changed tail) always rederives.
    */
   const notesCache = new Map<string, { readonly count: number; readonly lastSeq: number; readonly notes: AdvisorNoteView[] }>()
@@ -510,8 +511,8 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     // NO global bound here: a global cap (the old 30) silently emptied the
     // turn tails of every older turn in long sessions (249 notes observed
     // live). The derivation is cached per log change and each consumer bounds
-    // its own view — the dock strip shows its last 3, a turn tail collapses
-    // past 5 rows.
+    // its own view — a turn tail collapses past 5 rows (the above-composer
+    // strip this once fed is gone, 0.6.49).
     const notes = notesFromSessionEvents(scoped)
     notesCache.set(sessionId, { count: events.length, lastSeq, notes })
     return notes
@@ -1333,7 +1334,8 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   suggestionControl = advisorSuggestionFace(effectiveConfig, suggestions)
 
   // Fork addition — the delivered-notes face for `/api/advisor/notes` (the
-  // in-chat Advisor strip). The notes themselves DERIVE from the session's
+  // in-chat turn tails; the above-composer strip was removed in 0.6.49).
+  // The notes themselves DERIVE from the session's
   // committed advisor messages (`notesOfSession` — the single source of
   // truth, durable across reloads, fork-scoped, chat-ordered); the gate/
   // route fields read the SAME session-scoped effective config the runtime

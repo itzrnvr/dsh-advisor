@@ -1,6 +1,6 @@
 /**
  * Notes derivation from the session log (fork addition): the single source
- * of truth every notes view (strip, turn tails) reads. A note committed as a
+ * of truth every notes view (the turn tails) reads. A note committed as a
  * user/message with the advisor producer kind must be recovered with the
  * turn it reviewed, its original event time, and unparsable legacy rows
  * skipped.

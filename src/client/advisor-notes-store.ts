@@ -3,7 +3,9 @@
  * binding: it polls the host's READ-ONLY `/api/advisor/notes` endpoint for the
  * notes the reviewer actually delivered in this session (severity, text,
  * channel, time) plus the live switch/route state, and exposes them through a
- * uSES-safe snapshot store the in-chat Advisor strip renders from.
+ * uSES-safe snapshot store the inline turn tails render from. (The
+ * above-composer notes strip this once also fed is gone — 0.6.49 user ruling;
+ * the turn tails are the only notes surface.)
  *
  * The endpoint is side-effect-free (it only reads the host's bounded per-
  * session note log), so a short idle poll is cheap and cannot perturb the
@@ -47,8 +49,6 @@ export interface AdvisorNotesState {
   model?: string
   /** Epoch-ms of the last accepted note, when known. */
   lastActivityAt?: number
-  /** Whether the user dismissed the strip for this page lifetime. */
-  dismissed: boolean
 }
 
 /** The wire payload of `/api/advisor/notes`. */
@@ -95,7 +95,6 @@ export class AdvisorNotesController {
     notes: [],
     enabled: false,
     runtimeStatus: 'disabled',
-    dismissed: false,
   })
 
   /** Fence token: a newer fetch makes every older settle stale. */
@@ -127,15 +126,6 @@ export class AdvisorNotesController {
     if (this.mounts > 0 || this.timer === undefined) return
     clearInterval(this.timer)
     this.timer = undefined
-  }
-
-  /**
-   * Hide the strip for now. A newly arriving concern/blocker re-arms it (see
-   * fetch) — interrupting advice the user has not seen must not stay hidden
-   * behind a dismiss clicked for an older batch.
-   */
-  dismiss(): void {
-    this.store.update((s) => { s.dismissed = true })
   }
 
   /**
@@ -190,16 +180,6 @@ export class AdvisorNotesController {
         model: typeof wire.model === 'string' ? wire.model : undefined,
         lastActivityAt: typeof wire.lastActivityAt === 'number' ? wire.lastActivityAt : undefined,
       }
-      // Dismiss re-arm: a concern/blocker NEWER than anything published lifts
-      // a dismissed strip — interrupting advice the user has not seen must
-      // not stay hidden behind a dismiss clicked for an older batch. Keyed on
-      // the UNTAGGED bucket: tagged notes render in turn tails, so re-arming
-      // for them would pop the strip only for it to render null.
-      const previous = this.store.getSnapshot()
-      const previousUntagged = previous.notes.filter((note) => note.turn === undefined)
-      const previousLastAt = previousUntagged.length > 0 ? previousUntagged[previousUntagged.length - 1]!.at : 0
-      const importantArrival = previous.dismissed
-        && notes.some((note) => note.turn === undefined && note.severity !== 'nit' && note.at > previousLastAt)
       // Change guard: identical payloads publish nothing. `lastActivityAt` is
       // excluded from the comparison (it moves on any accepted note, which
       // already changes `notes`) so a timestamp-only change cannot churn
@@ -221,7 +201,6 @@ export class AdvisorNotesController {
         s.provider = next.provider
         s.model = next.model
         s.lastActivityAt = next.lastActivityAt
-        if (importantArrival) s.dismissed = false
       })
       return
     }

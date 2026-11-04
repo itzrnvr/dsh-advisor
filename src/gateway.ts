@@ -649,7 +649,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
   /**
    * Fork addition — the READ-ONLY delivered-notes query (`/api/advisor/notes`,
    * args `{ sessionId }`): what the reviewer actually said in this session plus
-   * the live switch/route state, for the in-chat Advisor strip. Idempotent and
+   * the live switch/route state, for the in-chat turn tails. Idempotent and
    * side-effect-free; malformed requests answer `advisor/rejected`, a gateway
    * without an elected owner answers `advisor/unavailable`.
    */

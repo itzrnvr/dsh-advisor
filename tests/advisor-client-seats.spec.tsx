@@ -1,19 +1,21 @@
 // @vitest-environment jsdom
 /**
- * Client seat registrations (fork fix, 0.6.43).
+ * Client seat registrations (0.6.49).
  *
- * The advisor occupies four seats, and WHERE they sit is a product decision
- * the user pushed on hard ("why below composer"):
+ * The advisor occupies THREE seats:
  *
  * - `conversation.chat.turnTail`  — the note cards at the end of the turn a
  *   note reviewed (in the message flow, closed turns only);
- * - `conversation.input.dock`     — the LIVE notes of the still-running turn
- *   (no turn tail exists yet), in the host's zone row ABOVE the composer
- *   card's input. The old seat, `conversation.composer.dock`, put them BELOW
- *   the composer card, where they pushed the composer up the screen;
  * - `conversation.composer.dock`  — the next-prompt tip (a composer
  *   affordance — it stays);
  * - `conversation.view`           — the Advisor tab.
+ *
+ * The above-composer LIVE notes strip (`conversation.input.dock`, the
+ * 0.6.43–0.6.48 seat) is REMOVED per the 2026-11-04 user ruling ("why is
+ * there an expandable advisor tab above the composer. Remove that"). Notes
+ * now surface in the chat flow alone: an open turn's notes appear under that
+ * turn the moment it closes (the notes derivation re-attributes them from
+ * `turn === undefined` to the closing turn — the one-owner rule).
  *
  * The test invokes the REAL client plugin against a mocked slot registry and
  * asserts the registration objects — not a text proximity check, which an
@@ -79,17 +81,13 @@ function collectRegistrations(): { registrations: CollectedSeat[]; errors: strin
   return { registrations, errors }
 }
 
-describe('client seat registrations — the live notes sit ABOVE the composer', () => {
-  it('registers the notes strip into the input dock (above the composer card)', () => {
-    const { registrations, errors } = collectRegistrations()
+describe('client seat registrations — no advisor surface above the composer', () => {
+  it('registers NOTHING into the input dock (the notes strip was removed, 0.6.49)', () => {
+    const { registrations } = collectRegistrations()
     const strip = registrations.find((r) => r.declaration.id === 'dsh-advisor#notes-strip')
-    expect(strip, `notes strip seat (mock errors: ${errors.join(' | ')})`).toBeDefined()
-    // INJECTED into the input dock — the zone row ABOVE the composer card's
-    // input — not the composer dock, which renders BELOW the card and pushed
-    // the composer up the screen.
-    expect(strip!.injectedInto).toBe('conversation.input.dock')
-    expect(strip!.declaration.name).toBe('conversation.input.dock')
-    expect(strip!.declaration.order).toBe(30)
+    expect(strip).toBeUndefined()
+    const dock = registrations.filter((r) => r.injectedInto === 'conversation.input.dock')
+    expect(dock).toEqual([])
   })
 
   it('keeps the next-prompt tip in the composer dock', () => {

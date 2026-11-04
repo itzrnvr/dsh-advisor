@@ -1,8 +1,8 @@
 /**
  * Derive the delivered notes from a session's own event log (fork addition).
  *
- * This is the notes SOURCE OF TRUTH for every read surface (the in-chat
- * strip, the turn tails, the tab's delivered-note rows): notes are committed
+ * This is the notes SOURCE OF TRUTH for every read surface (the turn tails,
+ * the tab's delivered-note rows): notes are committed
  * to the session as user messages with this plugin's producer kind
  * (`source.kind: 'advisor'`), and any view of "what did the advisor say in
  * this session" is a projection of those committed events — never a second
@@ -33,8 +33,9 @@
  *   state (without this rule a note following a mid-turn steer fell back to
  *   the already-closed turn — one note in 249 did exactly that in a live
  *   log); with no open turn the old reset semantics apply;
- * - agentic sessions with no turn/end at all stay turn-less (the client's
- *   session strip renders those).
+ * - agentic sessions with no turn/end at all stay turn-less (no surface
+ *   renders those today — the turn tails need a turn, and the above-composer
+ *   strip that once showed untagged notes was removed in 0.6.49).
  *
  * `at` comes from the session event's own time (never Date.now()) so rows
  * keep their original timestamp. The delivery channel is genuinely
