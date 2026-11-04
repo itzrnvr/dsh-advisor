@@ -18,13 +18,13 @@
  * Location: `$DSH_ADVISOR_DATA_DIR`, else `$DSH_HOME/advisor`, else
  * `~/.dsh/advisor`.
  *
- * Disk cost, stated plainly: per FILE the store is bounded (80 attempts, 40
- * traces, ~4 MB ceiling), and `session-state.json` is capped at 2 000 entries.
- * The `sessions/` DIRECTORY itself is intentionally UNBOUNDED — one file per
- * session that ever recorded an attempt, each up to ~4 MB — because the product
- * rule is "persist everything". Total disk usage therefore grows with the
- * number of sessions, and NOTHING is ever deleted automatically: removing a
- * file is a manual choice.
+ * Disk cost, stated plainly: NOTHING is ever deleted automatically. Session
+ * files append forever (each record is written once), the snapshot keeps every
+ * session that ever held an override, and there is no retention window, size
+ * cap, or compaction that drops records. `load` returns only the newest 80
+ * attempts / 40 traces for display, but the older lines stay on disk. Disk
+ * usage grows with usage by design; removing files is a manual choice reserved
+ * for the user.
  */
 
 import {
@@ -32,7 +32,6 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
-  statSync,
   writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
@@ -86,10 +85,8 @@ export interface AttemptStoreOptions {
   readonly dir?: string
   /** Maximum attempts returned by `load` (matches the memory ring). */
   readonly maxTurns?: number
-  /** Maximum traces returned by `load`. */
+  /** Maximum traces returned by `load` (display window; nothing is deleted). */
   readonly maxTraces?: number
-  /** File size that triggers a compaction, in bytes. */
-  readonly maxBytes?: number
 }
 
 /** Whether a caller named an explicit location (test suites do). */
@@ -110,14 +107,12 @@ export class AttemptStore {
   private readonly dir: string
   private readonly maxTurns: number
   private readonly maxTraces: number
-  private readonly maxBytes: number
   private readonly muted: boolean
 
   constructor(options: AttemptStoreOptions = {}) {
     this.dir = options.dir ?? join(advisorDataDir(), 'sessions')
     this.maxTurns = options.maxTurns ?? 80
     this.maxTraces = options.maxTraces ?? 40
-    this.maxBytes = options.maxBytes ?? 4_000_000
     this.muted = mutedForTests(explicitDir(options.dir))
   }
 
@@ -187,53 +182,16 @@ export class AttemptStore {
       mkdirSync(this.dir, { recursive: true })
       const file = this.fileFor(sessionId)
       appendFileSync(file, `${JSON.stringify(line)}\n`, 'utf8')
-      this.compactIfNeeded(sessionId, file)
     } catch {
       // Best-effort: losing history is better than failing a review.
     }
   }
-
-  private compactIfNeeded(sessionId: string, file: string): void {
-    let size: number
-    try {
-      size = statSync(file).size
-    } catch {
-      return
-    }
-    if (size <= this.maxBytes) return
-    const { turns, traces } = this.load(sessionId)
-    // Drop traces first, then fall back to the newest half of the attempts:
-    // a compaction must actually get the file under the ceiling, otherwise
-    // every later attempt would re-read and re-write the whole file.
-    const candidates: StoredLine[][] = [
-      [
-        ...turns.map((v) => ({ t: 'turn' as const, v })),
-        ...traces.map((v) => ({ t: 'trace' as const, v })),
-      ],
-      turns.map((v) => ({ t: 'turn' as const, v })),
-      turns.slice(-Math.max(1, Math.floor(this.maxTurns / 2))).map((v) => ({ t: 'turn' as const, v })),
-      // Last resort: an empty file is always under the ceiling, so one
-      // compaction can never leave a file that re-compacts on every append.
-      [],
-    ]
-    let payload = ''
-    for (const lines of candidates) {
-      payload = lines.map((entry) => JSON.stringify(entry)).join('\n')
-      if (payload !== '') payload += '\n'
-      if (Buffer.byteLength(payload, 'utf8') <= this.maxBytes) break
-    }
-    const temporary = `${file}.tmp`
-    writeFileSync(temporary, payload, 'utf8')
-    renameSync(temporary, file)
-  }
 }
-
-/** Snapshot entry ceiling: keeps the file (and boot memory) bounded. */
-const MAX_SESSION_ENTRIES = 2_000
 
 /**
  * Durable per-session advisor overrides. The in-memory store owns the
- * semantics; this only reads/writes its snapshot.
+ * semantics; this only reads/writes its snapshot. The snapshot is never
+ * pruned: every session that ever held an override stays in the file.
  */
 export class SessionStateStore {
   private readonly file: string
@@ -259,7 +217,7 @@ export class SessionStateStore {
       if (parsed === null || typeof parsed !== 'object' || typeof parsed.sessions !== 'object' || parsed.sessions === null) {
         return { sessions: {} }
       }
-      return prune(parsed)
+      return parsed
     } catch {
       return { sessions: {} }
     }
@@ -271,18 +229,10 @@ export class SessionStateStore {
     try {
       mkdirSync(dirname(this.file), { recursive: true })
       const temporary = `${this.file}.tmp`
-      writeFileSync(temporary, `${JSON.stringify(prune(state), null, 2)}\n`, 'utf8')
+      writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, 'utf8')
       renameSync(temporary, this.file)
     } catch {
       // Best-effort: a failed snapshot keeps the previous file.
     }
   }
-}
-
-/** Keep only the newest {@link MAX_SESSION_ENTRIES} override entries. */
-function prune(state: AdvisorPersistedState): AdvisorPersistedState {
-  const entries = Object.entries(state.sessions)
-  if (entries.length <= MAX_SESSION_ENTRIES) return state
-  entries.sort((left, right) => (right[1]?.at ?? 0) - (left[1]?.at ?? 0))
-  return { sessions: Object.fromEntries(entries.slice(0, MAX_SESSION_ENTRIES)) }
 }

@@ -254,7 +254,7 @@ describe('AdvisorSessionOverrides (raw per-session enable override)', () => {
     expect(overrides.enableOverride('s1')).toBe(false)
   })
 
-  it('restores each write stamp so pruning compares real ages', () => {
+  it('restores each write stamp so snapshots keep real ages', () => {
     const seen: AdvisorPersistedState[] = []
     const overrides = new AdvisorSessionOverrides({
       initial: {
@@ -271,28 +271,6 @@ describe('AdvisorSessionOverrides (raw per-session enable override)', () => {
     expect(last?.sessions.old?.at).toBe(1)
     expect(last?.sessions.fresh?.at).toBe(9)
     expect(last?.sessions.newer?.at ?? 0).toBeGreaterThan(9)
-  })
-
-  it('evicts the oldest overrides beyond the 2000-entry ceiling', () => {
-    const initial: AdvisorPersistedState['sessions'] = {}
-    for (let index = 0; index < 2_005; index += 1) {
-      initial[`s${index}`] = { enabled: true, at: index + 1 }
-    }
-    const seen: AdvisorPersistedState[] = []
-    const overrides = new AdvisorSessionOverrides({
-      initial: { sessions: initial },
-      onChange: (state) => { seen.push(state) },
-    })
-    // A fresh mutation triggers the prune pass.
-    overrides.set('live', true)
-    const last = seen.at(-1)
-    const ids = Object.keys(last?.sessions ?? {})
-    expect(ids).toHaveLength(2_000)
-    expect(last?.sessions.s0).toBeUndefined()
-    expect(last?.sessions.s4).toBeUndefined()
-    expect(last?.sessions.s5).toBeUndefined()
-    expect(last?.sessions.s6).toBeDefined()
-    expect(last?.sessions.live).toBeDefined()
   })
 })
 

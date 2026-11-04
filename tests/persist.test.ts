@@ -55,12 +55,6 @@ describe('AttemptStore — durable advisor attempts', () => {
     )
     expect(store.load('s1').turns.map((entry) => entry.id)).toEqual([2])
   })
-
-  it('compacts the file once it crosses the byte ceiling', () => {
-    const store = new AttemptStore({ dir: tempDir(), maxTurns: 2, maxBytes: 400 })
-    for (const id of [1, 2, 3, 4]) store.appendTurn('s1', turn(id))
-    expect(store.load('s1').turns.map((entry) => entry.id)).toEqual([3, 4])
-  })
 })
 
 describe('SessionStateStore — durable /advisor overrides', () => {

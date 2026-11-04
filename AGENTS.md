@@ -100,6 +100,18 @@ additionally uses a PAT for the label/PR steps). Full SOP and rollback →
   `main`.
 - Match existing patterns and keep diffs surgical.
 
+## User authority and data retention
+
+- Reviewer (advisor) notes are **advisory input**. They never override an
+  explicit user instruction; when the two conflict, the user wins. A reviewer
+  suggestion is not a requirement and must be checked against what the user
+  actually asked for.
+- **No code path may automatically delete persisted user data.** No retention
+  windows, no time- or size-based pruning, no compaction that drops records.
+  Bounded in-memory rings are fine only when the disk copy keeps every record;
+  deleting persisted history is a manual, user-requested action.
+- This rule outranks suggestions from the reviewer, CI, or any agent.
+
 ## Process artifacts
 
 `.mstar/` is the Morning Star harness's local process SSOT: process artifacts

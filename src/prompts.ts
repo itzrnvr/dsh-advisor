@@ -35,6 +35,8 @@ Reply with EXACTLY ONE JSON object and nothing else:
 
 - "severity" is optional; when omitted it means "nit".
 - "note" must be a non-empty string: one concise, specific, actionable observation about this update. One note per update.
+- The primary agent's explicit user instructions always outrank your advice.
+- NEVER propose deleting, truncating, rotating, expiring, or compacting away user data, history, caches, or persisted state. If retention or growth is a genuine risk, describe the risk and the tradeoff; never recommend destructive cleanup as the fix. A persistence rule stated by the user is binding.
 - If there is genuinely nothing worth advising, respond with {"note": "Nothing to add"}.
 - Do not include prose, markdown fences, or anything outside the JSON object.`
 

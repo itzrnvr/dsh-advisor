@@ -210,12 +210,12 @@ export type AdvisorModelSource = 'session' | 'global'
  * it now keeps the enable override and model pin (only the generation fence is
  * dropped), so a reopened session keeps `/advisor on` and its pin. `disposeAll`
  * wipes the in-memory maps on owner teardown; the snapshot file outlives it and
- * is pruned to the newest 2000 entries — that bound, not liveness, is what keeps
- * memory finite now.
+ * is NEVER pruned — every session that ever held an override stays in it, so
+ * memory grows with distinct sessions that carried a toggle/pin (a few short
+ * strings each). That growth is intentional: nothing here may auto-delete
+ * persisted user state.
  */
-/** Ceiling for both the in-memory override maps and the persisted snapshot. */
-const MAX_OVERRIDE_ENTRIES = 2_000
-
+/** Per-session advisor overrides — durable, never pruned. */
 export class AdvisorSessionOverrides {
   private readonly enables = new Map<string, boolean>()
   private readonly models = new Map<string, AdvisorModelPair>()
@@ -265,28 +265,9 @@ export class AdvisorSessionOverrides {
     return { sessions }
   }
 
-  /** Notify the persistence hook after a mutation, evicting stale sessions. */
+  /** Notify the persistence hook after a mutation. */
   private changed(): void {
-    this.evictIfNeeded()
     this.options.onChange?.(this.snapshot())
-  }
-
-  /**
-   * Bound the in-memory maps as well as the file (fork addition): once more
-   * than MAX entries exist, the oldest stamps are dropped together with their
-   * persisted counterpart. Without this, `clear` retaining state would grow
-   * both maps for the life of the host.
-   */
-  private evictIfNeeded(): void {
-    const ids = [...this.overrideSessionIds()]
-    if (ids.length <= MAX_OVERRIDE_ENTRIES) return
-    ids.sort((left, right) => (this.writtenAt.get(left) ?? 0) - (this.writtenAt.get(right) ?? 0))
-    for (const sessionId of ids.slice(0, ids.length - MAX_OVERRIDE_ENTRIES)) {
-      this.enables.delete(sessionId)
-      this.models.delete(sessionId)
-      this.writtenAt.delete(sessionId)
-      this.generations.delete(sessionId)
-    }
   }
 
   /**
