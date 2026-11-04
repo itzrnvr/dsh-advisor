@@ -132,6 +132,11 @@ describe('AdvisorTrajectoryView — Trajectory-shaped advisor ledger (fork addit
     expect(view.container.textContent).toContain('trajEmpty')
   })
 
+  it('explains that the advisor is off instead of only showing the empty ledger', () => {
+    const view = render(<AdvisorTrajectoryView {...props({ ...state([]), enabled: false })} />)
+    expect(view.container.textContent).toContain('trajOffNotice')
+  })
+
   it('shows a failed compaction with its error text', () => {
     const view = render(<AdvisorTrajectoryView {...props(state([
       turn({ kind: 'compaction', outcome: 'failure', error: 'compaction failed — reset' }),

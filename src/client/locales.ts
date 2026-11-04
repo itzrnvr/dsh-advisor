@@ -169,6 +169,8 @@ export const en = {
   trajCopy: 'Copy',
   trajCopied: 'Copied',
   trajCopyFailed: 'Copy failed',
+  trajOffNotice: 'The advisor is off for this session — no calls are recorded until it is turned on. Use the Advisor control in the conversation header.',
+  trajRuntimeNotice: 'The advisor runtime is disabled for this session — calls resume once it is available.',
 }
 
 /** The settings.advisor namespace key union. */
@@ -314,4 +316,6 @@ export const zh: typeof en = {
   trajCopy: '复制',
   trajCopied: '已复制',
   trajCopyFailed: '复制失败',
+  trajOffNotice: '本会话的顾问已关闭——开启前不会记录任何调用。请用会话标题栏的「顾问」控制开启。',
+  trajRuntimeNotice: '本会话的顾问运行时当前不可用——恢复后才会继续记录调用。',
 }

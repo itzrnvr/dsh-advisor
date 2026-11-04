@@ -578,7 +578,17 @@ export function AdvisorTrajectoryView(props: AdvisorTrajectoryViewProps): ReactN
           }}
         >
           {rows.length === 0
-            ? <p className={styles.empty}>{emptyLabel}</p>
+            ? (
+              <div className={styles.emptyState}>
+                {state.enabled === false && (
+                  <p className={styles.notice}>{t('trajOffNotice')}</p>
+                )}
+                {state.enabled !== false && state.runtimeStatus === 'disabled' && (
+                  <p className={styles.notice}>{t('trajRuntimeNotice')}</p>
+                )}
+                <p className={styles.empty}>{emptyLabel}</p>
+              </div>
+            )
             : (
               <table className={styles.table}>
                 <colgroup>

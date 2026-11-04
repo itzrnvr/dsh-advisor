@@ -365,8 +365,22 @@
   font-family: var(--dsw-font-family-mono, ui-monospace, monospace);
 }
 
+.emptyState {
+  padding: 18px 14px 24px;
+}
+
+.notice {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: var(--dsw-radius-sm, 8px);
+  background: var(--dsw-alias-bg-module-platform, #f5f6f7);
+  color: var(--dsw-alias-label-secondary, #61666b);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .empty {
-  margin: 24px 14px;
+  margin: 0 0 24px;
   font-size: 12.5px;
   line-height: 1.6;
   color: var(--dsw-alias-label-caption, #6b7280);
