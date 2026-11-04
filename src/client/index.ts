@@ -396,7 +396,16 @@ export function apply(ctx: ClientContext): void {
   ) {
     let definitionDisposer: (() => void) | undefined
     try {
-      const registered = engineService.events.register(buildAdvisorNoteDefinition())
+      const registered = engineService.events.register(buildAdvisorNoteDefinition({
+        // The live signal the tests cannot produce: the definition actually
+        // received a committed advisor event from the real log. Without the
+        // pair of lines below, a registered-but-silent definition would show
+        // NO cards and NO warning — a regression below the tail fallback.
+        onFirstDelivery: () => {
+          ctx.logger('advisor').info('inline advisor notes live — first note node delivered from the session log')
+        },
+      }))
+      ctx.logger('advisor').info('inline advisor notes registered — awaiting deliveries')
       if (typeof registered === 'function') definitionDisposer = registered as () => void
       // Keyed renderer: the registration field is `key` (the live
       // Slots.listSubTree contract: `registration: [{name: "key", required:

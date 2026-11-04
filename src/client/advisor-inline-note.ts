@@ -108,7 +108,16 @@ export interface UiConversationLike {
  * node the flow renders (visibility `visible` — this is a plugin-OWNED node,
  * not the hidden context row the host builds from the same message).
  */
-export function buildAdvisorNoteDefinition() {
+export function buildAdvisorNoteDefinition(options: {
+  /**
+   * Called ONCE on the first note node the engine derives — the live signal
+   * that the definition actually received committed advisor events (the one
+   * path wiring tests cannot exercise: they feed synthesized events, the
+   * engine feeds the real log). Absent = silent.
+   */
+  readonly onFirstDelivery?: () => void
+} = {}) {
+  let firstDeliveryLogged = false
   return {
     kind: ADVISOR_NOTE_KIND,
     target: 'chat',
@@ -136,7 +145,12 @@ export function buildAdvisorNoteDefinition() {
     },
     start: (_context: unknown, match: { readonly event?: unknown }) => {
       try {
-        return deriveInlineNote(match?.event)
+        const note = deriveInlineNote(match?.event)
+        if (note !== undefined && !firstDeliveryLogged) {
+          firstDeliveryLogged = true
+          options.onFirstDelivery?.()
+        }
+        return note
       } catch {
         return undefined
       }
