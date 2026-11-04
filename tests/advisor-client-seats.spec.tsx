@@ -67,6 +67,17 @@ function collectRegistrations(): { registrations: CollectedSeat[]; errors: strin
       register: (declaration: SeatDeclaration) => declaration,
     },
     get: (key: string) => services[key],
+    // The locale dictionary registration face (ctx.locale.register + the
+    // active-language probe the tab label uses).
+    locale: {
+      register: () => () => {},
+      getLocale: () => ({ active: 'en' }),
+    },
+    // Event face: connection/reset listeners register through ctx.on and
+    // return their disposer; the pushed-invalidation face subscribes through
+    // ctx.remote.$on (settings/document-updated, llm/adapters-updated).
+    on: () => () => {},
+    remote: { $on: () => () => {} },
     effect: (fn: () => unknown) => {
       try {
         fn()
@@ -82,6 +93,15 @@ function collectRegistrations(): { registrations: CollectedSeat[]; errors: strin
 }
 
 describe('client seat registrations — no advisor surface above the composer', () => {
+  it('applies clean against the full mock (no swallowed registration failures)', () => {
+    // The errors channel is the silent-drop surface: an apply-time throw
+    // (undefined slot face, register failure) means a UI surface never
+    // mounts while the tab keeps working — the exact failure class that
+    // makes notes "disappear from chat". Nothing may land in it.
+    const { errors } = collectRegistrations()
+    expect(errors).toEqual([])
+  })
+
   it('registers NOTHING into the input dock (the notes strip was removed, 0.6.49)', () => {
     const { registrations } = collectRegistrations()
     const strip = registrations.find((r) => r.declaration.id === 'dsh-advisor#notes-strip')
