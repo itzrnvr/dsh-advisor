@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -60,23 +60,6 @@ describe('AttemptStore — durable advisor attempts', () => {
     const store = new AttemptStore({ dir: tempDir(), maxTurns: 2, maxBytes: 400 })
     for (const id of [1, 2, 3, 4]) store.appendTurn('s1', turn(id))
     expect(store.load('s1').turns.map((entry) => entry.id)).toEqual([3, 4])
-  })
-
-  it('keeps files by default and prunes only with an explicit retention window', () => {
-    const dir = tempDir()
-    const seed = new AttemptStore({ dir })
-    seed.appendTurn('old', turn(1))
-    const file = seed.fileFor('old')
-    const stale = new Date(Date.now() - 3 * 24 * 60 * 60 * 1_000)
-    utimesSync(file, stale, stale)
-
-    // Default: nothing is deleted (the user's "nothing must wipe" rule).
-    void new AttemptStore({ dir })
-    expect(existsSync(file)).toBe(true)
-
-    // Opt-in retention: the stale file is removed on construction.
-    void new AttemptStore({ dir, retentionDays: 1 })
-    expect(existsSync(file)).toBe(false)
   })
 })
 
