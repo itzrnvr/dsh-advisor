@@ -56,7 +56,7 @@ const baseConfig = (): ResolvedAdvisorConfig => ({
   provider: 'test-provider',
   model: 'test-model',
   systemPrompt: '',
-  immuneTurns: 3,
+
   maxDeltaMessages: 60,
   historyMaxTokens: 1_000_000,
   reviewEveryTurns: 1,

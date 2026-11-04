@@ -841,7 +841,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
    * disabled-with-reason carrying the message — the gateway never fails the
    * RPC on a bad config, and gate semantics hold (no model call can start).
    * S1: when the raw source is still readable, the fallback seeds its scalar
-   * latches (systemPrompt / immuneTurns / maxDeltaMessages /
+   * latches (systemPrompt / maxDeltaMessages /
    * proseFallback / reasoningEffort / nextPrompt / defaultEnabled) instead of
    * hardcoded defaults, so an invalid config only drops the offending keys.
    */
@@ -859,7 +859,6 @@ export class AdvisorConfigGateway extends TypertRemoteService {
       config = {
         enabled: false,
         systemPrompt: raw?.systemPrompt ?? '',
-        immuneTurns: raw?.immuneTurns ?? 3,
         maxDeltaMessages: raw?.maxDeltaMessages ?? 0,
         callTimeoutMinutes: raw?.callTimeoutMinutes ?? 10,
         historyMaxTokens: raw?.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS,
@@ -885,10 +884,12 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     // present-as-undefined (the result validator rejects undefined values).
     // Key census (qc1 W-1, issue #102; T2 plan dsh-advisor-reasoning-effort;
     // T1 plan dsh-advisor-next-prompt-n12; GitHub issue #124; fork cadence/
-    // history additions): TWELVE live `CONFIG_KEYS` in src/config.ts —
-    // systemPrompt, immuneTurns, maxDeltaMessages, proseFallback,
-    // reasoningEffort, provider, model, nextPrompt, defaultEnabled,
-    // historyMaxTokens, reviewEveryTurns, reviewEverySteps. The scalar pair
+    // history additions; 0.6.48: immuneTurns removed with the interrupt
+    // cooldown — the pre-step gate paces notes): THIRTEEN live `CONFIG_KEYS`
+    // in src/config.ts — systemPrompt, maxDeltaMessages, callTimeoutMinutes,
+    // proseFallback, reasoningEffort, provider, model, nextPrompt,
+    // defaultEnabled, mainSessionOnly, historyMaxTokens, reviewEveryTurns,
+    // reviewEverySteps. The scalar pair
     // (provider/model) and reasoningEffort are omitted while unset; the
     // schema-defaulted numbers/booleans ride every resolved get. Plus TWO
     // non-persisted live fields: `enabled`/`disabledReason` (the gate state,
@@ -898,7 +899,6 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     const wire: Record<string, unknown> = {
       enabled: config.enabled,
       systemPrompt: config.systemPrompt,
-      immuneTurns: config.immuneTurns,
       maxDeltaMessages: config.maxDeltaMessages,
       callTimeoutMinutes: config.callTimeoutMinutes ?? 10,
       // Fork additions: the reviewer-history budget and the two review clocks.

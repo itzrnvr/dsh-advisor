@@ -96,8 +96,6 @@ export interface AdvisorConfigView {
   model?: string
   /** System prompt override ('' = built-in reviewer prompt). */
   systemPrompt: string
-  /** Cooldown after a delivered interrupt; integer ≥ 0. */
-  immuneTurns: number
   /** Delta window; integer ≥ 0, 0 = unbounded. */
   maxDeltaMessages: number
   /** Reviewer call timeout in minutes (integer ≥ 1, default 10); bounds one advisor model call. */
@@ -195,7 +193,7 @@ export type ModelsEmptyReason =
 
 /**
  * The user-layer draft the form edits
- * (provider/model/systemPrompt/immuneTurns/maxDeltaMessages/proseFallback/reasoningEffort/nextPrompt/defaultEnabled).
+ * (provider/model/systemPrompt/maxDeltaMessages/proseFallback/reasoningEffort/nextPrompt/defaultEnabled).
  */
 export interface AdvisorDraft {
   /** Provider route; required (non-empty). */
@@ -204,8 +202,6 @@ export interface AdvisorDraft {
   model?: string
   /** Optional system prompt override; '' = built-in reviewer prompt. */
   systemPrompt: string
-  /** Cooldown after a delivered interrupt; integer ≥ 0, default 3. Cleared input → undefined (left unchanged on apply). */
-  immuneTurns?: number
   /** Delta window; integer ≥ 0, default 60, 0 = unbounded. Cleared input → undefined (left unchanged on apply). */
   maxDeltaMessages?: number
   /** Reviewer call timeout in minutes (integer ≥ 1, default 10). Cleared input → undefined (left unchanged on apply). */
@@ -325,7 +321,6 @@ export interface AdvisorSettingsState {
 function defaultDraft(): AdvisorDraft {
   return {
     systemPrompt: '',
-    immuneTurns: 3,
     maxDeltaMessages: 0,
     callTimeoutMinutes: 10,
     // Fork additions: schema-default cadence/history values.
@@ -356,7 +351,6 @@ function draftOfConfig(config: AdvisorConfigView | undefined): AdvisorDraft {
     provider: stringField(config?.provider),
     model: stringField(config?.model),
     systemPrompt: typeof config?.systemPrompt === 'string' ? config.systemPrompt : '',
-    immuneTurns: numberField(config?.immuneTurns, 3),
     maxDeltaMessages: numberField(config?.maxDeltaMessages, 0),
     // Reviewer call deadline (fork addition): the seed shows the effective
     // value; an omitted containment wire reads the schema default (10).
@@ -853,15 +847,6 @@ export class AdvisorSettingsStore {
     this.setField('systemPrompt', prompt)
   }
 
-  /** Set the immune-turns cooldown (int ≥ 0; non-numeric input keeps the current value; undefined clears → omitted from patch). */
-  setImmuneTurns(value: number | undefined): void {
-    if (value === undefined) {
-      this.clearField('immuneTurns')
-      return
-    }
-    this.setField('immuneTurns', this.clampInt(value, this.store.getSnapshot().draft.immuneTurns ?? 0))
-  }
-
   /** Set the delta-message window (int ≥ 0; non-numeric input keeps the current value; undefined clears → omitted from patch). */
   setMaxDeltaMessages(value: number | undefined): void {
     if (value === undefined) {
@@ -1054,7 +1039,7 @@ export class AdvisorSettingsStore {
    */
   private patchFor(draft: AdvisorDraft): Record<string, unknown> {
     const patch: Record<string, unknown> = {}
-    const always = ['systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'callTimeoutMinutes', 'historyMaxTokens', 'reviewEveryTurns', 'reviewEverySteps', 'mainSessionOnly', 'proseFallback', 'nextPrompt', 'defaultEnabled'] as const
+    const always = ['systemPrompt', 'maxDeltaMessages', 'callTimeoutMinutes', 'historyMaxTokens', 'reviewEveryTurns', 'reviewEverySteps', 'mainSessionOnly', 'proseFallback', 'nextPrompt', 'defaultEnabled'] as const
     for (const key of always) {
       const next = draft[key]
       // A cleared number input (undefined) means "leave the stored value

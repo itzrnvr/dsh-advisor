@@ -478,8 +478,6 @@ export interface AdvisorComposedConfig {
   readonly provider?: string
   /** Composed model id (shown even while disabled — spec §5.2). */
   readonly model?: string
-  /** Cooldown after a delivered interrupt (spec §6). */
-  readonly immuneTurns: number
   /** Delta window; 0 = unbounded (KD-3). */
   readonly maxDeltaMessages: number
   /** Reviewer call timeout in minutes (fork addition; integer ≥ 1, default 10). */
@@ -554,7 +552,6 @@ export function advisorConfigText(config: AdvisorComposedConfig): string {
   if (config.provider && config.model) {
     lines.push(`Model: ${config.provider}/${config.model}`)
   }
-  lines.push(`immuneTurns: ${config.immuneTurns}`)
   lines.push(`maxDeltaMessages: ${config.maxDeltaMessages === 0 ? 'unbounded' : config.maxDeltaMessages}`)
   lines.push(`callTimeoutMinutes: ${config.callTimeoutMinutes ?? 10}`)
   // The issue-#102 keys (qc1 S-1) render only when the composed read carries

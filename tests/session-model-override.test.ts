@@ -162,7 +162,7 @@ class HangingResolveAdapter extends GatedStubAdapter {
 function fullConfig(overrides: Partial<AdvisorConfig> = {}): AdvisorConfig {
   return {
     systemPrompt: '',
-    immuneTurns: 3,
+    
     maxDeltaMessages: 60,
     // These tests exercise the session-model-override plane, not the
     // next-prompt prediction: silence the extra prediction model call
@@ -544,7 +544,7 @@ describe('session model override — enable-switch independence (spec §5.3)', (
       { provider: 'stub', model: 'stub-model' },
       [textReply('in flight'), textReply('after edit')],
     )
-    const { commit } = publishAgent(ctx, agents, 's1')
+    const { steer } = publishAgent(ctx, agents, 's1')
     const { session, log } = makeSession('s1')
 
     // Call in flight on the global route.
@@ -553,14 +553,15 @@ describe('session model override — enable-switch independence (spec §5.3)', (
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(1))
 
     // Pin the SAME route: outcome 'unchanged' — the in-flight call is NOT
-    // aborted (an equal pin restarts nothing) and its note still delivers.
+    // aborted (an equal pin restarts nothing) and its note still delivers
+    // (unheld → STEER, 0.6.48 one rule).
     const setResult = await invokeAdvisor(handler, ' model set stub stub-model', session)
     expect(textOf(setResult)).toContain('same effective route, runtime untouched')
     const status = await invokeAdvisor(handler, ' status', session)
     expect(textOf(status)).toContain('(session override)') // recorded as a pin
 
     adapter.release()
-    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1))
 
     // Protection: a later global default edit does NOT touch the pinned route.
     entry.commit(ctx, { provider: 'other', model: 'other-model' })
@@ -729,7 +730,7 @@ describe('session model override — route change effect (spec §5.3)', () => {
       { provider: 'stub', model: 'stub-model' },
       [textReply('old route note'), textReply('new route note')],
     )
-    const { commit } = publishAgent(ctx, agents, 's1')
+    const { commit, steer } = publishAgent(ctx, agents, 's1')
     const { session, log } = makeSession('s1')
 
     // Turn 1 drains on the old route; turn 2 queues BEHIND the blocked call...
@@ -744,11 +745,12 @@ describe('session model override — route change effect (spec §5.3)', () => {
     const setResult = await invokeAdvisor(handler, ' model set other other-model', session)
     expect(textOf(setResult)).toContain('Session model pinned: other/other-model')
 
-    // The late old-route call settles — its note must NEVER deliver.
+    // The late old-route call settles — its note must NEVER deliver (neither
+    // channel: no steer, no commit).
     adapter.release()
     await flush()
     expect(commit).not.toHaveBeenCalled()
-    expect(commit).toHaveBeenCalledTimes(0)
+    expect(steer).not.toHaveBeenCalled()
 
     // Turn 3: served by the NEW runtime on the NEW route, and the delta is
     // only turn 3 (re-seed — no replay of turn 2's dropped backlog).
@@ -758,7 +760,7 @@ describe('session model override — route change effect (spec §5.3)', () => {
     expect(deltaTextOf(adapter.requests[1]!)).toContain('u3')
     expect(deltaTextOf(adapter.requests[1]!)).not.toContain('u2-backlog')
     expect(deltaTextOf(adapter.requests[1]!)).not.toContain('u1')
-    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1))
   })
 })
 

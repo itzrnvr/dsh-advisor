@@ -65,7 +65,7 @@ beforeEach(() => {
 function entryConfig(overrides: Partial<AdvisorConfig> = {}): AdvisorConfig {
   return {
     systemPrompt: '',
-    immuneTurns: 3,
+    
     maxDeltaMessages: 60,
     ...overrides,
   }
@@ -129,7 +129,7 @@ async function waitCaptured(ctx: Context, gateway: AdvisorConfigGateway): Promis
 describe('no settings service (entry fallback)', () => {
   it('get returns the entry composed value; the gateway is a registered service', () => {
     const ctx = new Context()
-    const entry = entryConfig({ provider: 'deepseek', model: 'deepseek-chat', immuneTurns: 5 })
+    const entry = entryConfig({ provider: 'deepseek', model: 'deepseek-chat' })
     const gateway = new AdvisorConfigGateway(ctx, installAdvisorSettings(ctx, entry))
 
     expect(ctx.reflect.props['advisor']).toEqual({ type: 'service' })
@@ -142,7 +142,7 @@ describe('no settings service (entry fallback)', () => {
         provider: 'deepseek',
         model: 'deepseek-chat',
         systemPrompt: '',
-        immuneTurns: 5,
+        
         maxDeltaMessages: 60,
         callTimeoutMinutes: 10,
         proseFallback: false,
@@ -185,7 +185,7 @@ describe('no settings service (entry fallback)', () => {
 describe('with a settings service (set writes the entry config)', () => {
   it('set writes the entry config, the composed value changes live, and set returns it', async () => {
     const ctx = new Context()
-    const entry = new MemoryEntryConfig(entryConfig({ systemPrompt: 'entry prompt', immuneTurns: 5 }))
+    const entry = new MemoryEntryConfig(entryConfig({ systemPrompt: 'entry prompt' }))
     const bridge = installAdvisorSettings(ctx, entry.config)
     const gateway = new AdvisorConfigGateway(ctx, bridge)
     await provideSettingsDouble(ctx, entry)
@@ -202,7 +202,7 @@ describe('with a settings service (set writes the entry config)', () => {
       provider: 'deepseek',
       model: 'deepseek-chat',
       systemPrompt: 'entry prompt',
-      immuneTurns: 5,
+      
       maxDeltaMessages: 60,
       callTimeoutMinutes: 10,
       proseFallback: false,
@@ -233,7 +233,7 @@ describe('with a settings service (set writes the entry config)', () => {
 
   it('a patch changing only one key leaves the other entry values intact', async () => {
     const ctx = new Context()
-    const entry = new MemoryEntryConfig(entryConfig({ immuneTurns: 3, maxDeltaMessages: 60 }))
+    const entry = new MemoryEntryConfig(entryConfig({ maxDeltaMessages: 60 }))
     const bridge = installAdvisorSettings(ctx, entry.config)
     const gateway = new AdvisorConfigGateway(ctx, bridge)
     await provideSettingsDouble(ctx, entry)
@@ -244,7 +244,7 @@ describe('with a settings service (set writes the entry config)', () => {
       config: {
         enabled: false,
         systemPrompt: '',
-        immuneTurns: 3,
+        
         maxDeltaMessages: 10,
         callTimeoutMinutes: 10,
         proseFallback: false,
@@ -277,7 +277,7 @@ describe('with a settings service (set writes the entry config)', () => {
         provider: 'deepseek',
         model: 'deepseek-chat',
         systemPrompt: 'entry prompt',
-        immuneTurns: 3,
+        
         maxDeltaMessages: 10,
         callTimeoutMinutes: 10,
         proseFallback: false,
@@ -322,7 +322,7 @@ describe('with a settings service (set writes the entry config)', () => {
       provider: 'deepseek',
       model: 'deepseek-chat',
       systemPrompt: 'edited',
-      immuneTurns: 3,
+      
       maxDeltaMessages: 60,
       callTimeoutMinutes: 10,
       proseFallback: false,
@@ -410,7 +410,7 @@ describe('set validation (Config schema, unknown-key rejection unchanged)', () =
     await provideSettingsDouble(ctx, entry)
     await waitCaptured(ctx, gateway)
 
-    await expect(gateway.set({ immuneTurns: -1 } as never)).rejects.toThrow()
+    await expect(gateway.set({ maxDeltaMessages: -1 } as never)).rejects.toThrow()
   })
 })
 
@@ -529,7 +529,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     // its already-resolved volatile references.
     const entry = new MemoryEntryConfig(entryConfig({
       systemPrompt: 'entry prompt',
-      immuneTurns: 5,
+      
       ...(seedEntry as Partial<AdvisorConfig> | undefined),
     }))
     const bridge = installAdvisorSettings(ctx, entry.config)
@@ -571,7 +571,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
         config: {
           enabled: false,
           systemPrompt: 'entry prompt',
-          immuneTurns: 5,
+          
           maxDeltaMessages: 60,
           callTimeoutMinutes: 10,
           proseFallback: false,
@@ -594,7 +594,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
     expect(setResult.ok).toBe(true)
     if (setResult.ok) {
       expect(setResult.value).toMatchObject({
-        config: { enabled: true, provider: 'deepseek', model: 'deepseek-chat', immuneTurns: 5 },
+        config: { enabled: true, provider: 'deepseek', model: 'deepseek-chat' },
       })
     }
 
@@ -622,7 +622,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
   it('invokes directly through ctx.typertGateway (same strict descriptor path)', async () => {
     const { ctx } = await composeGatewayHarness()
     const result = await ctx.typertGateway.invoke({ namespace: 'advisor', method: 'get', args: {}, peer: ownerPeer(ctx) })
-    expect(result).toMatchObject({ config: { enabled: false, immuneTurns: 5 } })
+    expect(result).toMatchObject({ config: { enabled: false } })
   })
 
   it('a seeded unknown key never fails get: ok:true + disabled-with-reason carrying the message (M2 containment)', async () => {
@@ -639,7 +639,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
       expect(config.enabled).toBe(false)
       expect(config.disabledReason).toContain('unknown config key "bogus"')
       // S1: the readable raw source seeds the scalar latches (entry values).
-      expect(config.immuneTurns).toBe(5)
+      expect(config.maxDeltaMessages).toBe(60)
       expect(config.systemPrompt).toBe('entry prompt')
       // The offending config is not a usable provider/model pair — omitted.
       expect('provider' in config).toBe(false)
@@ -731,7 +731,7 @@ describe('typertGateway endpoint claims + payload contract', () => {
 
   it('the S1 containment fallback carries a raw-pinned proseFallback and omits it when the raw entry lacks it', async () => {
     // S1 mirrors the readable raw source's scalar latches (systemPrompt /
-    // immuneTurns / maxDeltaMessages style) — the issue-#102 key rides the
+    // maxDeltaMessages / systemPrompt style) — the issue-#102 key rides the
     // same path: present on the wire iff the raw entry pins it (the
     // resolver never ran, so no schema default fills it here).
     const seeded = await composeGatewayHarness({ bogus: 1, proseFallback: true } as Partial<AdvisorConfig>)
@@ -866,7 +866,7 @@ describe('composed plugin (apply wires the gateway)', () => {
     ctx.provide('sessions', {} as never)
     ctx.provide('agents', { get: () => undefined } as never)
     ctx.provide('llm', { stream: async () => {} } as never)
-    const entry = new MemoryEntryConfig(entryConfig({ systemPrompt: 'entry prompt', immuneTurns: 5 }))
+    const entry = new MemoryEntryConfig(entryConfig({ systemPrompt: 'entry prompt' }))
     await provideSettingsDouble(ctx, entry)
     await ctx.plugin(harnessAdvisorPlugin(), entry.config)
     await vi.waitFor(() => {
@@ -879,7 +879,7 @@ describe('composed plugin (apply wires the gateway)', () => {
     expect(before.config).toEqual({
       enabled: false,
       systemPrompt: 'entry prompt',
-      immuneTurns: 5,
+      
       maxDeltaMessages: 60,
       callTimeoutMinutes: 10,
       proseFallback: false,
@@ -913,7 +913,7 @@ describe('composed plugin (apply wires the gateway)', () => {
       provider: 'deepseek',
       model: 'deepseek-chat',
       systemPrompt: 'entry prompt',
-      immuneTurns: 5,
+      
       maxDeltaMessages: 60,
       callTimeoutMinutes: 10,
       proseFallback: false,

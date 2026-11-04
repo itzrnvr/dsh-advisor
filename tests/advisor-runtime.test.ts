@@ -1427,7 +1427,7 @@ describe('AdvisorRuntime — composed with a real LlmRuntime + registered adapte
     // No config-level switch anymore (2026-09-26 — the row toggle is the
     // switch): a pairless entry resolves to disabled-with-reason, and the
     // gate drops every delta before a call could start.
-    apply(ctx, { systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 })
+    apply(ctx, { systemPrompt: '', maxDeltaMessages: 60 })
 
     // A full stepped turn would otherwise render a delta and dispatch a call.
     const events = buildEvents(minimalTurn())

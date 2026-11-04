@@ -57,7 +57,7 @@ beforeEach(() => {
 function entryConfig(overrides: Partial<AdvisorConfig> = {}): AdvisorConfig {
   return {
     systemPrompt: '',
-    immuneTurns: 3,
+    
     maxDeltaMessages: 60,
     ...overrides,
   }
@@ -230,7 +230,7 @@ const effective = (overrides: Partial<ResolvedAdvisorConfig> = {}): ResolvedAdvi
   provider: 'deepseek',
   model: 'deepseek-chat',
   systemPrompt: '',
-  immuneTurns: 3,
+  
   maxDeltaMessages: 60,
   historyMaxTokens: 1_000_000,
   reviewEveryTurns: 1,

@@ -84,7 +84,7 @@ function baseStatus(overrides: Partial<AdvisorSessionStatus> = {}): AdvisorSessi
 function baseConfig(overrides: Partial<AdvisorComposedConfig> = {}): AdvisorComposedConfig {
   return {
     enabled: false,
-    immuneTurns: 3,
+    
     maxDeltaMessages: 60,
     defaultEnabled: true,
     systemPromptSet: false,
@@ -556,14 +556,16 @@ describe('advisorConfigText (the /advisor config surface, composed session-less 
       enabled: true,
       provider: 'openai',
       model: 'gpt-4o',
-      immuneTurns: 3,
+      
       maxDeltaMessages: 60,
       systemPromptSet: true,
       systemPromptSummary: 'You are a terse reviewer.',
     }))
     expect(text).toContain('Advisor config: enabled')
     expect(text).toContain('Model: openai/gpt-4o')
-    expect(text).toContain('immuneTurns: 3')
+    // The immuneTurns line is gone (2026-11-04: the cooldown died with the
+    // pre-step review gate; the renderer must not print a dead knob).
+    expect(text).not.toContain('immuneTurns')
     expect(text).toContain('maxDeltaMessages: 60')
     expect(text).toContain('systemPrompt: "You are a terse reviewer."')
     expect(text).toContain('Edit: ~/.dsh/profiles/<profile>/cordis.patch.yml (advisor plugin row)')
@@ -686,13 +688,13 @@ describe('advisorConfigText (the /advisor config surface, composed session-less 
 
   it('all other render lines are unchanged across both hint branches', () => {
     // The Edit hint is the ONLY line that differs between the branches — every
-    // other render line (switch, Model pair, immuneTurns, maxDeltaMessages
+    // other render line (switch, Model pair, maxDeltaMessages
     // incl. 0 → unbounded, systemPrompt default/summary, Reason) is identical.
     const full = {
       enabled: true,
       provider: 'openai',
       model: 'gpt-4o',
-      immuneTurns: 3,
+      
       maxDeltaMessages: 60,
       systemPromptSet: true,
       systemPromptSummary: 'You are a terse reviewer.',
@@ -705,7 +707,7 @@ describe('advisorConfigText (the /advisor config surface, composed session-less 
     const nonHint = dropHint(withoutTui)
     expect(nonHint).toContain('Advisor config: enabled')
     expect(nonHint).toContain('Model: openai/gpt-4o')
-    expect(nonHint).toContain('immuneTurns: 3')
+    expect(nonHint).not.toContain('immuneTurns')
     expect(nonHint).toContain('maxDeltaMessages: 60')
     expect(nonHint).toContain('systemPrompt: "You are a terse reviewer."')
   })
@@ -844,7 +846,7 @@ describe('apply wiring — /advisor config tuiSettingsAvailable reflects the tui
 
   /** Full plugin-row config shape for the apply wiring test. */
   function entryConfig(): AdvisorConfig {
-    return { provider: 'openai', model: 'gpt-4o', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 }
+    return { provider: 'openai', model: 'gpt-4o', systemPrompt: '', maxDeltaMessages: 60 }
   }
 
   /** Minimal apply()-shaped ctx that ACTIVATES the `commands` inject child

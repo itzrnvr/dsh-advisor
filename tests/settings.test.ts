@@ -30,7 +30,7 @@ import type { AdvisorConfig } from '../src/config'
 function entryConfig(overrides: Partial<AdvisorConfig> = {}): AdvisorConfig {
   return {
     systemPrompt: '',
-    immuneTurns: 3,
+    
     maxDeltaMessages: 60,
     ...overrides,
   }
@@ -51,7 +51,7 @@ function emitVolatileUpdate(ctx: Context, paths: string[][]): void {
 describe('plain-value entry (integration harness form, behavior identical to today)', () => {
   it('bridge.source() is exactly the entry config', () => {
     const ctx = new Context()
-    const entry = entryConfig({ provider: 'deepseek', model: 'deepseek-chat', immuneTurns: 5 })
+    const entry = entryConfig({ provider: 'deepseek', model: 'deepseek-chat' })
     const bridge = installAdvisorSettings(ctx, entry)
     expect(bridge.source()).toEqual(entry)
     // The source still passes through the hard gate — the SSOT is unchanged.
@@ -67,7 +67,7 @@ describe('plain-value entry (integration harness form, behavior identical to tod
       nextPrompt: true,
       defaultEnabled: true,
       systemPrompt: '',
-      immuneTurns: 5,
+      
       maxDeltaMessages: 60,
       callTimeoutMinutes: 10,
       historyMaxTokens: 1_000_000,
@@ -93,13 +93,13 @@ describe('plain-value entry (integration harness form, behavior identical to tod
 describe('volatile-reference entry (source() unwraps { get() } references)', () => {
   it('source() returns the plain-valued config behind the references', () => {
     const ctx = new Context()
-    const entry = new MemoryEntryConfig(entryConfig({ provider: 'deepseek', model: 'deepseek-chat', immuneTurns: 5 }))
+    const entry = new MemoryEntryConfig(entryConfig({ provider: 'deepseek', model: 'deepseek-chat' }))
     const bridge = installAdvisorSettings(ctx, entry.config)
     expect(bridge.source()).toEqual({
       provider: 'deepseek',
       model: 'deepseek-chat',
       systemPrompt: '',
-      immuneTurns: 5,
+      
       maxDeltaMessages: 60,
     })
     // The unwrapped snapshot passes the hard gate like any plain entry.
@@ -112,7 +112,7 @@ describe('volatile-reference entry (source() unwraps { get() } references)', () 
     const bridge = installAdvisorSettings(ctx, {
       provider: provider,
       systemPrompt: '',
-      immuneTurns: 3,
+      
       maxDeltaMessages: 60,
     })
     expect(bridge.source().provider).toBeUndefined()
@@ -128,7 +128,7 @@ describe('volatile-reference entry (source() unwraps { get() } references)', () 
 describe('loader/volatile-update commit (source reflects the write, onChange fires)', () => {
   it('after a commit the source returns the new value and every listener fired once', () => {
     const ctx = new Context()
-    const entry = new MemoryEntryConfig(entryConfig({ systemPrompt: 'entry prompt', immuneTurns: 5 }))
+    const entry = new MemoryEntryConfig(entryConfig({ systemPrompt: 'entry prompt' }))
     const bridge = installAdvisorSettings(ctx, entry.config)
     const listener = vi.fn()
     bridge.onChange(listener)
@@ -146,7 +146,7 @@ describe('loader/volatile-update commit (source reflects the write, onChange fir
       model: 'deepseek-chat',
       // entry values the patch did not touch are kept
       systemPrompt: 'entry prompt',
-      immuneTurns: 5,
+      
       maxDeltaMessages: 60,
     })
     // The composed value still passes the hard gate (enabled + pair → enabled).

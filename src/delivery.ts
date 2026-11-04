@@ -1,41 +1,40 @@
 /**
- * Delivery routing (spec §2 S3, §4 mapping row, §6 delivery semantics,
- * §8.4 KD-4) — the advice delivery channel into the primary agent.
+ * Delivery routing (spec §6, restructured 0.6.48) — the ONE rule for how an
+ * accepted advice note reaches the primary agent.
  *
  * One {@link AdvisorDelivery} exists per plugin load and owns:
  *
  * - **The KD-4 per-session agent map**: keyed by `agent.id` (=== `session.id`),
  *   maintained by `index.ts` on `agent/created` / `agent/disposed`, with a
- *   registry fallback (`ctx.agents.get(session.id)`, injected as
+ *   registry fallback (`ctx.agents.get(sessionId)`, injected as
  *   `lookupAgent`) that covers agents published before this plugin loaded.
  *   A missing agent at delivery time drops the note with a log — advisory
  *   only, never throw, never stall.
- * - **Severity routing (spec §6, revised)**: a note the reviewer wants to
- *   interrupt with (`wake`, or a concern/blocker by default) is STEERED —
- *   `agent.steer`, waking, consumed at the next step boundary. Every other
- *   note is COMMITTED DIRECTLY to the session log as a user message with
- *   this plugin's producer kind (`session.append('user/message', …)` with
- *   `surfaceOp: 'append'`).
+ * - **The hold flag (pre-step review gate, `index.ts`)**: while a session's
+ *   gate is HOLDING the primary loop (waiting for the review of the steps that
+ *   just completed), the extracted note is COMMITTED directly to the session
+ *   log — `session.append('user/message', …, { surfaceOp: 'append' })`. The
+ *   host derives every step request from the session surface
+ *   (`buildRequest` → `session.deriveMessages()`), so a note committed during
+ *   the hold is part of the very next step's model call — it cannot miss it.
+ *   (A steer during the hold WOULD miss it: the loop claims the inbox BEFORE
+ *   the pre-step waterfall runs, so a steer inserted during the hold is only
+ *   consumed at the FOLLOWING boundary.)
+ * - **Everything else STEERS**: outside a hold every note is steered —
+ *   `agent.steer`, which inserts into the durable next-step inbox and WAKES an
+ *   idle agent (the host's `send(…, true)` semantics; `inject` does not wake
+ *   and was retired with the 0.6.48 gate because an idle agent never claims
+ *   what nobody wakes it for). A steered message is committed to the log by
+ *   the loop itself when the next step claims it, so the durable shape is
+ *   byte-identical to the commit arm: the notes read path (src/seed.ts)
+ *   derives every view from exactly these committed `user/message` events.
  *
- *   Why direct commit instead of the old `agent.inject`: the host commits an
- *   inbox message as a `user/message` event only when a running step CLAIMS
- *   it (dsh-agent-loop `step()`), and `inject` does not wake the driver — so
- *   a note delivered while the agent is idle sat in the inbox forever:
- *   invisible in the chat flow, absent from the session log, unrecoverable
- *   after a reload, and the model never saw it unless the user happened to
- *   prompt again. A direct append is durable immediately, visible in the
- *   chat flow immediately, and joins the model's NEXT request through the
- *   request's surface derivation (`buildRequest` → `session.deriveMessages`)
- *   — the same seam the loop itself uses. Both channels commit the same
- *   message shape; never both for one note (the loop commits every claimed
- *   inbox message, so a commit + a steer of the same note would
- *   double-deliver).
- * - **The immuneTurns cooldown (spec §6)**: after a concern/blocker is actually
- *   steered, the next `immuneTurns` stepped primary turns must complete before
- *   another interrupting note may steer; interrupting notes inside the window
- *   are downgraded to a direct commit. The fence arms only on a real steer; the
- *   observer's `onSteppedTurnEnd` / `onRewrite` hooks (T3 wiring) drive the
- *   countdown and the KD-5 reset.
+ * The old severity routing (nit → passive commit, concern/blocker → waking
+ * steer), the reviewer's `wake` override, and the `immuneTurns` interrupt
+ * cooldown are REMOVED (2026-11-04 user ruling: "all the notes are steer
+ * immediately, remove other options"). The inter-note pacing now comes from
+ * the gate itself — a review only runs after N completed steps and the loop
+ * waits for it, so notes are separated by real agent work by construction.
  *
  * Message shape (spec §6): a user-role message via `createUserMessage` whose
  * source is this plugin's own producer kind (`kind: 'advisor'`, pinned to the
@@ -43,10 +42,7 @@
  * `[advisor:{severity}] {note}` — the only cue the primary model gets about
  * how to treat it ("weigh, don't blindly obey" spirit). The kind is claimed by
  * declaration-merging `MessageSourceMap` in dsh-llm, and the V3→V4 format edge
- * preserves direct source kinds, so this identity is cross-generation-safe —
- * the property the retired `plugin` arm used to be borrowed for. The notes
- * read path (src/seed.ts) derives what the advisor said from exactly these
- * committed events.
+ * preserves direct source kinds, so this identity is cross-generation-safe.
  *
  * Delivery is synchronous and fire-and-forget; the runtime path (T4 F1) is
  * what contains a throwing `steer`/`append` — this module lets agent-method
@@ -58,12 +54,14 @@
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { AdvisorSource } from './kinds.js'
-import type { AdviceNote, AdviceSeverity } from './advisor-runtime.js'
+import type { AdviceNote } from './advisor-runtime.js'
 
 /**
- * The channel one accepted note is delivered on (spec §6, revised):
- * `commit` — appended directly to the session log (non-waking, durable,
- * visible immediately); `steer` — waking, consumed at the next step boundary.
+ * The channel one accepted note was delivered on (post-gate rule):
+ * `commit` — appended directly to the session log DURING the pre-step gate
+ * hold, so it joins the held step's own model request; `steer` — the default
+ * waking delivery, consumed at the next step boundary (or the first step of
+ * the turn it wakes).
  */
 export type DeliveryChannel = 'commit' | 'steer'
 
@@ -81,7 +79,7 @@ export interface AdvisorDeliverySession {
 export interface AdvisorDeliveryAgent {
   /** `Agent.id` — equals the session id by construction (KD-4). */
   readonly id: string
-  /** The agent's live session — the direct-commit target (see module doc). */
+  /** The agent's live session — the gate-hold commit target (see module doc). */
   readonly session: AdvisorDeliverySession
   /** Waking: submit steering for the nearest step (spec §6). */
   steer(message: UserMessage): void
@@ -95,8 +93,6 @@ export interface AdvisorDeliveryLogger {
 
 /** Options for one {@link AdvisorDelivery}. */
 export interface AdvisorDeliveryOptions {
-  /** immuneTurns cooldown length (config, default 3, ≥ 0). */
-  readonly immuneTurns: number
   /**
    * KD-4 registry fallback (`ctx.agents.get(sessionId)`) — resolves agents
    * published before this plugin loaded, whose `agent/created` was never
@@ -139,30 +135,25 @@ export function buildAdvisorMessage(note: AdviceNote): UserMessage {
   })
 }
 
-/** True when a note interrupts the primary (concern/blocker — spec §6). */
-function isInterrupting(severity: AdviceSeverity): boolean {
-  return severity === 'concern' || severity === 'blocker'
-}
-
 /**
- * Per-plugin delivery router: severity → channel, the KD-4 agent map, and the
- * immuneTurns cooldown. Cordis-free, so the routing logic is unit-testable.
+ * Per-plugin delivery router: the KD-4 agent map and the hold flag.
+ * Cordis-free, so the routing logic is unit-testable.
  */
 export class AdvisorDelivery {
-  private immuneTurns: number
   private readonly lookupAgent: (sessionId: string) => AdvisorDeliveryAgent | undefined
   private readonly logger: AdvisorDeliveryLogger
   /** KD-4 per-session agent map, keyed by `agent.id` (=== session.id). */
   private readonly agents = new Map<string, AdvisorDeliveryAgent>()
   /**
-   * immuneTurns latch: remaining stepped primary turns before an interrupting
-   * note may steer again (spec §6). A present entry > 0 means armed; the entry
-   * is removed when the countdown exhausts.
+   * Sessions whose pre-step review gate is currently HOLDING the primary loop
+   * (`index.ts` brackets `runtime.waitQuiet` with hold/release). Notes for a
+   * held session commit to the session log during the hold — the only way
+   * they join the held step's own request (an inbox steer would be claimed a
+   * step too late, because the loop claims before the pre-step waterfall).
    */
-  private readonly cooldown = new Map<string, number>()
+  private readonly holding = new Set<string>()
 
-  constructor(options: AdvisorDeliveryOptions) {
-    this.immuneTurns = options.immuneTurns
+  constructor(options: AdvisorDeliveryOptions = {}) {
     this.lookupAgent = options.lookupAgent ?? (() => undefined)
     this.logger = options.logger ?? console
   }
@@ -172,54 +163,35 @@ export class AdvisorDelivery {
     this.agents.set(agent.id, agent)
   }
 
-  /** KD-4: drop an agent — and its cooldown with the session — on `agent/disposed`. */
+  /** KD-4: drop an agent — and its hold flag with the session — on dispose. */
   unregisterAgent(sessionId: string): void {
     this.agents.delete(sessionId)
-    this.cooldown.delete(sessionId)
+    this.holding.delete(sessionId)
+  }
+
+  /** Gate wiring: notes for this session now commit during the hold. */
+  hold(sessionId: string): void {
+    this.holding.add(sessionId)
+  }
+
+  /** Gate wiring: the hold ended — later notes steer again. Total. */
+  release(sessionId: string): void {
+    this.holding.delete(sessionId)
+  }
+
+  /** True while one gate hold is open for the session (tests/diagnostics). */
+  isHeld(sessionId: string): boolean {
+    return this.holding.has(sessionId)
   }
 
   /**
-   * Update the immuneTurns cooldown length (live config — settings onChange,
-   * plan dsh-advisor-settings-n2 T1). The fence is re-armed with the new
-   * length on the next real steer; the per-session cooldown countdown itself
-   * is untouched, so the delivery semantics (spec §6) never change mid-window.
-   */
-  setImmuneTurns(value: number): void {
-    this.immuneTurns = value
-  }
-
-  /**
-   * One completed stepped primary turn (observer `onSteppedTurnEnd`): decrement
-   * the immuneTurns countdown. The latch is removed at zero, so the next
-   * interrupting note steers again. Total — never throws.
-   */
-  onSteppedTurnEnd(sessionId: string): void {
-    const remaining = this.cooldown.get(sessionId)
-    if (remaining === undefined || remaining <= 0) return
-    if (remaining <= 1) this.cooldown.delete(sessionId)
-    else this.cooldown.set(sessionId, remaining - 1)
-  }
-
-  /**
-   * KD-5 reset trigger: a compaction / surface rewrite clears the immuneTurns
-   * latch — the session state is being rewritten, so the cooldown's turn-count
-   * basis no longer applies. Total — never throws.
-   */
-  reset(sessionId: string): void {
-    this.cooldown.delete(sessionId)
-  }
-
-  /**
-   * Route one accepted advice note (spec §6, KD-4).
+   * Route one accepted advice note (the post-gate ONE rule, KD-4).
    *
    * Resolves the primary agent via the map, falling back to the registry; a
    * missing agent drops the note with a log (advisory only — never throw,
-   * never stall). The reviewer decides the channel via `wake` (fork addition):
-   * `wake: true` (or a concern/blocker severity by default) STEERS — a waking
-   * delivery consumed at the next step boundary; anything else is COMMITTED
-   * DIRECTLY to the session log (durable, visible, model-visible next
-   * request). A steer is downgraded to a commit while the immuneTurns fence
-   * is armed.
+   * never stall). While the session's gate holds the loop, the note is
+   * COMMITTED to the session log (it joins the held step's model request);
+   * every other note STEERS (waking, consumed at the next step boundary).
    *
    * @returns the channel delivered on, or `undefined` when dropped (no agent).
    */
@@ -233,24 +205,18 @@ export class AdvisorDelivery {
       return undefined
     }
     const message = buildAdvisorMessage(note)
-    const cooldown = this.cooldown.get(sessionId) ?? 0
-    // Fork addition: the reviewer model decides whether to wake the primary
-    // (`wake`); severity is the default when the model omits it.
-    const wake = note.wake ?? isInterrupting(note.severity)
-    if (wake && cooldown <= 0) {
-      // A real steer delivery arms the fence (spec §6). Armed before the call:
-      // a failed steer delivery still counts as an attempted interrupt, keeping
-      // a throwing agent out of the noise loop — and a downgraded or dropped
-      // note never reaches this branch, so the fence never arms on one.
-      if (this.immuneTurns > 0) this.cooldown.set(sessionId, this.immuneTurns)
-      agent.steer(message)
-      return 'steer'
+    if (this.holding.has(sessionId)) {
+      // Gate-hold commit: durable immediately, visible in the chat flow at
+      // the step boundary it gates, and part of that very step's request
+      // (`buildRequest` derives from the session surface AFTER the pre-step
+      // waterfall resolves). src/seed.ts derives the notes views from this
+      // exact event shape.
+      agent.session.append('user/message', message, { surfaceOp: 'append' })
+      return 'commit'
     }
-    // Non-waking (nit, wake:false, or a steer downgraded by the cooldown):
-    // commit directly to the session log. Durable immediately, visible in
-    // the chat flow immediately, part of the model's next request — and the
-    // exact event shape src/seed.ts derives the notes views from.
-    agent.session.append('user/message', message, { surfaceOp: 'append' })
-    return 'commit'
+    // Default: steer (wake if idle, consume at the next step boundary). The
+    // loop commits the claimed message itself as the same user/message shape.
+    agent.steer(message)
+    return 'steer'
   }
 }

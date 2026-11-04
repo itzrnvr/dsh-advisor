@@ -11,7 +11,7 @@
  * volatile references, and every edit is driven the way the Loader drives it
  * — write the references, then emit `loader/volatile-update` — so the full
  * wiring — volatile commit → bridge source → `onChange` → re-apply
- * (setImmuneTurns / setMaxDeltaMessages / dispose+ensure
+ * (setMaxDeltaMessages / setReviewCadence / dispose+ensure
  * per-session runtimes) — is exercised end to end. `commit` writes the values
  * BEFORE emitting, so the synchronous re-apply has settled when the call
  * returns — that is the settle point for every write below.
@@ -19,10 +19,6 @@
  * The delivery / observer / runtime instances live in `apply()`'s closure, so
  * every probe here is BEHAVIORAL (observable through the composed loop), not a
  * getter:
- * - immuneTurns = 7: after a real steer arms the fence, six more completed
- *   stepped turns are all downgraded to inject and only the seventh steers
- *   again (the default of 3 would already re-steer on the third) — the
- *   delivery cooldown demonstrably uses the NEW length.
  * - provider / model / systemPrompt: the rebuilt runtime's `GenerateOptions`
  *   (recorded by the stub adapter) carry the NEW values.
  * - runtime rebuilt: the pre-edit call went out as `stub`/`stub-model` with
@@ -164,7 +160,7 @@ interface AdapterProbe {
 function fullConfig(overrides: Partial<AdvisorConfig> = {}): AdvisorConfig {
   return {
     systemPrompt: '',
-    immuneTurns: 3,
+    
     maxDeltaMessages: 60,
     // These tests exercise the settings plane, not the next-prompt
     // prediction: silence the extra prediction model call (schema default
@@ -347,20 +343,16 @@ async function registerCommands(ctx: Context): Promise<CommandDefinition['handle
 }
 
 // ---------------------------------------------------------------------------
-// 1. Live re-apply: immuneTurns + provider/model/systemPrompt + runtime rebuild
+// 1. Live re-apply: provider/model/systemPrompt + runtime rebuild
 // ---------------------------------------------------------------------------
 
 describe('settings live re-apply — latched config + runtime rebuild (Important-1)', () => {
-  it('re-applies immuneTurns and rebuilds the session runtime with the edited provider/model/systemPrompt', async () => {
+  it('rebuilds the session runtime with the edited provider/model/systemPrompt', async () => {
     const { ctx, adapter, entry } = await composeLiveHarness(
       { provider: 'stub', model: 'stub-model' },
       [
         [...textReply('{"note":"pre write nit","severity":"nit"}')],
-        // Eight distinct concern replies: one steer (arms the fence) + six
-        // downgraded-to-inject turns + one final steer (the fence exhausted).
-        ...Array.from({ length: 8 }, (_, i) => [
-          ...textReply(`{"note":"interrupt ${i}","severity":"concern"}`),
-        ]),
+        [...textReply('{"note":"after edit","severity":"concern"}')],
       ],
     )
     const { agent, steer, commit } = makeFakeAgent('s1')
@@ -368,9 +360,11 @@ describe('settings live re-apply — latched config + runtime rebuild (Important
     const { session, log } = makeSession('s1')
 
     // Pre-edit: the session runtime exists and calls go out with the ENTRY
-    // route (stub / stub-model / the entry system prompt).
+    // route (stub / stub-model / the entry system prompt). The nit STEERS —
+    // 0.6.48 one rule, nothing is held in this agentic-free feed path.
     feed(ctx, session, log, simpleTurn(1, 'first request', 'first reply'))
-    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1))
+    expect(commit).not.toHaveBeenCalled()
     expect(adapter.requests).toHaveLength(1)
     expect(adapter.requests[0]!.provider).toBe('stub')
     expect(adapter.requests[0]!.model).toBe('stub-model')
@@ -378,46 +372,25 @@ describe('settings live re-apply — latched config + runtime rebuild (Important
     expect(adapter.requests[0]!.system).toBe(DEFAULT_ADVISOR_SYSTEM_PROMPT)
 
     // Committed volatile edit: values written, then `loader/volatile-update`
-    // — the synchronous onChange re-apply (setImmuneTurns(7) /
-    // setMaxDeltaMessages(20) / dispose + ensure for
-    // every live session runtime) has fully run when this call returns.
+    // — the synchronous onChange re-apply (setMaxDeltaMessages(20) /
+    // dispose + ensure for every live session runtime) has fully run when
+    // this call returns.
     entry.commit(ctx, {
       provider: 'other',
       model: 'other-model',
-      immuneTurns: 7,
       maxDeltaMessages: 20,
       systemPrompt: 'custom',
     })
 
     // The next turn is drained by a REBUILT runtime with the NEW route — a
-    // stale runtime would still call with 'stub'/'stub-model'/''. The concern
-    // steers, arming the fence with the NEW length (7).
+    // stale runtime would still call with 'stub'/'stub-model'/''. The second
+    // concern steers too: no cooldown ever arms (the fence is gone).
     feed(ctx, session, log, simpleTurn(2, 'second request', 'second reply'))
-    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(2))
     expect(adapter.requests).toHaveLength(2)
     expect(adapter.requests[1]!.provider).toBe('other')
     expect(adapter.requests[1]!.model).toBe('other-model')
     expect(adapter.requests[1]!.system).toBe('custom')
-
-    // immuneTurns = 7 in effect: after the steer, SIX more completed stepped
-    // turns all downgrade to inject and the fence is still armed. (With the
-    // default of 3 the third such turn would already steer again — this is
-    // the observable that pins the length to the edited value.)
-    for (let index = 0; index < 6; index++) {
-      const turn = 3 + index
-      feed(ctx, session, log, simpleTurn(turn, `turn ${turn} request`, `turn ${turn} reply`))
-      await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(2 + index))
-      expect(steer).toHaveBeenCalledTimes(1)
-    }
-    // 1 pre-edit nit + 6 downgraded concerns = 7 injects; still exactly one steer.
-    expect(commit).toHaveBeenCalledTimes(7)
-    expect(steer).toHaveBeenCalledTimes(1)
-
-    // The seventh completed turn exhausts the 7-turn cooldown → steering resumes.
-    feed(ctx, session, log, simpleTurn(9, 'ninth request', 'ninth reply'))
-    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(2))
-    expect(commit).toHaveBeenCalledTimes(7)
-    expect(adapter.requests).toHaveLength(9)
   })
 })
 
@@ -506,12 +479,14 @@ describe('settings live re-apply — hard gate through the live source (Importan
 })
 
 // ---------------------------------------------------------------------------
-// 4. Conditional runtime rebuild (qc3 W-1 / qc1 W-2): an immuneTurns-only edit
-//    must NOT rebuild live runtimes; a systemPrompt edit MUST.
+// 4. Conditional runtime rebuild (qc3 W-1 / qc1 W-2): a maxDeltaMessages-only
+//    (observer-latch) edit must NOT rebuild live runtimes; a systemPrompt
+//    edit MUST. (Pre-0.6.48 this pin rode the immuneTurns latch — the
+//    cooldown is gone, the latch class is unchanged.)
 // ---------------------------------------------------------------------------
 
 describe('settings live re-apply — conditional runtime rebuild (qc3 W-1 / qc1 W-2)', () => {
-  it('an immuneTurns-only edit does not rebuild the runtime: the pending backlog and the emission guard survive', async () => {
+  it('an observer-latch-only edit does not rebuild the runtime: the pending backlog and the emission guard survive', async () => {
     // One note text for both calls: the emission guard dedupes the repeat —
     // a rebuilt runtime would carry a fresh guard and deliver it again.
     const note = '{"note":"same note","severity":"nit"}'
@@ -534,19 +509,20 @@ describe('settings live re-apply — conditional runtime rebuild (qc3 W-1 / qc1 
     feed(ctx, session, log, simpleTurn(2, 'second request', 'second reply'))
     await flush()
 
-    // An immuneTurns-only settings edit: the latch updates in place and the
-    // runtime MUST NOT be torn down (no abort of the in-flight call, no
+    // A maxDeltaMessages-only settings edit: the latch updates in place and
+    // the runtime MUST NOT be torn down (no abort of the in-flight call, no
     // backlog drop, no emission-guard reset).
-    entry.commit(ctx, { immuneTurns: 7 })
+    entry.commit(ctx, { maxDeltaMessages: 7 })
 
     // Release the in-flight call: BOTH deltas drain through the SAME runtime
     // — a rebuild would have dropped the queued delta (requests stays 1).
     gated.release()
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(2))
     // The duplicate note is suppressed by the SURVIVING guard — a rebuilt
-    // runtime would accept it again (inject would be 2).
-    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
-    expect(steer).not.toHaveBeenCalled()
+    // runtime would accept it again (steer would be 2 — nits steer since
+    // 0.6.48, nothing is held in this feed path).
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1))
+    expect(commit).not.toHaveBeenCalled()
   })
 
   it('a systemPrompt-only edit rebuilds the runtime: the next call carries the new prompt', async () => {
@@ -557,7 +533,7 @@ describe('settings live re-apply — conditional runtime rebuild (qc3 W-1 / qc1 
         [...textReply('{"note":"after edit","severity":"nit"}')],
       ],
     )
-    const { agent, commit } = makeFakeAgent('s1')
+    const { agent, steer } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
@@ -572,7 +548,8 @@ describe('settings live re-apply — conditional runtime rebuild (qc3 W-1 / qc1 
     feed(ctx, session, log, simpleTurn(2, 'second request', 'second reply'))
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(2))
     expect(adapter.requests[1]!.system).toBe('custom')
-    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(2))
+    // Both nits delivered via STEER (0.6.48 one rule, nothing held here).
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(2))
   })
 })
 
@@ -612,15 +589,15 @@ describe('settings live — idempotent /advisor on (GitHub issue #124 review)', 
 
     gated.release()
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(2))
-    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
-    expect(steer).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1))
+    expect(commit).not.toHaveBeenCalled()
   })
 })
 
 // ---------------------------------------------------------------------------
 // 4b. KD-I4 (issue #102): the global proseFallback runtime construction
 //     constant joins the runtime signature — an edit rebuilds the runtime
-//     through the existing volatile-update path (the immuneTurns-only
+//     through the existing volatile-update path (the observer-latch-only
 //     in-place latch path is pinned by the case above and must keep passing).
 //     (The former maxTokens member is gone with the 2026-10-18 budget ruling;
 //     a stale stored maxTokens line is tolerated and dropped by the resolver.)
@@ -634,14 +611,14 @@ describe('settings live re-apply — proseFallback rebuild (KD-I4, issue #102)',
         [...textReply('{"note":"legacy budget ignored","severity":"nit"}')],
       ],
     )
-    const { agent, commit } = makeFakeAgent('s1')
+    const { agent, steer } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
     feed(ctx, session, log, simpleTurn(1, 'first request', 'first reply'))
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(1))
     expect('maxTokens' in adapter.requests[0]!).toBe(false)
-    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1))
   })
 
   it('a proseFallback edit rebuilds the runtime: prose replies start producing notes', async () => {
@@ -652,7 +629,7 @@ describe('settings live re-apply — proseFallback rebuild (KD-I4, issue #102)',
         [...textReply('another plain prose reply after enabling the fallback')],
       ],
     )
-    const { agent, commit } = makeFakeAgent('s1')
+    const { agent, commit, steer } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
@@ -662,15 +639,17 @@ describe('settings live re-apply — proseFallback rebuild (KD-I4, issue #102)',
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(1))
     await flush()
     expect(commit).not.toHaveBeenCalled()
+    expect(steer).not.toHaveBeenCalled()
 
     // Enabling proseFallback is runtime-affecting (KD-I4): the rebuilt runtime
     // carries the flag, so the next prose reply becomes a nit note through the
-    // normal guard/delivery pipeline.
+    // normal guard/delivery pipeline — delivered via STEER (unheld, 0.6.48).
     entry.commit(ctx, { proseFallback: true })
 
     feed(ctx, session, log, simpleTurn(2, 'second request', 'second reply'))
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(2))
-    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1))
+    expect(commit).not.toHaveBeenCalled()
   })
 })
 
@@ -801,7 +780,7 @@ describe('settings live re-apply — a committed pair unblocks the gate', () => 
       {}, // pairless entry: gate-blocked at load
       [[...textReply('{"note":"boot nit","severity":"nit"}')]],
     )
-    const { agent, commit } = makeFakeAgent('s1')
+    const { agent, steer } = makeFakeAgent('s1')
     ctx.emit('agent/created', { agent, source: 'startup' })
     const { session, log } = makeSession('s1')
 
@@ -813,7 +792,7 @@ describe('settings live re-apply — a committed pair unblocks the gate', () => 
     await vi.waitFor(() => expect(adapter.requests).toHaveLength(1))
     expect(adapter.requests[0]!.provider).toBe('stub')
     expect(adapter.requests[0]!.model).toBe('stub-model')
-    await vi.waitFor(() => expect(commit).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1))
   })
 })
 
@@ -1025,10 +1004,10 @@ describe('/advisor config — session-less composed readback (T2)', () => {
     // The exact qc2 W-1 scenario already pinned for /advisor status — now on
     // the config readback: the user layer gains an unknown key the resolver
     // rejects, but the raw source is still readable, so the fallback must
-    // seed immuneTurns/maxDeltaMessages/systemPrompt from it (web-card
+    // seed maxDeltaMessages/systemPrompt from it (web-card
     // readConfig S1 parity) instead of the hardcoded 3/60/'' defaults.
     const { ctx, entry } = await composeLiveHarness(
-      { provider: 'stub', model: 'stub-model', immuneTurns: 5, maxDeltaMessages: 20, systemPrompt: 'keep me' },
+      { provider: 'stub', model: 'stub-model', maxDeltaMessages: 20, systemPrompt: 'keep me' },
       [],
     )
     const handler = await registerCommands(ctx)
@@ -1042,7 +1021,6 @@ describe('/advisor config — session-less composed readback (T2)', () => {
       expect(result.text).toContain('Advisor config: disabled')
       expect(result.text).toContain('unknown config key "bogus"')
       // Seeded from the readable raw source — NOT the hardcoded defaults.
-      expect(result.text).toContain('immuneTurns: 5')
       expect(result.text).toContain('maxDeltaMessages: 20')
       expect(result.text).toContain('systemPrompt: "keep me"')
     }

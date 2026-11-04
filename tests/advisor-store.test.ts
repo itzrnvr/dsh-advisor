@@ -83,7 +83,7 @@ function failResult(message: string): RpcResult<unknown> {
 
 /** The wire config the gateway returns when nothing is configured. */
 function defaultConfig(): AdvisorConfigView {
-  return { enabled: false, systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 }
+  return { enabled: false, systemPrompt: '', maxDeltaMessages: 60 }
 }
 
 const DEEPSEEK: LlmConfigurableProvider = {
@@ -260,7 +260,7 @@ describe('providers join (KD-S2 configured determination)', () => {
 
   it('seeds the draft from the resolved advisor config on first load', async () => {
     const { remote, rpc } = scriptedApi({
-      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -268,7 +268,7 @@ describe('providers join (KD-S2 configured determination)', () => {
       provider: 'deepseek-official',
       model: 'ds-a',
       systemPrompt: '',
-      immuneTurns: 3,
+
       maxDeltaMessages: 60,
       callTimeoutMinutes: 10, historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3, mainSessionOnly: true,
       proseFallback: false,
@@ -283,14 +283,13 @@ describe('providers join (KD-S2 configured determination)', () => {
     // effective values so the fields never lie about what runs. The wire
     // `enabled` stays a read-only fact (the draft cannot write it).
     const { remote, rpc } = scriptedApi({
-      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20 },
+      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: 'entry', maxDeltaMessages: 20 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
     expect(draftOf(store).provider).toBe('deepseek-official')
     expect(draftOf(store).model).toBe('ds-a')
     expect(draftOf(store).systemPrompt).toBe('entry')
-    expect(draftOf(store).immuneTurns).toBe(7)
     expect(draftOf(store).maxDeltaMessages).toBe(20)
   })
 
@@ -298,7 +297,7 @@ describe('providers join (KD-S2 configured determination)', () => {
     // The wire omits absent keys (never present-as-undefined): the seed must
     // read them as missing, not invent defaults that would trip the gate.
     const { remote, rpc } = scriptedApi({
-      config: { enabled: false, systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: false, systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -432,7 +431,7 @@ describe('apply gate (KD-S4 — the pair is required, unconditionally)', () => {
     await store.load()
     store.setProvider('deepseek-official')
     store.setModel('ds-a')
-    store.setImmuneTurns(5)
+    store.setMaxDeltaMessages(5)
     await store.apply()
     expect(set).toHaveBeenCalledTimes(1)
     const { applyState } = store.store.getSnapshot()
@@ -443,7 +442,7 @@ describe('apply gate (KD-S4 — the pair is required, unconditionally)', () => {
 describe('apply patch + seed (gateway channel semantics)', () => {
   it('writes only the changed keys as a patch against the last-read config', async () => {
     const { remote, rpc, call } = scriptedApi({
-      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -461,7 +460,7 @@ describe('apply patch + seed (gateway channel semantics)', () => {
     // write: clearing the provider marks the form dirty (a save would be
     // needed) and the apply is refused until the pair is complete again.
     const { remote, rpc, set } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -482,7 +481,7 @@ describe('apply patch + seed (gateway channel semantics)', () => {
     // returns the stored value, the seed no longer differs, and the second
     // patch carries only the new key.
     const { remote, rpc, call } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: 'entry', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: 'entry', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -491,13 +490,13 @@ describe('apply patch + seed (gateway channel semantics)', () => {
     let payload = call.mock.calls.find(callArgs => callArgs[1] === 'advisor/set')?.[2] as { args: { patch: Record<string, unknown> } }
     expect(payload.args.patch.systemPrompt).toBe('edited')
 
-    // Apply 2 with a different edit (immuneTurns) carries no systemPrompt
+    // Apply 2 with a different edit (maxDeltaMessages) carries no systemPrompt
     // key: nothing differs anymore, so nothing is re-written.
-    store.setImmuneTurns(9)
+    store.setMaxDeltaMessages(9)
     await store.apply()
     const setCalls = call.mock.calls.filter(callArgs => callArgs[1] === 'advisor/set')
     payload = setCalls[1]?.[2] as { args: { patch: Record<string, unknown> } }
-    expect(payload.args.patch).toEqual({ immuneTurns: 9 })
+    expect(payload.args.patch).toEqual({ maxDeltaMessages: 9 })
   })
 
   it('a cleared provider nothing pins stays clean (nothing stored → no op) and the gate still refuses the apply', async () => {
@@ -521,11 +520,11 @@ describe('apply patch + seed (gateway channel semantics)', () => {
 
   it('omits a cleared number field from the patch (empty input = leave unchanged)', async () => {
     const { remote, rpc, call } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 5, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
-    store.setImmuneTurns(undefined)
+    store.setMaxDeltaMessages(undefined)
     store.setSystemPrompt('edited')
     await store.apply()
     const payload = call.mock.calls.find(callArgs => callArgs[1] === 'advisor/set')?.[2] as { args: { patch: Record<string, unknown> } }
@@ -534,7 +533,7 @@ describe('apply patch + seed (gateway channel semantics)', () => {
 
   it('reports saved without a gateway call when the patch is empty', async () => {
     const { remote, rpc, set } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -548,7 +547,7 @@ describe('apply patch + seed (gateway channel semantics)', () => {
 
   it('adopts the returned config as the new seed after a successful apply', async () => {
     const { remote, rpc, call } = scriptedApi({
-      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -612,7 +611,7 @@ describe('apply patch + seed (gateway channel semantics)', () => {
 describe('proseFallback draft field (issue #102 settings sync)', () => {
   it('seeds the field from the resolved config (KD-I2)', async () => {
     const { remote, rpc } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, proseFallback: true },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60, proseFallback: true },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -655,7 +654,7 @@ describe('proseFallback draft field (issue #102 settings sync)', () => {
 
   it('writes an edited proseFallback key through the always list', async () => {
     const { remote, rpc, call } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, proseFallback: false },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60, proseFallback: false },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -669,7 +668,7 @@ describe('proseFallback draft field (issue #102 settings sync)', () => {
     // The always list diffs the key on EVERY apply: an untouched key equals
     // the seed and stays out of the patch (the minimal-patch contract holds).
     const { remote, rpc, call } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, proseFallback: true },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60, proseFallback: true },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -686,7 +685,7 @@ describe('nextPrompt draft field (plan dsh-advisor-next-prompt-n12, task 3)', ()
     // — the resolved wire carries the boolean, and a containment fallback
     // that omitted the key still reads the default (never undefined).
     const absent = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const absentStore = new AdvisorSettingsStore(absent.remote, absent.rpc, schema)
     await absentStore.load()
@@ -694,7 +693,7 @@ describe('nextPrompt draft field (plan dsh-advisor-next-prompt-n12, task 3)', ()
     expect(absentStore.store.getSnapshot().dirty).toBe(false)
 
     const explicit = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, nextPrompt: false },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60, nextPrompt: false },
     })
     const explicitStore = new AdvisorSettingsStore(explicit.remote, explicit.rpc, schema)
     await explicitStore.load()
@@ -717,7 +716,7 @@ describe('nextPrompt draft field (plan dsh-advisor-next-prompt-n12, task 3)', ()
 
   it('writes an edited nextPrompt key through the always list', async () => {
     const { remote, rpc, call } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, nextPrompt: true },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60, nextPrompt: true },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -729,7 +728,7 @@ describe('nextPrompt draft field (plan dsh-advisor-next-prompt-n12, task 3)', ()
 
   it('keeps an untouched nextPrompt out of a partial apply (no churn)', async () => {
     const { remote, rpc, call } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, nextPrompt: true },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60, nextPrompt: true },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -744,7 +743,7 @@ describe('nextPrompt draft field (plan dsh-advisor-next-prompt-n12, task 3)', ()
     // (the host contract): the stored false survives save → reload, and the
     // reloaded draft stays clean against the new seed.
     const { remote, rpc, call } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -763,7 +762,7 @@ describe('defaultEnabled draft field (GitHub issue #124)', () => {
     // default true); a containment wire that omitted the key still seeds the
     // default rather than inventing the opt-in behavior.
     const absent = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const absentStore = new AdvisorSettingsStore(absent.remote, absent.rpc, schema)
     await absentStore.load()
@@ -771,7 +770,7 @@ describe('defaultEnabled draft field (GitHub issue #124)', () => {
     expect(absentStore.store.getSnapshot().dirty).toBe(false)
 
     const explicit = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, defaultEnabled: false },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60, defaultEnabled: false },
     })
     const explicitStore = new AdvisorSettingsStore(explicit.remote, explicit.rpc, schema)
     await explicitStore.load()
@@ -794,7 +793,7 @@ describe('defaultEnabled draft field (GitHub issue #124)', () => {
 
   it('writes an edited defaultEnabled key through the always list', async () => {
     const { remote, rpc, call } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, defaultEnabled: true },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60, defaultEnabled: true },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -806,7 +805,7 @@ describe('defaultEnabled draft field (GitHub issue #124)', () => {
 
   it('round-trips a non-default false through save and reload', async () => {
     const { remote, rpc } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -819,7 +818,7 @@ describe('defaultEnabled draft field (GitHub issue #124)', () => {
 
   it('keeps an untouched defaultEnabled out of a partial apply (no churn)', async () => {
     const { remote, rpc, call } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, defaultEnabled: false },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60, defaultEnabled: false },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -851,10 +850,10 @@ describe('invalidations (refreshIfLoaded)', () => {
     const { remote, rpc } = scriptedApi()
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
-    store.setImmuneTurns(9)
+    store.setMaxDeltaMessages(9)
     refreshIfLoaded(store)
     await vi.waitFor(() => expect(store.store.getSnapshot().status).toBe('ready'))
-    expect(draftOf(store).immuneTurns).toBe(9)
+    expect(draftOf(store).maxDeltaMessages).toBe(9)
   })
 })
 
@@ -965,7 +964,7 @@ describe('gateway availability (KD-G5 — advisorPresent)', () => {
     get
       .mockImplementationOnce(() => Promise.resolve(failResult('advisor gateway is not ready')))
       .mockImplementationOnce(() => Promise.resolve(okResult({
-        config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20 },
+        config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: 'entry', maxDeltaMessages: 20 },
       })))
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -973,14 +972,14 @@ describe('gateway availability (KD-G5 — advisorPresent)', () => {
     expect(state.advisorPresent).toBe(false)
     // The pristine (unseeded) draft stays the schema defaults — NOT marked
     // seeded, so the next successful load can still seed.
-    expect(state.draft).toEqual({ systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 0, callTimeoutMinutes: 10, historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3, mainSessionOnly: true })
+    expect(state.draft).toEqual({ systemPrompt: '', maxDeltaMessages: 0, callTimeoutMinutes: 10, historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3, mainSessionOnly: true })
     // Gateway recovers: the next load seeds the ACTUAL config.
     await store.load()
     state = store.store.getSnapshot()
     expect(state.advisorPresent).toBe(true)
     expect(state.draft).toEqual({
       provider: 'deepseek-official', model: 'ds-a',
-      systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20, callTimeoutMinutes: 10, historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3, mainSessionOnly: true,
+      systemPrompt: 'entry', maxDeltaMessages: 20, callTimeoutMinutes: 10, historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3, mainSessionOnly: true,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -991,7 +990,7 @@ describe('gateway availability (KD-G5 — advisorPresent)', () => {
 describe('post-apply reload failure (qc3 N-1)', () => {
   it('keeps the saved feedback when the reload after a successful set fails', async () => {
     const { remote, rpc, describe, set } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60 },
     })
     // First describe (initial load) resolves; the post-apply reload fails.
     describe.mockReturnValueOnce(Promise.resolve(ok({
@@ -1002,7 +1001,7 @@ describe('post-apply reload failure (qc3 N-1)', () => {
     describe.mockReturnValueOnce(Promise.resolve(fail('transport down')))
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
-    store.setImmuneTurns(5)
+    store.setMaxDeltaMessages(5)
     await store.apply()
     expect(set).toHaveBeenCalledTimes(1)
     const state = store.store.getSnapshot()
@@ -1017,7 +1016,7 @@ describe('post-apply reload failure (qc3 N-1)', () => {
 describe('discard (card draft rewind — T2 store add, T3 review)', () => {
   it('rewinds the draft to the last-known host config without any gateway write', async () => {
     const { remote, rpc, set } = scriptedApi({
-      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20 },
+      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: 'entry', maxDeltaMessages: 20 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -1028,7 +1027,7 @@ describe('discard (card draft rewind — T2 store add, T3 review)', () => {
     // The draft is exactly the seed again — every edited key rewound.
     expect(draftOf(store)).toEqual({
       provider: 'deepseek-official', model: 'ds-a',
-      systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20, callTimeoutMinutes: 10, historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3, mainSessionOnly: true,
+      systemPrompt: 'entry', maxDeltaMessages: 20, callTimeoutMinutes: 10, historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3, mainSessionOnly: true,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -1042,7 +1041,7 @@ describe('discard (card draft rewind — T2 store add, T3 review)', () => {
     // so a follow-up apply has an EMPTY diff and reports saved WITHOUT calling
     // advisor/set (the host stays the single fact source — nothing to write).
     const { remote, rpc, set } = scriptedApi({
-      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -1055,7 +1054,7 @@ describe('discard (card draft rewind — T2 store add, T3 review)', () => {
     // The empty apply leaves the rewound draft untouched (no re-seed, no re-write).
     expect(draftOf(store)).toEqual({
       provider: 'deepseek-official', model: 'ds-a',
-      systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, callTimeoutMinutes: 10, historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3, mainSessionOnly: true,
+      systemPrompt: '', maxDeltaMessages: 60, callTimeoutMinutes: 10, historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3, mainSessionOnly: true,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -1075,34 +1074,34 @@ describe('discard (card draft rewind — T2 store add, T3 review)', () => {
 
   it('clears the saved feedback back to idle after a landed apply (discard is a no-op on values)', async () => {
     const { remote, rpc } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
-    store.setImmuneTurns(5)
+    store.setMaxDeltaMessages(5)
     await store.apply()
     expect(store.store.getSnapshot().applyState.kind).toBe('saved')
     // Discard right after a landed apply: the values already match the seed
     // (the returned config was adopted), so only the feedback resets.
     store.discard()
     expect(store.store.getSnapshot().applyState.kind).toBe('idle')
-    expect(draftOf(store).immuneTurns).toBe(5)
+    expect(draftOf(store).maxDeltaMessages).toBe(5)
   })
 
   it('a fresh edit after discard diff-cleans against the restored seed', async () => {
     // Discard restores the diff baseline: a later apply carries ONLY the new
     // edit — the pre-discard model edit must not resurface in the patch.
     const { remote, rpc, call } = scriptedApi({
-      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
     store.setModel('ds-b')  // pre-discard edit
     store.discard()         // rewind → seed (ds-a)
-    store.setImmuneTurns(9) // post-discard edit
+    store.setMaxDeltaMessages(9) // post-discard edit
     await store.apply()
     const payload = call.mock.calls.find(callArgs => callArgs[1] === 'advisor/set')?.[2] as { args: { patch: Record<string, unknown> } }
-    expect(payload.args.patch).toEqual({ immuneTurns: 9 })
+    expect(payload.args.patch).toEqual({ maxDeltaMessages: 9 })
   })
 
   it('does not corrupt the unseeded draft when discarded before the first successful load', async () => {
@@ -1114,7 +1113,7 @@ describe('discard (card draft rewind — T2 store add, T3 review)', () => {
     get
       .mockImplementationOnce(() => Promise.resolve(failResult('advisor gateway is not ready')))
       .mockImplementationOnce(() => Promise.resolve(okResult({
-        config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20 },
+        config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: 'entry', maxDeltaMessages: 20 },
       })))
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -1123,12 +1122,12 @@ describe('discard (card draft rewind — T2 store add, T3 review)', () => {
     // The rewind target is the default (failed-get) seed — the effective
     // defaults view, still inventing NO provider/model (the gate/wipe hazard
     // this pin guards); the recovery below must still seed the REAL config.
-    expect(draftOf(store)).toEqual({ systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 0, callTimeoutMinutes: 10, historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3, mainSessionOnly: true, proseFallback: false, nextPrompt: true, defaultEnabled: true })
+    expect(draftOf(store)).toEqual({ systemPrompt: '', maxDeltaMessages: 0, callTimeoutMinutes: 10, historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3, mainSessionOnly: true, proseFallback: false, nextPrompt: true, defaultEnabled: true })
     await store.load()
     expect(store.store.getSnapshot().advisorPresent).toBe(true)
     expect(draftOf(store)).toEqual({
       provider: 'deepseek-official', model: 'ds-a',
-      systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20, callTimeoutMinutes: 10, historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3, mainSessionOnly: true,
+      systemPrompt: 'entry', maxDeltaMessages: 20, callTimeoutMinutes: 10, historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3, mainSessionOnly: true,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -1139,7 +1138,7 @@ describe('discard (card draft rewind — T2 store add, T3 review)', () => {
 describe('dirty derivation (plan dsh-advisor-plugin-config-card-ux, task 2 — KD-U2)', () => {
   it('tracks the dirty lifecycle: clean → edit dirty → discard clean → edit → apply success clean', async () => {
     const { remote, rpc } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     // The store default is clean — no edits staged against any seed.
@@ -1150,7 +1149,7 @@ describe('dirty derivation (plan dsh-advisor-plugin-config-card-ux, task 2 — K
     expect(store.store.getSnapshot().dirty).toBe(true) // a save would write the prompt
     store.discard()
     expect(store.store.getSnapshot().dirty).toBe(false) // draft rewound to the seed → clean
-    store.setImmuneTurns(9)
+    store.setMaxDeltaMessages(9)
     expect(store.store.getSnapshot().dirty).toBe(true)
     await store.apply()
     // The write landed and the returned config was adopted as the new seed —
@@ -1160,12 +1159,12 @@ describe('dirty derivation (plan dsh-advisor-plugin-config-card-ux, task 2 — K
 
   it('keeps a cleared number field clean by itself (patchFor omits it — leave stored value unchanged)', async () => {
     const { remote, rpc } = scriptedApi({
-      config: { enabled: false, systemPrompt: '', immuneTurns: 5, maxDeltaMessages: 60 },
+      config: { enabled: false, systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
     expect(store.store.getSnapshot().dirty).toBe(false)
-    store.setImmuneTurns(undefined) // cleared input → the key is omitted from the patch
+    store.setReviewEverySteps(undefined) // cleared input → the key is omitted from the patch
     expect(store.store.getSnapshot().dirty).toBe(false)
     // And clearing BOTH number fields stays clean — empty input means
     // "leave the stored value unchanged", never a write.
@@ -1175,7 +1174,7 @@ describe('dirty derivation (plan dsh-advisor-plugin-config-card-ux, task 2 — K
 
   it("treats a cleared provider the seed pins as dirty (the '' override is a real edit)", async () => {
     const { remote, rpc } = scriptedApi({
-      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -1194,7 +1193,7 @@ describe('dirty derivation (plan dsh-advisor-plugin-config-card-ux, task 2 — K
     // the resulting patch is exactly { provider: '' } → dirty derives true
     // from that alone.
     const { remote, rpc } = scriptedApi({
-      config: { enabled: false, provider: 'deepseek-official', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: false, provider: 'deepseek-official', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -1211,7 +1210,7 @@ describe('dirty derivation (plan dsh-advisor-plugin-config-card-ux, task 2 — K
     get
       .mockImplementationOnce(() => Promise.resolve(failResult('advisor gateway is not ready')))
       .mockImplementationOnce(() => Promise.resolve(okResult({
-        config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: 'entry', immuneTurns: 7, maxDeltaMessages: 20 },
+        config: { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: 'entry', maxDeltaMessages: 20 },
       })))
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -1266,7 +1265,7 @@ describe('dirty derivation (plan dsh-advisor-plugin-config-card-ux, task 2 — K
     // get returns a config EQUAL to the draft → load() re-seeds and derives
     // clean, while the draft itself survives (never re-seeded).
     get.mockReturnValueOnce(Promise.resolve(okResult({
-      config: { enabled: false, systemPrompt: 'review terser', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: false, systemPrompt: 'review terser', maxDeltaMessages: 60 },
     })))
     await store.load()
     const state = store.store.getSnapshot()
@@ -1308,7 +1307,7 @@ describe('dirty derivation (plan dsh-advisor-plugin-config-card-ux, task 2 — K
     // equal to a pair-pinning seed (right after a landed save), where the
     // empty branch must still recompute and stay clean.
     const { remote, rpc, get, set } = scriptedApi({
-      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'x', model: 'y', systemPrompt: '', maxDeltaMessages: 60 },
     })
     const store = new AdvisorSettingsStore(remote, rpc, schema)
     await store.load()
@@ -1398,7 +1397,7 @@ describe('card scenario (store-level load/save over the gateway channel)', () =>
 describe('thinking-effort capability (plan dsh-advisor-reasoning-effort, task 3)', () => {
   const EFFORTS = { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High', description: 'Deep' }] }
   const KEY = 'deepseek-official\u0000ds-a'
-  const PAIRED = { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 }
+  const PAIRED = { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', maxDeltaMessages: 60 }
 
   it('fetches the capability once for the stored pair after load and caches it by key', async () => {
     const { remote, rpc, modelReasoning } = scriptedApi({ config: { ...PAIRED }, reasoning: { [KEY]: EFFORTS } })

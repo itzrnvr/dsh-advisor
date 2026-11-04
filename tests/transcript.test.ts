@@ -534,7 +534,7 @@ describe('DeltaRenderer — seedTo (KD-5)', () => {
 // `assistant/message` / `tool/result` events inside one long turn. The new
 // gate fires on human-input arrival: if an unreviewed non-advisor assistant
 // increment exists since the renderer cursor, the completed prior round is
-// rendered (the trigger itself excluded) and `onSteppedTurnEnd` fires once
+// rendered (the trigger itself excluded) and the clock advances
 // per round. Sessions that ever produce a `turn/end` (reviewable or not) are
 // latched as standard and the new gate sleeps (spec §4 skip-aborted).
 // ---------------------------------------------------------------------------
@@ -589,11 +589,9 @@ function agenticRound(userText: string, agentText: string): EventSpec[] {
 describe('SessionTranscriptObserver — agentic reply-complete gate (KD-N4-5)', () => {
   it('fires exactly one delta per human-input arrival, delta = completed prior round, trigger excluded', () => {
     const deltas: Array<{ sessionId: string; markdown: string }> = []
-    const stepped: string[] = []
     const observer = new SessionTranscriptObserver({
       maxDeltaMessages: 60,
       onDelta: (sessionId, delta) => deltas.push({ sessionId, markdown: delta.markdown }),
-      onSteppedTurnEnd: (sessionId) => stepped.push(sessionId),
     })
     feed(observer, 's1', [
       userMessage('prompt one'),                 // first human input — no unreviewed assistant → no delta
@@ -605,7 +603,6 @@ describe('SessionTranscriptObserver — agentic reply-complete gate (KD-N4-5)', 
       userMessage('prompt three'),               // human input 3 → delta = round 2
     ])
     expect(deltas).toHaveLength(2)
-    expect(stepped).toHaveLength(2)
     expect(deltas[0]!.sessionId).toBe('s1')
     // delta 1 = the completed prior round (prompt one + the full reply), NOT the trigger.
     expect(deltas[0]!.markdown).toContain('**user**: prompt one')
@@ -639,11 +636,9 @@ describe('SessionTranscriptObserver — agentic reply-complete gate (KD-N4-5)', 
 
   it('a tool/result event never triggers, even with an unreviewed assistant increment', () => {
     const deltas: string[] = []
-    const stepped: string[] = []
     const observer = new SessionTranscriptObserver({
       maxDeltaMessages: 60,
       onDelta: (_sessionId, delta) => deltas.push(delta.markdown),
-      onSteppedTurnEnd: (sessionId) => stepped.push(sessionId),
     })
     feed(observer, 's1', [
       userMessage('prompt one'),
@@ -653,18 +648,15 @@ describe('SessionTranscriptObserver — agentic reply-complete gate (KD-N4-5)', 
       userMessage('prompt two'),       // only a real human input fires
     ])
     expect(deltas).toHaveLength(1)
-    expect(stepped).toHaveLength(1)
     expect(deltas[0]).toContain('**user**: prompt one')
     expect(deltas[0]).toContain('**agent**: reply one')
   })
 
   it('covers human input that arrives only as agent/inbox/spliced (never re-emitted as user/message)', () => {
     const deltas: string[] = []
-    const stepped: string[] = []
     const observer = new SessionTranscriptObserver({
       maxDeltaMessages: 60,
       onDelta: (_sessionId, delta) => deltas.push(delta.markdown),
-      onSteppedTurnEnd: (_sessionId) => stepped.push('x'),
     })
     feed(observer, 's1', [
       inboxSpliced('prompt one'),      // first input — no assistant increment → no delta
@@ -674,7 +666,6 @@ describe('SessionTranscriptObserver — agentic reply-complete gate (KD-N4-5)', 
       inboxSpliced('prompt three'),    // input 3 → delta = round 2
     ])
     expect(deltas).toHaveLength(2)
-    expect(stepped).toHaveLength(2)
     expect(deltas[0]).toContain('**agent**: reply one')
     expect(deltas[0]).not.toContain('prompt two')   // the arriving input never enters its own delta
     expect(deltas[1]).toContain('**agent**: reply two')
@@ -683,11 +674,9 @@ describe('SessionTranscriptObserver — agentic reply-complete gate (KD-N4-5)', 
 
   it('dedupes the inbox-spliced trigger against the later user/message commit of the same input', () => {
     const deltas: string[] = []
-    const stepped: string[] = []
     const observer = new SessionTranscriptObserver({
       maxDeltaMessages: 60,
       onDelta: (_sessionId, delta) => deltas.push(delta.markdown),
-      onSteppedTurnEnd: (_sessionId) => stepped.push('x'),
     })
     // Realistic dsh agentic flow: the input enters the inbox (agent/inbox/spliced)
     // and the loop later commits it to the surface (user/message append). The
@@ -702,7 +691,6 @@ describe('SessionTranscriptObserver — agentic reply-complete gate (KD-N4-5)', 
       userMessage('prompt three'),
     ])
     expect(deltas).toHaveLength(2)
-    expect(stepped).toHaveLength(2)
     expect(deltas[0]).toContain('**user**: prompt one')
     expect(deltas[0]).toContain('**agent**: reply one')
     expect(deltas[0]).not.toContain('prompt two')
@@ -713,11 +701,9 @@ describe('SessionTranscriptObserver — agentic reply-complete gate (KD-N4-5)', 
 
   it('a compact summary replace with an unreviewed assistant replays the full post-rewrite surface', () => {
     const deltas: string[] = []
-    const stepped: string[] = []
     const observer = new SessionTranscriptObserver({
       maxDeltaMessages: 60,
       onDelta: (_sessionId, delta) => deltas.push(delta.markdown),
-      onSteppedTurnEnd: (_sessionId) => stepped.push('x'),
     })
     // The compaction lands while round 2's reply is unreviewed. The summary
     // user/message is a rewrite-type human input: the gate passes the FULL log
@@ -741,7 +727,6 @@ describe('SessionTranscriptObserver — agentic reply-complete gate (KD-N4-5)', 
     // pre-existing replay semantics (any unconsumed compact/* → full replay)
     // apply; that is renderer behavior, not a second gate review.
     expect(deltas).toHaveLength(3)
-    expect(stepped).toHaveLength(3)
     expect(deltas[0]).toContain('**user**: prompt one')
     expect(deltas[0]).toContain('**agent**: reply one')
     expect(deltas[0]).not.toContain('prompt two')
@@ -759,11 +744,9 @@ describe('SessionTranscriptObserver — agentic reply-complete gate (KD-N4-5)', 
 
   it('a compact sequence with nothing unreviewed replays exactly once at the next round', () => {
     const deltas: string[] = []
-    const stepped: string[] = []
     const observer = new SessionTranscriptObserver({
       maxDeltaMessages: 60,
       onDelta: (_sessionId, delta) => deltas.push(delta.markdown),
-      onSteppedTurnEnd: (_sessionId) => stepped.push('x'),
     })
     // The compaction lands after round 1 was already reviewed: the summary
     // replace passes the read-only predicate (no unreviewed assistant) and the
@@ -783,7 +766,6 @@ describe('SessionTranscriptObserver — agentic reply-complete gate (KD-N4-5)', 
       userMessage('prompt four'),                                 // input 4 → delta 3, incremental
     ])
     expect(deltas).toHaveLength(3)
-    expect(stepped).toHaveLength(3)
     expect(deltas[0]).toContain('**user**: prompt one')
     expect(deltas[0]).toContain('**agent**: reply one')
     // One full replay: the surviving pre-compact message, the summary, and the
@@ -800,11 +782,9 @@ describe('SessionTranscriptObserver — agentic reply-complete gate (KD-N4-5)', 
 
   it('mode latch: a session that produced a reviewable turn/end sleeps the new gate', () => {
     const deltas: string[] = []
-    const stepped: string[] = []
     const observer = new SessionTranscriptObserver({
       maxDeltaMessages: 60,
       onDelta: (_sessionId, delta) => deltas.push(delta.markdown),
-      onSteppedTurnEnd: (_sessionId) => stepped.push('x'),
     })
     feed(observer, 's1', [
       ...simpleTurn(1, 'first', 'reply one'),   // reviewable turn/end → the standard delta + latch
@@ -813,16 +793,13 @@ describe('SessionTranscriptObserver — agentic reply-complete gate (KD-N4-5)', 
       userMessage('third'),
     ])
     expect(deltas).toHaveLength(1)   // only the turn/end path rendered
-    expect(stepped).toHaveLength(1)  // only the turn/end counted a completed round
   })
 
   it('mode latch: a non-reviewable turn/end (aborted) also latches — spec §4 skip-aborted preserved', () => {
     const deltas: string[] = []
-    const stepped: string[] = []
     const observer = new SessionTranscriptObserver({
       maxDeltaMessages: 60,
       onDelta: (_sessionId, delta) => deltas.push(delta.markdown),
-      onSteppedTurnEnd: (_sessionId) => stepped.push('x'),
     })
     // The session's first turn is cut short (aborted → not reviewable, no delta).
     // Its unreviewed assistant increment must NOT be supplementarily reviewed by
@@ -835,7 +812,6 @@ describe('SessionTranscriptObserver — agentic reply-complete gate (KD-N4-5)', 
       userMessage('second'),
     ])
     expect(deltas).toHaveLength(0)
-    expect(stepped).toHaveLength(0)
   })
 })
 
@@ -851,15 +827,13 @@ describe('SessionTranscriptObserver — agentic reply-complete gate (KD-N4-5)', 
 // ---------------------------------------------------------------------------
 
 describe('SessionTranscriptObserver — inbox-spliced payload discrimination (C-1 self-trigger fix)', () => {
-  const observe = (): { deltas: string[]; stepped: string[]; observer: SessionTranscriptObserver } => {
+  const observe = (): { deltas: string[]; observer: SessionTranscriptObserver } => {
     const deltas: string[] = []
-    const stepped: string[] = []
     const observer = new SessionTranscriptObserver({
       maxDeltaMessages: 60,
       onDelta: (_sessionId, delta) => deltas.push(delta.markdown),
-      onSteppedTurnEnd: (_sessionId) => stepped.push('x'),
     })
-    return { deltas, stepped, observer }
+    return { deltas, observer }
   }
   /**
    * The workspace-context producer's REAL inbox source
@@ -884,44 +858,40 @@ describe('SessionTranscriptObserver — inbox-spliced payload discrimination (C-
   const round = (): EventSpec[] => [userMessage('prompt one'), assistantMessage('reply one')]
 
   it('the advisor\'s own note delivery (inserted advisor plugin source) never triggers', () => {
-    const { deltas, stepped, observer } = observe()
+    const { deltas, observer } = observe()
     feed(observer, 's1', [
       ...round(),
       inboxSplicedWith('[advisor:nit] consider extracting a helper', advisorSource),
     ])
     expect(deltas).toHaveLength(0)
-    expect(stepped).toHaveLength(0)
   })
 
   it('a workspace-context sync (inserted agent-instructions source) never triggers', () => {
-    const { deltas, stepped, observer } = observe()
+    const { deltas, observer } = observe()
     feed(observer, 's1', [
       ...round(),
       inboxSplicedWith('the repo is at /repo', workspaceContextSource),
     ])
     expect(deltas).toHaveLength(0)
-    expect(stepped).toHaveLength(0)
   })
 
   it('a tool-result splice (inserted source.kind tool) never triggers', () => {
-    const { deltas, stepped, observer } = observe()
+    const { deltas, observer } = observe()
     feed(observer, 's1', [
       ...round(),
       inboxSplicedWith('3 passed', { kind: 'tool', callId: ToolCallId('call-0') }),
     ])
     expect(deltas).toHaveLength(0)
-    expect(stepped).toHaveLength(0)
   })
 
   it('an empty-clear splice (no inserted messages) never triggers', () => {
-    const { deltas, stepped, observer } = observe()
+    const { deltas, observer } = observe()
     feed(observer, 's1', [...round(), inboxClear()])
     expect(deltas).toHaveLength(0)
-    expect(stepped).toHaveLength(0)
   })
 
   it('excluded splices never advance the cursor: a later genuine user splice triggers exactly one review', () => {
-    const { deltas, stepped, observer } = observe()
+    const { deltas, observer } = observe()
     feed(observer, 's1', [
       ...round(),
       inboxSplicedWith('[advisor:nit] a note', advisorSource),
@@ -931,7 +901,6 @@ describe('SessionTranscriptObserver — inbox-spliced payload discrimination (C-
       inboxSpliced('prompt two'),           // the one genuine human splice
     ])
     expect(deltas).toHaveLength(1)
-    expect(stepped).toHaveLength(1)
     // The delta is the completed prior round; none of the excluded splices
     // entered it, and the genuine trigger did not either.
     expect(deltas[0]).toContain('**user**: prompt one')
@@ -1157,7 +1126,7 @@ describe('SessionTranscriptObserver — review cadence (fork addition)', () => {
     return specs
   }
 
-  it('fires a mid-turn review on the NEXT step start, once N steps are complete', () => {
+  it('the step clock COUNTS completed steps and reports due — the gate consumes the window', () => {
     const deltas: Array<{ markdown: string; turn?: number }> = []
     const observer = new SessionTranscriptObserver({
       maxDeltaMessages: 60,
@@ -1166,19 +1135,100 @@ describe('SessionTranscriptObserver — review cadence (fork addition)', () => {
       onDelta: (_sessionId, delta) => deltas.push({ markdown: delta.markdown, turn: delta.turn }),
     })
 
-    feed(observer, 's1', steppedTurn(1, 4))
+    // One running turn, delivered event by event (no turn/end yet — the gate
+    // fires INSIDE the turn). The old semantics reviewed from step/start and
+    // pushed deltas; since 0.6.48 the clock only counts and the pre-step
+    // gate PULLS via stepReviewDue/takeStepDelta. `delivered` is the live log
+    // the host hands every handleEvent call — no re-delivery (feed() restarts
+    // at index 0, which would double-count step/ends).
+    const specs: EventSpec[] = [turnStart(1), userMessage('go 1')]
+    const delivered: SessionEvent[] = []
+    const push = (event: EventSpec): void => {
+      specs.push(event)
+      const built = buildEvents(specs)
+      const fresh = built.slice(delivered.length)
+      delivered.push(...fresh)
+      for (let index = 0; index < fresh.length; index++) {
+        observer.handleEvent('s1', delivered.slice(0, delivered.length - fresh.length + index + 1), fresh[index]!)
+      }
+    }
+    const step = (n: number): void => {
+      push(stepStart(1, n))
+      push(assistantMessage(`a${n}`))
+      push(stepEnd(1, n))
+    }
 
-    // Step 4's start completes steps 1-3 → one mid-turn review of a1..a3,
-    // attributed to the turn in progress (1) before that turn's turn/end.
-    const midTurn = deltas.find((delta) => delta.turn === 1 && !delta.markdown.includes('a4'))
-    expect(midTurn).toBeDefined()
-    expect(midTurn!.markdown).toContain('a1')
-    expect(midTurn!.markdown).toContain('a2')
-    expect(midTurn!.markdown).toContain('a3')
-    expect(midTurn!.markdown).not.toContain('a4')
-    // turn/end still reviews the remainder as a normal turn delta.
-    const turnEndDelta = deltas.at(-1)!
-    expect(turnEndDelta.markdown).toContain('a4')
+    step(1)
+    expect(observer.stepReviewDue('s1')).toBe(false) // count 1
+    step(2)
+    expect(observer.stepReviewDue('s1')).toBe(false) // count 2
+    step(3)
+    // Step 3 COMPLETED → due. The count is visible the moment the step/end
+    // event lands — before the host's next step/start, i.e. in time for the
+    // pre-step waterfall (the load-bearing ordering of the gate).
+    expect(observer.stepReviewDue('s1')).toBe(true)
+
+    // The gate takes the window: exactly steps 1-3, tagged to the OPEN turn.
+    const window = observer.takeStepDelta('s1', buildEvents(specs))
+    expect(window).toBeDefined()
+    expect(window!.markdown).toContain('a1')
+    expect(window!.markdown).toContain('a2')
+    expect(window!.markdown).toContain('a3')
+    expect(window!.markdown).not.toContain('a4')
+    expect(window!.turn).toBe(1)
+
+    // Consumption resets the count; step 4 alone is not due again.
+    expect(observer.stepReviewDue('s1')).toBe(false)
+    step(4)
+    expect(observer.stepReviewDue('s1')).toBe(false) // count 1
+
+    // A second due window arrives after steps 5-6 complete: takeStepDelta
+    // renders ONLY the remainder (shared cursor — no re-render of 1-4).
+    step(5)
+    step(6)
+    expect(observer.stepReviewDue('s1')).toBe(true)
+    const second = observer.takeStepDelta('s1', buildEvents(specs))
+    expect(second!.markdown).toContain('a4')
+    expect(second!.markdown).toContain('a5')
+    expect(second!.markdown).toContain('a6')
+    expect(second!.markdown).not.toContain('a1')
+
+    // turn/end reviews only what remains (nothing new → no delta).
+    push(turnEnd(1))
+    expect(deltas).toHaveLength(0) // the turn clock found nothing new
+  })
+
+  it('a new human input resets the step count', () => {
+    const observer = new SessionTranscriptObserver({
+      maxDeltaMessages: 60,
+      reviewEverySteps: 2,
+      reviewEveryTurns: 99,
+      onDelta: () => {},
+    })
+    // One completed step...
+    feed(observer, 's1', [turnStart(1), userMessage('go'), stepStart(1, 1), assistantMessage('a1'), stepEnd(1, 1)])
+    expect(observer.stepReviewDue('s1')).toBe(false) // count 1 of 2
+    // ... then a human input arriving mid-turn (a steer) restarts the clock:
+    // the single prior step no longer counts toward a review, so even a
+    // second completed step after the reset stays below the interval until
+    // two FRESH completions land.
+    const specs = [
+      turnStart(1), userMessage('go'), stepStart(1, 1), assistantMessage('a1'), stepEnd(1, 1),
+      userMessage('steer'),
+    ]
+    // Continue the SAME live log (feed restarts at 0 — reuse it only for the
+    // prefix; deliver the new events by hand from the reset point).
+    const all = buildEvents(specs)
+    for (let index = all.length - 1; index < all.length; index++) {
+      observer.handleEvent('s1', all.slice(0, index + 1), all[index]!)
+    }
+    // After the reset one more completed step gives count 1 — still not due.
+    const withStep = [...specs, stepStart(1, 2), assistantMessage('a2'), stepEnd(1, 2)]
+    const all2 = buildEvents(withStep)
+    for (let index = all.length; index < all2.length; index++) {
+      observer.handleEvent('s1', all2.slice(0, index + 1), all2[index]!)
+    }
+    expect(observer.stepReviewDue('s1')).toBe(false)
   })
 
   it('does not fire the step clock when reviewEverySteps is 0', () => {
@@ -1191,7 +1241,8 @@ describe('SessionTranscriptObserver — review cadence (fork addition)', () => {
     })
 
     feed(observer, 's1', steppedTurn(1, 5))
-    expect(deltas).toHaveLength(1)
+    expect(observer.stepReviewDue('s1')).toBe(false) // clock off: never due
+    expect(deltas).toHaveLength(1)                   // turn clock only
   })
 
   it('the turn clock reviews only every Nth completed turn', () => {
@@ -1216,14 +1267,12 @@ describe('SessionTranscriptObserver — cadence side effects (fork addition)', (
   it('keeps next-prompt arming per completed turn while reviews follow the turn clock', () => {
     const deltas: string[] = []
     const completed: string[] = []
-    const stepped: string[] = []
     const observer = new SessionTranscriptObserver({
       maxDeltaMessages: 60,
       reviewEverySteps: 0,
       reviewEveryTurns: 2,
       onDelta: (_sessionId, delta) => deltas.push(delta.markdown),
       onCompletedTurnEnd: (sessionId) => completed.push(sessionId),
-      onSteppedTurnEnd: (sessionId) => stepped.push(sessionId),
     })
 
     const turn = (n: number): EventSpec[] => [
@@ -1240,9 +1289,8 @@ describe('SessionTranscriptObserver — cadence side effects (fork addition)', (
     expect(deltas).toHaveLength(1)
     expect(deltas[0]).toContain('go 1')
     expect(deltas[0]).toContain('go 2')
-    // ... while the immuneTurns countdown and next-prompt arming stay
+    // ... while next-prompt arming stays
     // per-completed-turn (they are not reviews).
-    expect(stepped).toHaveLength(2)
     expect(completed).toHaveLength(2)
   })
 
@@ -1339,23 +1387,45 @@ describe('SessionTranscriptObserver — delta.turn attribution (fork addition)',
     expect(turns).toEqual([1])
   })
 
-  it('tags a mid-turn step review with the turn in progress', () => {
-    const deltas: Array<{ turn?: number; markdown: string }> = []
+  it('a turn boundary resets the step count (no gate review carries over turns)', () => {
     const observer = new SessionTranscriptObserver({
       maxDeltaMessages: 60,
-      onDelta: (_sessionId, delta) => deltas.push({ turn: delta.turn, markdown: delta.markdown }),
-      reviewEverySteps: 3,
-      reviewEveryTurns: 1,
+      reviewEverySteps: 2,
+      reviewEveryTurns: 99, // the turn clock never qualifies here; only the step clock could
+      onDelta: () => {},
     })
-    const specs: EventSpec[] = [turnStart(1), userMessage('go')]
-    for (let step = 1; step <= 4; step++) {
-      specs.push(stepStart(1, step), assistantMessage(`a${step}`), stepEnd(1, step))
-    }
-    specs.push(turnEnd(1))
-    feed(observer, 's1', specs)
+    // Turn 1 completes ONE step; its turn/end deletes the count. Turn 2 then
+    // completes one step: WITHOUT the reset the count would carry over and
+    // (1 + 1) flip due — with it, turn 2 sits at count 1 and stays not due.
+    feed(observer, 's1', [
+      turnStart(1), userMessage('go 1'), stepStart(1, 1), assistantMessage('a1'), stepEnd(1, 1), turnEnd(1),
+      turnStart(2), userMessage('go 2'), stepStart(2, 1), assistantMessage('b1'), stepEnd(2, 1),
+    ])
+    expect(observer.stepReviewDue('s1')).toBe(false)
+  })
 
-    // The mid-turn review covers steps 1-3 (not a4), attributed to turn 1.
-    const mid = deltas.find((delta) => delta.markdown.includes('a3') && !delta.markdown.includes('a4'))
-    expect(mid?.turn).toBe(1)
+  it('takeStepDelta on an empty window returns undefined (nothing new since the cursor)', () => {
+    const observer = new SessionTranscriptObserver({
+      maxDeltaMessages: 60,
+      reviewEverySteps: 1,
+      reviewEveryTurns: 99,
+      onDelta: () => {},
+    })
+    // Two completed steps in one running turn: the gate pulls the first
+    // window (a1 + the bare step-2 boundary), and a second pull with nothing
+    // new returns undefined — the gate must then proceed WITHOUT a hold.
+    const specs = [
+      turnStart(1), userMessage('go'),
+      stepStart(1, 1), assistantMessage('a1'), stepEnd(1, 1),
+      stepStart(1, 2), stepEnd(1, 2),
+    ]
+    feed(observer, 's1', specs)
+    expect(observer.stepReviewDue('s1')).toBe(true)
+    const events = buildEvents(specs)
+    const first = observer.takeStepDelta('s1', events)
+    expect(first).toBeDefined()
+    expect(first!.markdown).toContain('a1')
+    const second = observer.takeStepDelta('s1', events)
+    expect(second).toBeUndefined()
   })
 })

@@ -12,7 +12,8 @@
  * switch is gone, the row toggle is the switch), system-prompt textarea
  * (placeholder = the built-in reviewer prompt), the proseFallback /
  * nextPrompt / defaultEnabled checkboxes and
- * the number inputs (immuneTurns / maxDeltaMessages) —
+ * the number inputs (maxDeltaMessages; the immuneTurns input retired with
+ * the 2026-11-04 gate ruling) —
  * then the footer with the failed message + Discard/Save (upstream disabled
  * semantics: save = `!dirty || invalid || saving`, discard = `!dirty ||
  * saving`; save additionally carries `!writable`). Degraded / error states
@@ -118,12 +119,12 @@ function failResult(message: string): RpcResult<unknown> {
 
 /** The wire config the gateway returns when nothing is configured. */
 function defaultConfig(): AdvisorConfigView {
-  return { enabled: false, systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, nextPrompt: true }
+  return { enabled: false, systemPrompt: '', maxDeltaMessages: 60, nextPrompt: true }
 }
 
 /** A complete, gate-passing wire config (the pair is required — no switch). */
 function pairedConfig(): AdvisorConfigView {
-  return { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60, nextPrompt: true }
+  return { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', maxDeltaMessages: 60, nextPrompt: true }
 }
 
 const DEEPSEEK: LlmConfigurableProvider = {
@@ -468,8 +469,10 @@ describe('AdvisorCard flat layout (official settings-page language)', () => {
     expect(screen.getByLabelText(en.provider)).toBeTruthy()
     expect(screen.getByLabelText(en.model)).toBeTruthy()
     expect(screen.getByLabelText(en.systemPrompt)).toBeTruthy()
-    expect(screen.getByLabelText(en.immuneTurns)).toBeTruthy()
     expect(screen.getByLabelText(en.maxDeltaMessages)).toBeTruthy()
+    // The 2026-11-04-removed cooldown field is gone from the card (the
+    // pre-step gate paces notes; no immuneTurns knob).
+    expect(screen.queryByLabelText(/immune/i)).toBeNull()
     expect(screen.getByLabelText(en.proseFallback)).toBeTruthy()
     expect(screen.getByLabelText(en.defaultEnabled)).toBeTruthy()
     // The 2026-10-18-removed budget field is gone from the card.
@@ -677,7 +680,7 @@ describe('AdvisorCard', () => {
     // 'zombie' is stored in the effective config but its profile does not
     // resolve, so it never enters the configured provider option list.
     const { view, props } = await mountCard({
-      config: { enabled: true, provider: 'zombie', model: 'y', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'zombie', model: 'y', systemPrompt: '', maxDeltaMessages: 60 },
     })
     expect(screen.getByText(en.staleProvider)).toBeTruthy()
     // The warning does not gate the save: once an edit is staged the save is
@@ -694,7 +697,7 @@ describe('AdvisorCard', () => {
 
   it('warns when the stored model is no longer offered by the chosen provider', async () => {
     const { controller, props, view } = await mountCard({
-      config: { enabled: true, provider: 'deepseek-official', model: 'ds-c', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'deepseek-official', model: 'ds-c', systemPrompt: '', maxDeltaMessages: 60 },
     })
     // load() kicks the model resolution for the stored provider; wait for it.
     await waitFor(() => {
@@ -834,13 +837,8 @@ describe('AdvisorCard', () => {
 
   it('keeps a cleared number input empty instead of forcing 0', async () => {
     const { props, view } = await mountCard()
-    const input = screen.getByLabelText(en.immuneTurns) as HTMLInputElement
-    expect(input.value).toBe('3')
-    fireEvent.change(input, { target: { value: '' } })
-    view.rerender(<AdvisorCard {...props} />)
-    expect((screen.getByLabelText(en.immuneTurns) as HTMLInputElement).value).toBe('')
-    // The other number input behaves the same.
     const delta = screen.getByLabelText(en.maxDeltaMessages) as HTMLInputElement
+    expect(delta.value).toBe('60')
     fireEvent.change(delta, { target: { value: '' } })
     view.rerender(<AdvisorCard {...props} />)
     expect((screen.getByLabelText(en.maxDeltaMessages) as HTMLInputElement).value).toBe('')
@@ -989,7 +987,7 @@ describe('AdvisorCard', () => {
 
 describe('AdvisorCard thinking-effort select (plan dsh-advisor-reasoning-effort, task 3)', () => {
   const KEY = 'deepseek-official\u0000ds-a'
-  const PAIRED = { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 }
+  const PAIRED = { enabled: true, provider: 'deepseek-official', model: 'ds-a', systemPrompt: '', maxDeltaMessages: 60 }
 
   it('renders the thinking-effort select next to the model select in the pair grid', async () => {
     await mountCard({ config: { ...PAIRED }, reasoning: { [KEY]: { efforts: [{ id: 'low', name: 'Low' }] } } })
@@ -1167,7 +1165,7 @@ describe('AdvisorCard thinking-effort select (plan dsh-advisor-reasoning-effort,
     // No model → no `${provider}\u0000${model}` capability key → nothing to
     // select, so the select is inert (the model select is gated the same way).
     await mountCard({
-      config: { enabled: true, provider: 'deepseek-official', systemPrompt: '', immuneTurns: 3, maxDeltaMessages: 60 },
+      config: { enabled: true, provider: 'deepseek-official', systemPrompt: '', maxDeltaMessages: 60 },
     })
     expect((screen.getByLabelText(en.reasoningEffort) as HTMLSelectElement).disabled).toBe(true)
   })

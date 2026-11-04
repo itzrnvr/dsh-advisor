@@ -12,7 +12,8 @@
  * enable checkbox to gate them; the config-level `enabled` switch was removed
  * and the plugin-row toggle is the master switch), system-prompt textarea,
  * the `proseFallback` / `nextPrompt` / `defaultEnabled` checkboxes and the
- * paired `immuneTurns`/`maxDeltaMessages` numbers (the `maxTokens`
+ * `maxDeltaMessages` number (the `immuneTurns` input was removed with the
+ * 2026-11-04 pre-step-gate ruling — the cooldown is gone; the `maxTokens`
  * input was removed with the 2026-10-18 budget ruling); then the footer
  * with the failed message + Discard/Save carrying the upstream disabled
  * semantics — save = `!dirty || invalid || saving`, discard = `!dirty ||
@@ -453,22 +454,6 @@ export function AdvisorCard(props: AdvisorCardProps): ReactNode {
           <p className={styles['hint']}>{t('unlimitedDeltaHint')}</p>
         </div>
         <div className={styles['numberFields']}>
-          <div className={styles['field']}>
-            <label htmlFor="advisor-immune-turns" className={styles['fieldLabel']}>{t('immuneTurns')}</label>
-            <input
-              id="advisor-immune-turns"
-              aria-label={t('immuneTurns')}
-              className={styles['input']}
-              type="number"
-              min={0}
-              step={1}
-              value={draft.immuneTurns ?? ''}
-              disabled={busy}
-              onChange={(event) => {
-                controller.setImmuneTurns(event.target.value === '' ? undefined : Number(event.target.value))
-              }}
-            />
-          </div>
           <div className={styles['field']}>
             <label htmlFor="advisor-max-delta-messages" className={styles['fieldLabel']}>{t('maxDeltaMessages')}</label>
             <input

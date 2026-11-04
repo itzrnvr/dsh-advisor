@@ -10,14 +10,14 @@
  *    are non-empty strings; the disposer returned by the inject child is
  *    exactly the stub registry's `register` return value (no wrapping).
  * ② The section's fields: the expected kinds in display order
- *    (`provider`/`model` text, `immuneTurns`/`maxDeltaMessages`
+ *    (`provider`/`model` text, maxDeltaMessages
  *    number, `proseFallback`/`defaultEnabled` boolean, `reasoningEffort`
  *    text), each with a non-empty `path`, `label`,
  *    and zh/en `hint`/`hintDescriptions`; `systemPrompt` is NOT among the
  *    field paths, and neither is the 2026-10-18-removed `maxTokens`.
  * ③ Field-path ↔ §5.1 schema alignment (regression pin): every field `path`
  *    is a single-element array whose key is a §5.1 `AdvisorConfig` key, and
- *    the exact allowed set is {provider, model, immuneTurns,
+ *    the exact allowed set is {provider, model,
  *    maxDeltaMessages, proseFallback, defaultEnabled, reasoningEffort} —
  *    `systemPrompt` is
  *    intentionally absent (single-line TUI text input would truncate
@@ -59,7 +59,7 @@ import type { AdvisorConfig } from '../src/config'
 function entryConfig(overrides: Partial<AdvisorConfig> = {}): AdvisorConfig {
   return {
     systemPrompt: '',
-    immuneTurns: 3,
+    
     maxDeltaMessages: 60,
     ...overrides,
   }
@@ -75,7 +75,6 @@ function entryConfig(overrides: Partial<AdvisorConfig> = {}): AdvisorConfig {
 const TUI_FIELD_KEYS: readonly (keyof AdvisorConfig)[] = [
   'provider',
   'model',
-  'immuneTurns',
   'maxDeltaMessages',
   'proseFallback',
   'defaultEnabled',
@@ -208,11 +207,11 @@ describe('section fields — §5.1 keys, display order, zh/en copy (AC-1)', () =
     return sections.sections[0]!
   }
 
-  it('declares the seven fields with the expected kinds in display order', () => {
+  it('declares the six fields with the expected kinds in display order', () => {
     const fields = registeredSection().fields
 
     expect(fields.map((field) => field.path)).toEqual(TUI_FIELD_KEYS.map((key) => [key]))
-    expect(fields.map((field) => field.kind)).toEqual(['text', 'text', 'number', 'number', 'boolean', 'boolean', 'text'])
+    expect(fields.map((field) => field.kind)).toEqual(['text', 'text', 'number', 'boolean', 'boolean', 'text'])
   })
 
   it('every field carries a non-empty path, label, and zh/en hint + hintDescriptions; systemPrompt is absent', () => {

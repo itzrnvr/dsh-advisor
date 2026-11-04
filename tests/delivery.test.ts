@@ -1,39 +1,41 @@
 /**
- * T6 — delivery routing (spec §2 S3, §4 mapping row, §6 delivery semantics,
- * §8.4 KD-4).
+ * T6 — delivery routing (0.6.48 one rule, spec §8.4 KD-4 retained).
  *
  * Contract under test:
  * - `AdvisorDelivery.route(sessionId, note)` resolves the primary agent for the
  *   session (per-session map from `agent/created`/`agent/disposed` keyed by
  *   `agent.id` === `session.id`, with a `ctx.agents.get(session.id)` registry
- *   fallback — KD-4) and routes the accepted note:
- *   - nit → direct session-log commit (non-waking, durable immediately, joins the next model request);
- *   - concern/blocker → `agent.steer` (waking — idle driver starts a turn,
- *     running driver consumes at the next step boundary);
+ *   fallback — KD-4) and routes the accepted note by the ONE rule:
+ *   - session held by the pre-step review gate → direct session-log commit
+ *     (non-waking — the held step's own request derives it from the surface,
+ *     so the note cannot miss the step it gates);
+ *   - otherwise → `agent.steer` (waking — idle driver starts a turn, running
+ *     driver consumes at the next step boundary);
  *   - missing agent → drop the note + log (never throw, never stall).
+ *   Severity NEVER selects the channel (the 2026-11-04 ruling retired
+ *   nit→commit / concern→steer routing together with the `wake` reviewer flag
+ *   and the immuneTurns cooldown — the gate's step clock paces notes).
  * - Advisor message shape (spec §6): a user-role message via `createUserMessage`
  *   whose source is this plugin's own producer kind (`kind: 'advisor'`,
  *   pinned to the `notice` form — src/kinds.ts) and whose content is
  *   self-describing `[advisor:{severity}] {note}`.
- * - immuneTurns (spec §6): after a concern/blocker is actually steered, the
- *   next `immuneTurns` stepped primary turns must complete before another
- *   interrupting note may steer; interrupting notes inside the window downgrade
- *   to a commit. The fence arms only on a real steer delivery; `reset` clears the
- *   latch (KD-5 reset triggers); `unregisterAgent` clears it with the session.
- * - Observer hooks: `SessionTranscriptObserver` fires `onSteppedTurnEnd` once
- *   per stepped reviewable turn/end (the cooldown decrement) and `onRewrite` on
- *   compact/replace events (the KD-5 latch reset).
+ * - The hold bracket (`hold`/`release`, driven by `index.ts` around
+ *   `runtime.waitQuiet`): `isHeld` mirrors it; `unregisterAgent` clears it
+ *   with the session; a release on one session never leaks into another.
+ * - Observer hooks: `SessionTranscriptObserver` fires `onRewrite` on
+ *   compact/replace events (the KD-5 latch reset). `onSteppedTurnEnd` is gone
+ *   with the cooldown it fed.
  * - Containment (T4 F1): a throwing agent method inside `route` (the real
  *   delivery seam) never crashes the runtime drain.
  *
  * Events are synthetic but shaped exactly like dsh emits (same builders as the
- * T3 suite); the `feed` helper mirrors the cordis `session/event` listener
- * (each appended event delivered once against the growing live log).
+ * T3 suite); the `feedAppend` helper mirrors the cordis `session/event`
+ * listener (each appended event delivered once against the growing live log).
  */
 
 import { describe, expect, it, vi } from 'vitest'
 import type { GenerateOptions, StreamChunk, UserMessage } from '@deepseek-ai/dsh-llm'
-import { ToolCallId, CONTEXT_SUMMARY_MAX_CHARS, MessageId } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_SUMMARY_MAX_CHARS, MessageId } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, SessionId, SurfaceOp } from '@deepseek-ai/dsh-session'
 import { AdvisorDelivery, buildAdvisorMessage } from '../src/delivery'
@@ -72,50 +74,49 @@ function makeAgent(id = 's1'): {
 }
 
 function makeDelivery(
-  immuneTurns: number,
   overrides: Partial<ConstructorParameters<typeof AdvisorDelivery>[0]> = {},
 ): AdvisorDelivery {
-  return new AdvisorDelivery({ immuneTurns, logger: silentLogger, ...overrides })
+  return new AdvisorDelivery({ logger: silentLogger, ...overrides })
 }
 
 // ---------------------------------------------------------------------------
-// Severity → channel routing (spec §6)
+// The one rule: held → commit, otherwise steer (0.6.48)
 // ---------------------------------------------------------------------------
 
-describe('AdvisorDelivery — severity → channel routing (spec §6)', () => {
-  it('routes nit to a direct session-log commit, never waking the agent', () => {
+describe('AdvisorDelivery — one-rule routing (0.6.48)', () => {
+  it('steers EVERY severity when the session is not held — severity never routes', () => {
     const { agent, commit, steer } = makeAgent()
-    const delivery = makeDelivery(3)
+    const delivery = makeDelivery()
     delivery.registerAgent(agent)
 
-    expect(delivery.route('s1', { note: 'add a test for this branch', severity: 'nit' })).toBe('commit')
-    expect(commit).toHaveBeenCalledTimes(1)
-    expect(steer).not.toHaveBeenCalled()
-  })
-
-  it('routes concern to steer (waking)', () => {
-    const { agent, commit, steer } = makeAgent()
-    const delivery = makeDelivery(3)
-    delivery.registerAgent(agent)
-
+    expect(delivery.route('s1', { note: 'add a test for this branch', severity: 'nit' })).toBe('steer')
     expect(delivery.route('s1', { note: 'this loop looks wrong', severity: 'concern' })).toBe('steer')
-    expect(steer).toHaveBeenCalledTimes(1)
+    expect(delivery.route('s1', { note: 'continuing clearly wastes work', severity: 'blocker' })).toBe('steer')
+    expect(steer).toHaveBeenCalledTimes(3)
     expect(commit).not.toHaveBeenCalled()
   })
 
-  it('routes blocker to steer (waking)', () => {
-    const { agent, steer } = makeAgent()
-    const delivery = makeDelivery(3)
+  it('commits to the session log while the pre-step gate holds the session', () => {
+    const { agent, commit, steer } = makeAgent()
+    const delivery = makeDelivery()
     delivery.registerAgent(agent)
+    delivery.hold('s1')
 
-    expect(delivery.route('s1', { note: 'continuing clearly wastes work', severity: 'blocker' })).toBe('steer')
+    expect(delivery.route('s1', { note: 'mid-gate note', severity: 'concern' })).toBe('commit')
+    expect(commit).toHaveBeenCalledTimes(1)
+    expect(steer).not.toHaveBeenCalled()
+
+    // Release returns the session to the waking default.
+    delivery.release('s1')
+    expect(delivery.route('s1', { note: 'after release', severity: 'nit' })).toBe('steer')
+    expect(commit).toHaveBeenCalledTimes(1)
     expect(steer).toHaveBeenCalledTimes(1)
   })
 
   it('resolves the agent via the registry fallback when the map has no entry (KD-4)', () => {
     const { agent, steer } = makeAgent()
     // The map is empty; only the registry fallback can resolve the agent.
-    const delivery = makeDelivery(3, { lookupAgent: (id) => (id === 's1' ? agent : undefined) })
+    const delivery = makeDelivery({ lookupAgent: (id) => (id === 's1' ? agent : undefined) })
 
     expect(delivery.route('s1', { note: 'fallback steering', severity: 'concern' })).toBe('steer')
     expect(steer).toHaveBeenCalledTimes(1)
@@ -204,8 +205,9 @@ describe('AdvisorDelivery — advisor message construction (spec §6)', () => {
 
   it('routes the self-describing advisor message, not the raw note', () => {
     const { agent, commit } = makeAgent()
-    const delivery = makeDelivery(3)
+    const delivery = makeDelivery()
     delivery.registerAgent(agent)
+    delivery.hold('s1')
 
     delivery.route('s1', { note: 'slow down and re-read the task', severity: 'nit' })
     // The commit seam's argument order is the host's Session.append:
@@ -224,98 +226,70 @@ describe('AdvisorDelivery — advisor message construction (spec §6)', () => {
   it('keeps the two channels mutually exclusive (no double delivery)', () => {
     // The load-bearing invariant against double delivery: a steer is
     // consumed AND committed by the host's step loop when claimed, so a
-    // route that both steered and appended would deliver the note twice;
-    // a commit path that steered would do the same in the other order.
+    // route that both steered and appended would deliver the note twice.
     const { agent, commit, steer } = makeAgent()
-    const delivery = makeDelivery(0)
+    const delivery = makeDelivery()
     delivery.registerAgent(agent)
 
-    // Waking note: steer only — the session log is never touched directly.
+    // Unheld: steer only — the session log is never touched directly.
     expect(delivery.route('s1', { note: 'wake up', severity: 'concern' })).toBe('steer')
     expect(steer).toHaveBeenCalledTimes(1)
     expect(commit).not.toHaveBeenCalled()
 
-    // Non-waking note: commit only — the agent is never woken.
-    expect(delivery.route('s1', { note: 'quiet note', severity: 'nit' })).toBe('commit')
+    // Held: commit only — the agent is never steered again for the same note.
+    delivery.hold('s1')
+    expect(delivery.route('s1', { note: 'gated note', severity: 'blocker' })).toBe('commit')
     expect(commit).toHaveBeenCalledTimes(1)
     expect(steer).toHaveBeenCalledTimes(1)
   })
 })
 
 // ---------------------------------------------------------------------------
-// immuneTurns cooldown (spec §6)
+// The hold bracket (pre-step review gate wiring surface)
 // ---------------------------------------------------------------------------
 
-describe('AdvisorDelivery — immuneTurns cooldown (spec §6)', () => {
-  it('downgrades interrupting notes to a commit until N stepped turns complete, then steers again', () => {
-    const { agent, commit, steer } = makeAgent()
-    const delivery = makeDelivery(3)
-    delivery.registerAgent(agent)
-
-    // Turn N completes → the advisor extracts a concern → actually steered → the
-    // fence arms with a countdown of immuneTurns (3).
-    expect(delivery.route('s1', { note: 'first interrupt', severity: 'concern' })).toBe('steer')
-
-    // Each completed stepped primary turn decrements the countdown; interrupting
-    // notes inside the window downgrade to a commit (and never re-arm the fence).
-    delivery.onSteppedTurnEnd('s1')
-    expect(delivery.route('s1', { note: 'still a problem', severity: 'blocker' })).toBe('commit')
-    delivery.onSteppedTurnEnd('s1')
-    expect(delivery.route('s1', { note: 'still a problem 2', severity: 'concern' })).toBe('commit')
-    delivery.onSteppedTurnEnd('s1') // third turn completes → cooldown exhausted
-
-    // Steering resumes.
-    expect(delivery.route('s1', { note: 'still a problem 3', severity: 'concern' })).toBe('steer')
-
-    expect(steer).toHaveBeenCalledTimes(2)
-    expect(commit).toHaveBeenCalledTimes(2)
-  })
-
-  it('never arms the fence on a nit — a concern right after a nit still steers', () => {
-    const { agent, commit, steer } = makeAgent()
-    const delivery = makeDelivery(3)
-    delivery.registerAgent(agent)
-
-    expect(delivery.route('s1', { note: 'minor nit', severity: 'nit' })).toBe('commit')
-    expect(delivery.route('s1', { note: 'real concern', severity: 'concern' })).toBe('steer')
-    expect(steer).toHaveBeenCalledTimes(1)
-
-    // Inside the armed window, nits still commit (they never wake).
-    delivery.onSteppedTurnEnd('s1')
-    expect(delivery.route('s1', { note: 'another nit', severity: 'nit' })).toBe('commit')
-    expect(commit).toHaveBeenCalledTimes(2)
-  })
-
-  it('immuneTurns 0 disables the cooldown — every interrupt steers', () => {
-    const { agent, steer } = makeAgent()
-    const delivery = makeDelivery(0)
-    delivery.registerAgent(agent)
-
-    expect(delivery.route('s1', { note: 'a', severity: 'concern' })).toBe('steer')
-    expect(delivery.route('s1', { note: 'b', severity: 'blocker' })).toBe('steer')
-    expect(steer).toHaveBeenCalledTimes(2)
-  })
-
-  it('reset clears the armed cooldown (KD-5 reset triggers)', () => {
-    const { agent, steer } = makeAgent()
-    const delivery = makeDelivery(3)
-    delivery.registerAgent(agent)
-
-    delivery.route('s1', { note: 'interrupt', severity: 'concern' }) // arms 3
-    delivery.reset('s1')                                             // compaction / surface replace
-    expect(delivery.route('s1', { note: 'after reset', severity: 'concern' })).toBe('steer')
-    expect(steer).toHaveBeenCalledTimes(2)
-  })
-
-  it('unregisterAgent clears the agent and its cooldown with the session (KD-4 dispose)', () => {
+describe('AdvisorDelivery — the gate hold bracket', () => {
+  it('isHeld mirrors hold/release', () => {
     const { agent } = makeAgent()
-    const delivery = makeDelivery(3)
+    const delivery = makeDelivery()
     delivery.registerAgent(agent)
 
-    delivery.route('s1', { note: 'interrupt', severity: 'concern' }) // arms 3
+    expect(delivery.isHeld('s1')).toBe(false)
+    delivery.hold('s1')
+    expect(delivery.isHeld('s1')).toBe(true)
+    delivery.release('s1')
+    expect(delivery.isHeld('s1')).toBe(false)
+  })
+
+  it('a hold never bleeds into another session', () => {
+    const { agent } = makeAgent('s1')
+    const { agent: other, commit: otherCommit, steer: otherSteer } = makeAgent('s2')
+    const delivery = makeDelivery()
+    delivery.registerAgent(agent)
+    delivery.registerAgent(other)
+    delivery.hold('s1')
+
+    expect(delivery.route('s2', { note: 'separate session', severity: 'nit' })).toBe('steer')
+    expect(otherSteer).toHaveBeenCalledTimes(1)
+    expect(otherCommit).not.toHaveBeenCalled()
+  })
+
+  it('unregisterAgent clears the agent AND a live hold with the session (KD-4 dispose)', () => {
+    const { agent, steer } = makeAgent()
+    const delivery = makeDelivery()
+    delivery.registerAgent(agent)
+
+    delivery.hold('s1')
     delivery.unregisterAgent('s1')
-    // No agent anymore → dropped (and the cooldown died with the session).
+    // No agent anymore → dropped, and the hold flag died with the session.
     expect(delivery.route('s1', { note: 'x', severity: 'concern' })).toBeUndefined()
+    expect(delivery.isHeld('s1')).toBe(false)
+    // A session id re-registered after dispose must not inherit the stale hold.
+    const { agent: revived, steer: revivedSteer } = makeAgent('s1')
+    delivery.registerAgent(revived)
+    expect(delivery.route('s1', { note: 'after revive', severity: 'concern' })).toBe('steer')
+    expect(revivedSteer).toHaveBeenCalledTimes(1)
+    expect(steer).not.toHaveBeenCalled()
   })
 })
 
@@ -326,7 +300,7 @@ describe('AdvisorDelivery — immuneTurns cooldown (spec §6)', () => {
 describe('AdvisorDelivery — missing agent → drop (KD-4)', () => {
   it('drops the note without throwing when no agent resolves, and logs a warning', () => {
     const { logger, warn } = makeLogger()
-    const delivery = new AdvisorDelivery({ immuneTurns: 3, logger })
+    const delivery = new AdvisorDelivery({ logger })
 
     expect(delivery.route('ghost-session', { note: 'no agent here', severity: 'blocker' })).toBeUndefined()
     expect(warn).toHaveBeenCalledTimes(1)
@@ -367,7 +341,7 @@ describe('AdvisorDelivery — contained throw through the routing seam (T4 F1)',
     agent.steer = vi.fn(() => {
       throw new Error('steer exploded')
     })
-    const delivery = makeDelivery(3)
+    const delivery = makeDelivery()
     delivery.registerAgent(agent)
 
     const llm = new FakeLlm([
@@ -398,13 +372,15 @@ describe('AdvisorDelivery — contained throw through the routing seam (T4 F1)',
     expect(runtime.pendingCount).toBe(0)
   })
 
-  it('a throwing session append (the commit arm) never crashes the drain either', async () => {
+  it('a throwing session append (the held-commit arm) never crashes the drain either', async () => {
     const { agent } = makeAgent()
     agent.session.append = vi.fn(() => {
       throw new Error('append exploded')
     })
-    const delivery = makeDelivery(3)
+    const delivery = makeDelivery()
     delivery.registerAgent(agent)
+    // The commit arm only runs while the gate holds the session.
+    delivery.hold('s1')
 
     const llm = new FakeLlm([
       { chunks: textReply('{"note":"first"}') },
@@ -433,7 +409,7 @@ describe('AdvisorDelivery — contained throw through the routing seam (T4 F1)',
 })
 
 // ---------------------------------------------------------------------------
-// SessionTranscriptObserver — delivery hooks (turn counting + latch reset)
+// SessionTranscriptObserver — delivery hooks (latch reset)
 // ---------------------------------------------------------------------------
 
 /** Synthetic replace op — dsh brands seqs (`SessionSeq`), compile-time only here. */
@@ -538,23 +514,6 @@ function feedAppend(
 }
 
 describe('SessionTranscriptObserver — delivery hooks (T6)', () => {
-  it('fires onSteppedTurnEnd once per stepped reviewable turn/end, skipping no-step and aborted turns', () => {
-    const ends: string[] = []
-    const observer = new SessionTranscriptObserver({
-      maxDeltaMessages: 60,
-      onDelta: () => {},
-      onSteppedTurnEnd: (sessionId) => ends.push(sessionId),
-    })
-    feedAppend(observer, 's1', [], [
-      ...simpleTurn(1, 'do it', 'done'),
-      turnStart(2), turnEnd(2, 'completed'),                                    // no-step turn → no fire
-      turnStart(3), userMessage('more'), stepStart(3, 1),
-      assistantMessage('more done'), stepEnd(3, 1), turnEnd(3, 'aborted'),       // stepped but aborted → no fire
-      ...simpleTurn(4, 'again', 'again done'),
-    ])
-    expect(ends).toEqual(['s1', 's1'])
-  })
-
   it('fires onRewrite for compact/* and replace events, never for plain appends', () => {
     const rewrites: string[] = []
     const observer = new SessionTranscriptObserver({
@@ -569,36 +528,5 @@ describe('SessionTranscriptObserver — delivery hooks (T6)', () => {
       ...simpleTurn(2, 'next', 'reply'),                                     // appends → no rewrite
     ])
     expect(rewrites).toEqual(['s1', 's1'])
-  })
-
-  it('wires observer turn-ends into the delivery cooldown end to end', () => {
-    const { agent, commit, steer } = makeAgent()
-    const delivery = makeDelivery(2)
-    delivery.registerAgent(agent)
-    const observer = new SessionTranscriptObserver({
-      maxDeltaMessages: 60,
-      onDelta: () => {},
-      onSteppedTurnEnd: (sessionId) => delivery.onSteppedTurnEnd(sessionId),
-    })
-
-    const turn1 = simpleTurn(1, 'first', 'reply one')
-    const turn2 = simpleTurn(2, 'second', 'reply two')
-    const turn3 = simpleTurn(3, 'third', 'reply three')
-
-    // Turn 1 completes; the advisor (async) then delivers an interrupt → steer
-    // arms the fence with a countdown of 2.
-    feedAppend(observer, 's1', [], turn1)
-    expect(delivery.route('s1', { note: 'interrupt', severity: 'concern' })).toBe('steer')
-
-    // Turn 2 completes → countdown 1; the next interrupt downgrades to a commit.
-    feedAppend(observer, 's1', turn1, turn2)
-    expect(delivery.route('s1', { note: 'still', severity: 'blocker' })).toBe('commit')
-
-    // Turn 3 completes → countdown exhausted; steering resumes.
-    feedAppend(observer, 's1', [...turn1, ...turn2], turn3)
-    expect(delivery.route('s1', { note: 'resume', severity: 'concern' })).toBe('steer')
-
-    expect(steer).toHaveBeenCalledTimes(2)
-    expect(commit).toHaveBeenCalledTimes(1)
   })
 })

@@ -18,9 +18,9 @@ import type { AdvisorConfig, ResolvedAdvisorConfig } from 'dsh-advisor'
 | `name` | `'dsh-advisor'`（string 常量） | 插件名。 |
 | `inject` | `['sessions', 'agents', 'llm']` | 插件消费的服务；行在全部可用后加载。 |
 | `Config` | schemastery schema（value） | Loader schema（严格：默认值 + 类型/边界校验），由 cordis Loader 校验插件行 config。见 [配置指南](configuration.md#配置字段)。 |
-| `AdvisorConfig` | type | 插件行 config 契约（`provider` / `model` / `systemPrompt` / `immuneTurns` / `maxDeltaMessages`——`enabled` 键已移除，2026-09-26：插件行开关即总开关）。 |
+| `AdvisorConfig` | type | 插件行 config 契约（`provider` / `model` / `systemPrompt` / `maxDeltaMessages` 等十三键——`enabled` 键已移除（2026-09-26：插件行开关即总开关），`immuneTurns` 键已移除（2026-11-04：冷却随预步评审门退役）；两者及 `maxTokens` 的存量行均静默忽略）。 |
 | `ResolvedAdvisorConfig` | type | 显式模型门禁（S4）之后的运行时契约（含可选的 `disabledReason`）。 |
-| `apply(ctx, config)` | function | 插件 apply：为 entry 的 volatile live 字段建立 settings bridge（`loader/volatile-update` 驱动）、注册 `AdvisorConfigGateway` 与 typert 端点（条件 `ctx.inject(['typert'], ...)`）、组合 observer / runtime / delivery、在组合 command registry 时注册 `/advisor` 指令（条件 `ctx.inject(['commands'], ...)`）。 |
+| `apply(ctx, config)` | function | 插件 apply：为 entry 的 volatile live 字段建立 settings bridge（`loader/volatile-update` 驱动）、注册 `AdvisorConfigGateway` 与 typert 端点（条件 `ctx.inject(['typert'], ...)`）、组合 observer / runtime / delivery 与**预步评审门**（`agent/pre-step` waterfall listener，0.6.48——step 时钟到点时 hold 住下一个 step 直到评审落账）、在组合 command registry 时注册 `/advisor` 指令（条件 `ctx.inject(['commands'], ...)`）。 |
 
 > 包根**没有**按函数粒度重导出内部运行函数（如 `resolveAdvisorConfig` 不在包根导出面内 —— 它由 `src/config.ts` 内部使用；包根的运行时导出面就是 `name` / `inject` / `Config` / `apply`，类型面是 `AdvisorConfig` / `ResolvedAdvisorConfig`）。这与按「纯函数库」设计的插件不同 —— `dsh-advisor` 是组合包（bundle），不是函数库；内部模块（`src/advisor-runtime.ts`、`src/delivery.ts`、`src/commands.ts` 等）是 cordis-free 的实现单元，通过 `apply` 的 wiring 消费，不在包根暴露。
 

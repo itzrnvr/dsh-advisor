@@ -4,6 +4,8 @@
 
 > **范围声明**：本仓库的验证环境受沙箱约束 —— **不能对运行中的 dsh 安装（真实 `$DSH_HOME`）做任何写入**，不能操作 web Settings GUI、不能发起真实模型调用、不能跨进程观察真实会话。因此下方「已验证」只覆盖 workspace 内可完成的证据（测试套件、typecheck、build、CI 工作流契约）；「待用户运行」如实列出真实环境步骤与预期，不夸大已验证范围。验证数据采集于分支 `docs/align-docs-triplet`（base `origin/main` @ `c07827e`），vitest 3.2.7。
 
+> **修订（2026-11-04）**：预步评审门（0.6.48）改变送达契约——一条规则（held→提交进被 gate 的 step 自身请求；其余一律 steer 唤醒），`immuneTurns` / `wake` / 严重度路由退役。下表基线（16 文件 / 319 例）来自更早的采集分支；当前套件为 **39 文件 / 747 例**（2026-11-04 本地全绿：727 passed + 20 skipped，`pnpm run test`——gate:commit 每次提交本地全量跑，此前“本地禁止全量测试”的约束已不存在）。契约描述随本轮修订的行：`delivery.test.ts`（一条规则 + hold 栅栏）、`integration.test.ts`（全部 steer、无栅栏；committed 形态的自审排除仍由 C-1 钉住）、`settings-live.test.ts`（re-home 到 maxDeltaMessages/节奏 latch）、`config.test.ts`（新增 `immuneTurns` LEGACY 容忍迁移钉）、`transcript.test.ts`（step 时钟改为 gate 拉取：`stepReviewDue` / `takeStepDelta`）；新增 `pre-step-gate.test.ts`（本轮承重接线：hold 括住 drain、note 落在被 gate 的 step 请求内、decision 原样透传、abort/无 runtime/disabled 会话各出口都释放）。
+
 ## 已验证（workspace 内证据）
 
 ### 1. 测试矩阵（16 个文件 / 319 个用例，全部通过）
@@ -60,7 +62,7 @@ dsh --profile web                  # 重启 dsh 会话使宿主半与客户端�
 ### 2. web 组合包配置卡片验证
 
 1. 打开 web 侧边栏 → **「插件」**页 → 打开 **dsh-advisor** 组合包页面，确认 **Advisor 卡片**出现在该包描述与其插件行之间的配置区（平铺表单，页面标题/描述来自 locale 元数据）。
-2. **首次打开（无 `advisor` 配置）**：卡片直接平铺渲染表单——provider / model 选择框（**只列出已配置的 provider** 及其模型）、`systemPrompt` 文本框（placeholder 即内置评审 prompt，下方 hint 提示空 = 默认）与 `immuneTurns` / `maxDeltaMessages` 并排数字输入；无 enabled 开关（已移除——插件行开关即总开关）。
+2. **首次打开（无 `advisor` 配置）**：卡片直接平铺渲染表单——provider / model 选择框（**只列出已配置的 provider** 及其模型）、`systemPrompt` 文本框（placeholder 即内置评审 prompt，下方 hint 提示空 = 默认）与数字输入组（`maxDeltaMessages` / `callTimeoutMinutes` / `historyMaxTokens` / `reviewEveryTurns` / `reviewEverySteps`）、checkbox 组（`proseFallback` / `nextPrompt` / `defaultEnabled` / `mainSessionOnly`）；无 enabled 开关（已移除——插件行开关即总开关），无 `immuneTurns` 输入（2026-11-04 随冷却退役）。
 3. provider/model 缺失时 Save 禁用并显示行内必填文案；选择 provider/model 后 Save 启用。
 4. 保存 → **预期**：保存成功（经 `/api/advisor/set` → `settings.update('advisor', …)` → config editor → Loader）；该 profile 补丁层（`~/.dsh/profiles/<profile>/cordis.patch.yml`）的 `advisor` 行 `config` 更新为所选 provider/model；重进页面显示已保存值。
 5. 降级路径抽查：网关不可达时卡片平铺显示 config-channel 提示且不提供 Save；settings provider 只读时显示只读提示并禁用写入；`advisor.get` 失败时显示可重试的加载失败提示。
@@ -75,10 +77,11 @@ dsh --profile web                  # 重启 dsh 会话使宿主半与客户端�
 
 ### 4. 运行时行为验证（真实模型调用）
 
-1. 配置 provider/model，发起一次会话并完成若干 stepped 主 turn。
-2. **预期**：每个可评审 turn/end 之后日志出现一次 advisor 模型调用（`ctx.llm.stream`，调用选项**不携带** `maxTokens`——2026-10-18 裁决移除模型侧预算；输出由 `ADVISOR_NOTE_MAX_CHARS`（768 字符）在抽取侧封顶，延迟由 60s 调用 deadline 约束）；抽取出的 note 以 `[advisor:{severity}] <note>` 出现在会话流（nit → 非唤醒注入；concern/blocker → steer 唤醒）；advisor 自己的消息不进入后续 advisor delta（自审排除）。
-3. **immuneTurns 冷却**：连续产生 concern/blocker 时，前一条实际 steer 后接下来的 `immuneTurns` 个主 turn 内，打断性 note 降级为 inject。
+1. 配置 provider/model（`reviewEverySteps` ≥ 1，如默认 3），发起一次会话并让主 agent 跑一个**多 step 长 turn**（工具调用若干轮）。
+2. **预步评审门节奏（0.6.48 核心验证）**：**预期**：每 N 个完成的 step 之后，下一个 step 前出现一次 advisor 模型调用；会话流中 note 出现在 **step 之间**（`[advisor:{severity}] …` 的 user 消息夹在 agent 工作中间），而不是 turn 结束后连续爆出一串；评审慢时下一个 step 明显等待评审落账（上限 `callTimeoutMinutes`，超时 fail-open 放行、note 迟到改走 steer）。
+3. **送达一条规则**：**预期**：turn 结束后的评审 note 走 steer——空闲 agent 会被它唤醒继续处理（用户裁决的送达规则）；note 以 `[advisor:{severity}] <note>` 出现在会话流，advisor 自己的消息不进入后续 advisor delta（自审排除，committed 与 steered 两种形态都排除）；调用选项**不携带** `maxTokens`（2026-10-18 裁决），输出由 `ADVISOR_NOTE_MAX_CHARS`（4,000 字符）封顶，延迟由 `callTimeoutMinutes` deadline 约束。
 4. **failure policy 抽查**：配置不可用的模型（如不存在/无效凭据）→ 日志出现 transient drop（或 permanent halt）；halted 后该会话 advisor 停止，`/advisor on` 重建。
+5. **LEGACY 迁移抽查**：profile 补丁层的 advisor 行保留旧 `immuneTurns: N` 时插件行**照常加载**（键被静默剥离；与 `enabled` / `maxTokens` 同一先例）。
 
 ### 5. 卸载验证
 

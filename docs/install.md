@@ -96,8 +96,9 @@ fields are schema-volatile live fields (dsh ≥ 0.1.7-rc.1), committed by the
 Loader without a remount; there is no global settings.yaml section anymore
 (a pre-0.1.7 one is imported into the active profile and renamed
 `.imported` on first boot). On dsh-tui ≥ v0.8.0 the TUI `/settings` screen
-also edits the same four keys (`provider` / `model` /
-`immuneTurns` / `maxDeltaMessages`) in its Advisor section — edits are
+also edits six of these keys (`provider` / `model` /
+`maxDeltaMessages` / `proseFallback` / `defaultEnabled` /
+`reasoningEffort`) in its Advisor section — edits are
 staged and written on save through the revision-fenced `settings.mutate`
 into the same advisor entry config (persisted in the profile patch),
 re-applying live without a restart. The section ships with the

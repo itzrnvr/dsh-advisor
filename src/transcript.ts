@@ -35,8 +35,7 @@
  *    (the arriving input opens the next round); rewrite-type triggers
  *    (compact summary replace) pass the full log to trigger the KD-5 replay.
  *    Both modes share the same renderer/cursor, so the cursor advance dedupes
- *    (one delta per completed round), and both call `onSteppedTurnEnd` (the
- *    immuneTurns countdown — T6) before rendering.
+ *    (one delta per completed round).
  *
  * **Mode latch**: once a session has produced ANY `turn/end` event
  * (reviewable or not), the new gate sleeps for it — the session is a
@@ -45,9 +44,13 @@
  * supplementarily reviewed by the new gate). Harness/agentic sessions never
  * emit `turn/end`, so their latch never arms.
  *
- * It also exposes the T6 delivery hooks: `onSteppedTurnEnd` (one completed
- * stepped primary turn — the immuneTurns countdown) and `onRewrite` (a
- * compact/replace event — the KD-5 latch reset). `index.ts` binds the cordis
+ * The STEP clock (0.6.48) is a third, gate-driven surface, not an event
+ * trigger: `step/end` events only accumulate a per-session count; the
+ * pre-step review gate in `index.ts` consults {@link
+ * SessionTranscriptObserver.stepReviewDue} and consumes the window with
+ * {@link SessionTranscriptObserver.takeStepDelta} before the next model
+ * step starts. `onRewrite` (a compact/replace event — the KD-5 latch reset)
+ * stays an observer callback. `index.ts` binds the cordis
  * `session/event` / `session/disposed` / `agent/disposed` listeners into an
  * instance of this class.
  *
@@ -334,7 +337,7 @@ export class DeltaRenderer {
   /**
    * Full reset: rewind the cursor to 0 and drop all fold state. The next
    * `update` replays the whole current surface (bounded). Also the KD-5
-   * reset surface for emission-guard / immuneTurns latches (T5/T6 hook into
+   * reset surface for the emission-guard latch (T5 hooks into
    * the same session lifecycle).
    */
   reset(): void {
@@ -464,35 +467,32 @@ export interface SessionObserverOptions {
   /** Invoked once per stepped reviewable turn/end with the rendered delta. */
   readonly onDelta: (sessionId: string, delta: Delta) => void
   /**
-   * Step-clock cadence (fork addition): review inside a turn after every Nth
-   * COMPLETED model step (reasoning + response + tool calls + results = one
-   * step). 0 = off. The review fires on the NEXT step's `step/start` — the
-   * same completeness guarantee the turn gate gets from `turn/end` — never
-   * while counting assistant/tool events, so a half-arrived step is never
-   * rendered.
+   * Step-clock cadence (0 = off). Since 0.6.48 the clock COUNTS completed
+   * steps (`step/end`) but no longer fires reviews itself: the pre-step
+   * review gate (`index.ts`, listening to the host's `agent/pre-step`
+   * waterfall) asks {@link SessionTranscriptObserver.stepReviewDue} when the
+   * next step is about to start, consumes the window via
+   * {@link SessionTranscriptObserver.takeStepDelta}, and holds the step until
+   * the review is delivered. Counting `step/end` keeps the completeness
+   * guarantee (a half-arrived step is never rendered) without reviewing
+   * mid-flight.
    */
   readonly reviewEverySteps?: number
   /**
-   * Turn-clock cadence (fork addition): review after every Nth completed
-   * stepped turn. Default 1 (every turn — the pre-fork behavior). Inert in
-   * agentic sessions that never emit `turn/end`; the step clock covers those.
+   * Turn-clock cadence: review after every Nth completed stepped turn.
+   * Default 1 (every turn — the pre-fork behavior). Inert in agentic
+   * sessions that never emit `turn/end`; the step clock covers those.
    */
   readonly reviewEveryTurns?: number
   /**
-   * Invoked once per stepped reviewable turn/end (the same gate as `onDelta`),
-   * before the delta is rendered — the delivery module (T6) counts completed
-   * primary turns here to decrement its immuneTurns cooldown (spec §6).
-   */
-  readonly onSteppedTurnEnd?: (sessionId: string) => void
-  /**
    * Invoked when a rewrite event is observed (`compact/*` or a non-append
-   * surface op) — the delivery module (T6) clears its immuneTurns latch here
-   * (KD-5 reset triggers). Fires before the turn gate: a rewrite can arrive
-   * outside a turn/end.
+   * surface op) — the KD-5 reset trigger: `index.ts` resets the session's
+   * emission-guard dedupe and drops the notes derivation cache here. Fires
+   * before the turn gate: a rewrite can arrive outside a turn/end.
    */
   readonly onRewrite?: (sessionId: string) => void
   /**
-   * Invoked beside `onSteppedTurnEnd` for a stepped `turn/end` whose reason
+   * Invoked for a stepped `turn/end` whose reason
    * is exactly `completed` (plan dsh-advisor-next-prompt-n12, T1) — the
    * next-prompt manager arms its per-session prediction slot here. Cut-short
    * turns (`max-tokens`/`error`) do not arm: nothing was completed to
@@ -578,11 +578,11 @@ export class SessionTranscriptObserver {
   private readonly turnEndSessions = new Set<string>()
   /** Bounded delta window (KD-3); forwarded to every per-session renderer. */
   private maxDeltaMessages: number
-  /** Step-clock cadence: 0 = off (fork addition). */
+  /** Step-clock cadence: 0 = off. */
   private reviewEverySteps: number
-  /** Turn-clock cadence: 1 = every completed turn (fork addition). */
+  /** Turn-clock cadence: 1 = every completed turn. */
   private reviewEveryTurns: number
-  /** Steps started since the last step-clock review, per session. */
+  /** Completed steps since the last consumed review, per session (gate clock). */
   private readonly stepsSinceReview = new Map<string, number>()
   /** Completed turns since the last turn-clock review, per session. */
   private readonly turnsSinceReview = new Map<string, number>()
@@ -625,13 +625,14 @@ export class SessionTranscriptObserver {
    * appended event). Renders (and emits via `onDelta`) on either trigger:
    * a stepped `turn/end` with a reviewable reason (standard sessions), or a
    * human-input arrival with an unreviewed assistant increment (agentic
-   * sessions — the reply-complete gate, KD-N4-5). The mode latch keeps the
-   * second gate dormant for any session that emits `turn/end`.
+   * sessions — the reply-complete gate, KD-N4-5). `step/end` events only
+   * advance the gate clock (see {@link stepReviewDue}). The mode latch keeps
+   * the second gate dormant for any session that emits `turn/end`.
    */
   handleEvent(sessionId: string, events: readonly SessionEvent[], event: SessionEvent): void {
     // KD-5 reset surface: a rewrite event (compact/*, non-append surface op)
-    // clears the delivery immuneTurns latch immediately (T6) — before the turn
-    // gate, since a rewrite can arrive outside a turn/end.
+    // resets the emission guard / delivery state (T5/T6) immediately — before
+    // the turn gate, since a rewrite can arrive outside a turn/end.
     if (isRewriteEvent(event)) this.options.onRewrite?.(sessionId)
     // Mode latch: ANY turn/end marks the session as standard turn-driven. Set
     // before the reviewable check — a non-reviewable (aborted/blocked) end
@@ -652,11 +653,13 @@ export class SessionTranscriptObserver {
       // would keep it below its interval forever on standard sessions.
       this.stepsSinceReview.delete(sessionId)
     }
-    // Fork addition — step clock: a step is COMPLETE only once the next step
-    // starts (same completeness guarantee turn/end gives the turn clock), so
-    // the review fires here and never while counting assistant/tool events.
-    if (event.type === 'step/start' && this.reviewEverySteps > 0) {
-      this.maybeReviewOnStep(sessionId, events)
+    // Step clock (0.6.48): COUNT completed steps only. The review itself is
+    // fired by the pre-step gate (index.ts) through stepReviewDue/takeStepDelta
+    // — before the next step's model call, so the primary waits for it. Counting
+    // `step/end` keeps the completeness guarantee (a half-arrived step is never
+    // rendered) and never fires while assistant/tool events are arriving.
+    if (event.type === 'step/end' && this.reviewEverySteps > 0) {
+      this.stepsSinceReview.set(sessionId, (this.stepsSinceReview.get(sessionId) ?? 0) + 1)
       return
     }
     if (isReviewableTurnEnd(event)) {
@@ -665,14 +668,10 @@ export class SessionTranscriptObserver {
       // rejection / empty input / cancellation are not reviewed).
       const latest = findLastMessageTurnEnd(events)
       if (latest === undefined || latest.seq !== event.seq) return
-      // One completed stepped primary turn — the delivery module (T6) counts
-      // these to decrement its immuneTurns cooldown. Fires before the render so
-      // the note produced by this very turn routes with the decremented value.
-      this.options.onSteppedTurnEnd?.(sessionId)
       // Next-prompt arm (plan dsh-advisor-next-prompt-n12, T1): only a
-      // `completed` turn is worth predicting after — beside the delivery
-      // countdown, before the render. The `event.type` check narrows the
-      // event data for the reason read (`isReviewableTurnEnd` already held).
+      // `completed` turn is worth predicting after. The `event.type` check
+      // narrows the event data for the reason read (`isReviewableTurnEnd`
+      // already held).
       if (event.type === 'turn/end' && event.data.reason.kind === 'completed') {
         this.options.onCompletedTurnEnd?.(sessionId)
       }
@@ -704,10 +703,7 @@ export class SessionTranscriptObserver {
     // would pre-advance the cursor and lose the user prompt from the first
     // standard-session turn/end delta).
     if (!renderer.hasUnreviewedAssistant(events)) return
-    // One completed reply round — the immuneTurns countdown (T6) fires before
-    // the render, same ordering as the turn/end path.
-    this.options.onSteppedTurnEnd?.(sessionId)
-    // Turn clock for agentic rounds (fork addition): a session that never
+    // Turn clock for agentic rounds: a session that never
     // emits turn/end still has completed rounds, so reviewEveryTurns gates
     // THIS path too instead of being inert. The cursor is not advanced on a
     // skipped round, so the eventual review carries every skipped round.
@@ -737,28 +733,33 @@ export class SessionTranscriptObserver {
   }
 
   /**
-   * Step clock (fork addition): count the step that just started. When the
-   * count exceeds the configured interval, the PREVIOUS interval's steps are
-   * complete — render and review them now, then restart the count at the
-   * step that is beginning. "Every 3" therefore means every 3 completed
-   * steps since the last review, not absolute step indexes 3/6/9.
+   * Pre-step gate (0.6.48): true when the step clock is due — the clock is on
+   * and at least `reviewEverySteps` COMPLETED steps accumulated since the last
+   * consumed review / turn boundary / human input. Reading is pure; the count
+   * only resets when the gate actually takes the window.
    */
-  private maybeReviewOnStep(sessionId: string, events: readonly SessionEvent[]): void {
-    const started = (this.stepsSinceReview.get(sessionId) ?? 0) + 1
-    if (started <= this.reviewEverySteps) {
-      this.stepsSinceReview.set(sessionId, started)
-      return
-    }
-    this.stepsSinceReview.set(sessionId, 1)
+  stepReviewDue(sessionId: string): boolean {
+    return this.reviewEverySteps > 0
+      && (this.stepsSinceReview.get(sessionId) ?? 0) >= this.reviewEverySteps
+  }
+
+  /**
+   * Consume the step clock for the pre-step gate: reset the count and render
+   * the delta covering everything completed since the last review (either
+   * clock — the renderer owns one cursor). `undefined` when nothing new
+   * arrived, so an empty window never starts a review call. The turn tag is
+   * the OPEN turn (the one whose next step the gate holds), exactly the
+   * attribution the old step clock produced from the step that was starting.
+   * `events` must be the session's current log (everything appended so far) —
+   * the gate passes `agent.session.snapshotEvents()` at hold time, when the
+   * reviewed steps are complete and no newer step has produced events yet.
+   */
+  takeStepDelta(sessionId: string, events: readonly SessionEvent[]): Delta | undefined {
+    this.stepsSinceReview.delete(sessionId)
     const delta = this.rendererFor(sessionId).update(events)
-    // The turn is the one in progress (from the step that just started).
-    if (delta !== undefined) {
-      const turn = currentTurnOf(events)
-      this.options.onDelta(sessionId, {
-        ...delta,
-        ...(turn === undefined ? {} : { turn }),
-      })
-    }
+    if (delta === undefined) return undefined
+    const turn = currentTurnOf(events)
+    return turn === undefined ? delta : { ...delta, turn }
   }
 
   /** Lazy per-session renderer creation, shared by both trigger modes. */

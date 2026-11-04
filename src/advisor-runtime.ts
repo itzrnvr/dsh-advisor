@@ -55,8 +55,10 @@
  *   place — the command layer rebuilds the runtime (dispose + recreate); a
  *   `quota_exhausted` runtime resumes via {@link AdvisorRuntime.resume}.
  *
- * The runtime never parks the primary loop: everything is fire-and-forget
- * async and a failing advisor can only drop its own backlog.
+ * The drain itself is async and self-bounded; since 0.6.48 the primary loop
+ * may deliberately WAIT on it between steps (the pre-step review gate in
+ * `index.ts` calls {@link AdvisorRuntime.waitQuiet}) — everything else stays
+ * fire-and-forget, and a failing advisor can only drop its own backlog.
  *
  * @module dsh-advisor/advisor-runtime
  */
@@ -110,8 +112,6 @@ export type AdviceSeverity = 'nit' | 'concern' | 'blocker'
 export interface AdviceNote {
   readonly note: string
   readonly severity: AdviceSeverity
-  /** Optional reviewer decision to wake the primary agent (fork addition). */
-  readonly wake?: boolean
 }
 
 /**
@@ -452,7 +452,6 @@ export function extractAdviceNote(reply: string): AdviceNote | undefined {
     const note = record.note
     if (typeof note !== 'string' || note.trim().length === 0) continue // KD-2: drop empty note
     const severity = record.severity
-    const wake = record.wake === true ? true : record.wake === false ? false : undefined
     const trimmed = note.trim()
     if (looksLikeTranscript(trimmed)) continue // transcript echo, not advice
     return {
@@ -460,7 +459,6 @@ export function extractAdviceNote(reply: string): AdviceNote | undefined {
         ? `${trimmed.slice(0, ADVISOR_NOTE_MAX_CHARS - 1)}…`
         : trimmed,
       severity: severity === 'concern' || severity === 'blocker' ? severity : 'nit',
-      ...(wake === undefined ? {} : { wake }),
     }
   }
   return undefined
@@ -906,6 +904,39 @@ export class AdvisorRuntime {
   /** Resolve once the current drain run settles (test/integration hook). */
   async waitForDrain(): Promise<void> {
     await this.drainPromise
+  }
+
+  /**
+   * True when the runtime holds no review work: the queue is empty and no
+   * drain is running. The pre-step review gate (`index.ts`) waits on this.
+   */
+  idle(): boolean {
+    return this.queue.length === 0 && !this.draining
+  }
+
+  /**
+   * Wait until this runtime is quiet — every queued review has completed and
+   * its notes went through `onNote` — or until the wait is RELEASED: the bound
+   * expires, `signal` aborts, the runtime is disposed, or the drain is parked
+   * (quota pause / halt — a parked backlog can never deliver before the next
+   * prompt, and the primary must not wait on it). The pre-step review gate
+   * holds the primary loop with this call; an advisory reviewer may delay a
+   * step but never wedge it, so every exit except `'quiet'` means "proceed,
+   * the note did not make this step" (fail-open). Bounded polling, no waiter
+   * plumbing; the default bound is one call deadline (`callTimeoutMs`).
+   */
+  async waitQuiet(signal?: AbortSignal, capMs?: number): Promise<'quiet' | 'released'> {
+    const cap = capMs ?? this.callTimeoutMs
+    const startedAt = Date.now()
+    for (;;) {
+      if (this.disposed || this.state !== 'running' || signal?.aborted === true) return 'released'
+      if (this.idle()) return 'quiet'
+      if (Date.now() - startedAt >= cap) return 'released'
+      await Promise.race([
+        this.drainPromise ?? Promise.resolve(),
+        sleep(Math.min(100, cap)),
+      ])
+    }
   }
 
   private kickDrain(): void {

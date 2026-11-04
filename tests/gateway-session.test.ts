@@ -47,7 +47,7 @@ beforeEach(() => {
 function entryConfig(overrides: Partial<AdvisorConfig> = {}): AdvisorConfig {
   return {
     systemPrompt: '',
-    immuneTurns: 3,
+    
     maxDeltaMessages: 60,
     ...overrides,
   }

@@ -335,7 +335,6 @@ export class NextPromptManager {
       return {
         enabled: false,
         systemPrompt: '',
-        immuneTurns: 0,
         maxDeltaMessages: 60,
         callTimeoutMinutes: 10,
         // Fork additions: required on the resolved contract — inert here

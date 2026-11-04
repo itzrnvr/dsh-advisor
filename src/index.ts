@@ -18,8 +18,8 @@
  * policy (retry-light → drop, 3-drop backlog flush, quota pause, permanent
  * halt — never park the primary). The emission guard (T5) gates extracted
  * notes before delivery; the delivery router (T6) routes accepted notes into
- * the primary agent (nit → inject, concern/blocker → steer, immuneTurns
- * cooldown, KD-4 agent map). T7: `/advisor` toggle/on/off/status commands
+ * the primary agent (pre-step gate hold → session-log commit that joins the
+ * held step's own request; otherwise steer — waking; 0.6.48 one rule). T7: `/advisor` toggle/on/off/status commands
  * (registered through the conditional `ctx.inject(['commands'], ...)` child)
  * drive a per-session override consulted by the runtime gate — the commands
  * start/stop per-session runtimes without touching the persisted config.
@@ -34,8 +34,8 @@
  * Settings (plan dsh-advisor-settings-n2): the plugin-row entry config's nine
  * live fields are schema-volatile (`src/config.ts`), read live through the
  * bridge source (`src/settings.ts`); committed volatile edits (Loader
- * `loader/volatile-update`) re-apply derived state (immuneTurns /
- * maxDeltaMessages / per-session runtimes) without a restart. There is no
+ * `loader/volatile-update`) re-apply derived state (maxDeltaMessages /
+ * review cadence / per-session runtimes) without a restart. There is no
  * config-level `enabled` key (2026-09-26): the plugin-row enable/disable
  * toggle IS the master switch. The per-session `/advisor` override wins,
  * otherwise the persisted `defaultEnabled` decides (schema default true;
@@ -267,7 +267,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     // S1 (gateway readConfig parity): when the raw source is still readable,
     // seed the scalar latches from it — an invalid config only drops the
     // offending keys, so /advisor config (and /advisor status) never
-    // misreport immuneTurns / maxDeltaMessages / systemPrompt vs the web
+    // misreport maxDeltaMessages / systemPrompt vs the web
     // card's /api/advisor/get readback.
     let raw: AdvisorConfig | undefined
     try {
@@ -278,7 +278,6 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     return {
       enabled: false,
       systemPrompt: raw?.systemPrompt ?? '',
-      immuneTurns: raw?.immuneTurns ?? 3,
       maxDeltaMessages: raw?.maxDeltaMessages ?? 0,
       callTimeoutMinutes: raw?.callTimeoutMinutes ?? 10,
       // Fork additions: same containment rule — concrete schema defaults, so
@@ -437,13 +436,16 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   // asynchronously through `ctx.llm.stream`, gates the extracted `AdviceNote`
   // through the T5 emission guard (inside the runtime, between extraction and
   // delivery), and hands accepted notes to `onNote` (T6 routes them).
-  // T6: the delivery router. Owns the KD-4 per-session agent map (keyed by
-  // agent.id === session.id, maintained on agent/created / agent/disposed
-  // below), the severity → channel mapping (nit → inject; concern/blocker →
-  // steer), and the immuneTurns cooldown (spec §6). Accepted notes from the
-  // runtime's onNote are routed here; missing agent → drop + log (KD-4).
+  // T6: the delivery router (0.6.48 one rule). Owns the KD-4 per-session
+  // agent map (keyed by agent.id === session.id, maintained on
+  // agent/created / agent/disposed below); a note routed while the pre-step
+  // gate HOLDS the loop commits to the session log during the hold (joins
+  // the held step's own request), every other note STEERS (waking, consumed
+  // at the next step boundary). Severity routing, the reviewer wake flag and
+  // the immuneTurns cooldown are gone (user ruling 2026-11-04). Accepted
+  // notes from the runtime's onNote are routed here; missing agent → drop +
+  // log (KD-4).
   const delivery = new AdvisorDelivery({
-    immuneTurns: resolved().immuneTurns,
     // Registry fallback (KD-4): covers agents published before this plugin
     // loaded, whose `agent/created` was never observed. The delivery module is
     // session-id-string-typed; the registry key is the branded SessionId.
@@ -541,7 +543,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
    * issue #102 + plan dsh-advisor-reasoning-effort — global-only like
    * systemPrompt, KD-I6). Recorded at runtime creation and compared on every
    * settings change (qc3 W-1 / qc1 W-2): only a signature change tears the
-   * runtime down — an immuneTurns/maxDeltaMessages-only edit updates the
+   * runtime down — a maxDeltaMessages/cadence-only edit updates the
    * latches in place and keeps every in-flight call and backlog. The triple
    * reads the EFFECTIVE config (spec §5.3), so a session-pinned pair freezes
    * the signature against later global pair edits — global edits reach
@@ -724,14 +726,17 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   }
 
   // n4 QC F-6: claim the single-reviewer role HERE — after every
-  // construction-time throwing read (the delivery latch above resolves the
-  // config and can throw on a rejected row), so a first fiber whose config
-  // fails the gate never leaves the flag claimed (qc1 W-4). Non-reviewer
-  // instances stop here — observer/runtime/delivery and the /advisor commands
-  // are wired only by the single claimed reviewer. Their own settings bridge
-  // (installAdvisorSettings above) stays live: it is per-fiber by
-  // construction, nothing to dedupe (qc1 W-5's registration is gone with the
-  // 0.1.7-rc.1 namespace model).
+  // construction-time throwing read (qc1 W-4), so a first fiber whose config
+  // fails the gate never leaves the flag claimed (the claim is process-global;
+  // a leak bricks the advisor until host restart). The read that threw is now
+  // EXPLICIT: the 0.6.48 gate removed the delivery router's `immuneTurns`
+  // construction latch, which used to be the last `resolved()` throw before
+  // the claim. Non-reviewer instances stop here — observer/runtime/delivery
+  // and the /advisor commands are wired only by the single claimed reviewer.
+  // Their own settings bridge (installAdvisorSettings above) stays live: it is
+  // per-fiber by construction, nothing to dedupe (qc1 W-5's registration is
+  // gone with the 0.1.7-rc.1 namespace model).
+  resolved()
   const reviewer = claimReviewer()
   if (!reviewer) {
     ctx.logger('advisor').debug('non-reviewer instance — observer/runtime/commands skipped (single-reviewer guard)')
@@ -757,21 +762,13 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     // them below without rebuilding the observer.
     reviewEveryTurns: resolved().reviewEveryTurns,
     reviewEverySteps: resolved().reviewEverySteps,
-    onSteppedTurnEnd: (sessionId: string) => {
-      // One completed stepped primary turn — decrement the immuneTurns
-      // cooldown (T6, spec §6). Fires before the delta render, so the note
-      // this very turn produces is routed with the decremented cooldown.
-      delivery.onSteppedTurnEnd(sessionId)
-    },
     onRewrite: (sessionId: string) => {
-      // KD-5: a compaction / surface rewrite resets the immuneTurns latch
-      // (delivery) AND the emission-guard dedupe history (runtime) — session
-      // state is being rewritten, so both latches' basis no longer applies.
-      // T8: guard reset wired through the runtime (T5 ⚠️ follow-through).
+      // KD-5: a compaction / surface rewrite resets the emission-guard dedupe
+      // history (runtime) — session state is being rewritten, so the latch's
+      // basis no longer applies (T5 ⚠️ follow-through, T8 wiring).
       // The notes derivation cache is dropped too: a rewrite can replace the
       // advisor messages the notes view derives from, with an unchanged
       // (count, lastSeq) tail in the worst case.
-      delivery.reset(sessionId)
       runtimes.get(sessionId)?.resetGuard()
       notesCache.delete(sessionId)
     },
@@ -823,6 +820,63 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   ctx.on('session/event', (session: Session, event: SessionEvent) => {
     observer.handleEvent(session.id, session.snapshotEvents(), event)
   }, { global: true })
+  // 0.6.48 — the PRE-STEP REVIEW GATE. The host awaits this waterfall before
+  // every model step (dsh-agent-loop `turn()`: inbox.claim → `agent/pre-step`
+  // → step/start → step()). When the step clock is due (N completed steps
+  // since the last review), the gate renders the window, enqueues it, and
+  // HOLDS the step until the review is delivered — the extracted note commits
+  // to the session log during the hold (`delivery` hold flag) and therefore
+  // joins THIS step's own model request (`buildRequest` derives the surface
+  // after the waterfall resolves; a steer during the hold would be claimed a
+  // step too late, the claim already happened above the waterfall). The
+  // primary can no longer outrun the reviewer: notes interleave with real
+  // agent work by construction, and the async backlog that used to burst at
+  // yield cannot exist. Fences:
+  //  - `runtime.waitQuiet` is bounded (fail-open): a slow/hung/parked review
+  //    releases the step at its cap; the note then steers late. An advisory
+  //    reviewer may delay a step, never wedge it.
+  //  - the turn's `signal` releases the hold immediately on user cancel.
+  //  - sessions with no runtime (disabled/excluded) never hold and never
+  //    wait — the clock is consumed, no review is triggered.
+  //  - every exit path releases the hold flag (try/finally) — a leaked flag
+  //    would silently turn a session's later notes into passive commits.
+  // The listener rides the agent's scope carrier like `session/event` →
+  // `{ global: true }` is required for cross-scope fibers (single-reviewer
+  // election may place this fiber in an isolated scope).
+  ctx.on('agent/pre-step', async (payload, next) => {
+    const decision = await next()
+    try {
+      const agent = payload.agent
+      const sessionId: string = agent.id
+      if (!observer.stepReviewDue(sessionId)) return decision
+      // Consuming the clock is unconditional: a disabled session must not
+      // re-offer the same window at every following step.
+      const delta = observer.takeStepDelta(sessionId, agent.session.snapshotEvents())
+      // ensureRuntime, not a bare map read: the gate is the first delta an
+      // agent that predates this plugin may ever see (the turn-clock onDelta
+      // lazy-creation fallback moved here); it returns undefined for
+      // disabled/excluded sessions — those never hold.
+      const runtime = delta === undefined ? undefined : ensureRuntime(sessionId)
+      if (runtime === undefined || delta === undefined) return decision
+      // Same delta feeds the next-prompt predictor (parity with the old
+      // onDelta path for step-clock windows).
+      suggestions.onDelta(sessionId, delta)
+      // Hold FIRST: the flag brackets every possible onNote from this enqueue
+      // (close any race window between drain start and this function's await).
+      delivery.hold(sessionId)
+      try {
+        runtime.enqueue(delta)
+        await runtime.waitQuiet(payload.signal)
+      } finally {
+        delivery.release(sessionId)
+      }
+    } catch (error) {
+      // Advisory-only: a gate failure must never reject the waterfall or
+      // fail the step. The finally above already released the hold flag.
+      ctx.logger('advisor').warn('advisor: pre-step gate failed — contained', { error })
+    }
+    return decision
+  }, { global: true })
   // Per-session runtime lifecycle. Spec KD-5(c) pins `agent/disposed`;
   // `session/disposed` is the store-level pair (both are idempotent — a
   // runtime is disposed at most once, whichever signal lands first). `agent/created`
@@ -870,15 +924,15 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     notesCache.delete(session.id)
   }, { global: true })
 
-  // T1-settings live re-apply: construction-time latches (immuneTurns on the
-  // delivery, maxDeltaMessages on the observer, systemPrompt + provider/model
+  // T1-settings live re-apply: construction-time latches (maxDeltaMessages on
+  // the observer, systemPrompt + provider/model
   // + the global proseFallback constant (KD-I4, issue #102) on
   // each per-session runtime) are re-derived from the NEW source on every
   // committed volatile edit — the Loader's `loader/volatile-update` event,
   // dispatched to this fiber only after the committed values are readable —
-  // and re-applied: delivery/observer update in place, per-session runtimes
+  // and re-applied: the observer updates in place, per-session runtimes
   // rebuild only when their runtime-affecting signature actually changed
-  // (qc3 W-1 / qc1 W-2: an immuneTurns/maxDeltaMessages-only edit must not
+  // (qc3 W-1 / qc1 W-2: a maxDeltaMessages/cadence-only edit must not
   // abort in-flight advisor calls or drop backlogs). The S4 gate is
   // re-applied by the resolver on every read, so a config edit can never
   // start a gated model call (SSOT unchanged). An entry config the resolver
@@ -898,7 +952,6 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       })
       return
     }
-    delivery.setImmuneTurns(next.immuneTurns)
     observer.setMaxDeltaMessages(next.maxDeltaMessages)
     // Fork additions: a cadence-only edit re-sizes the observer in place —
     // no runtime rebuild (the clocks are observer state, not call constants).
@@ -1133,7 +1186,6 @@ export function apply(ctx: Context, config: AdvisorConfig) {
         ...(resolved.disabledReason === undefined ? {} : { disabledReason: resolved.disabledReason }),
         provider: resolved.provider,
         model: resolved.model,
-        immuneTurns: resolved.immuneTurns,
         maxDeltaMessages: resolved.maxDeltaMessages,
         callTimeoutMinutes: resolved.callTimeoutMinutes,
         // qc1 S-1 / FW-1b R-1: the issue-#102 keys ride the same resolved
@@ -1356,7 +1408,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
 
   // T1 (plan dsh-advisor-tui-settings-n9): the dsh-tui settings-section seam —
   // the `tuiSettingsSections` "Advisor" section (editable `/settings` screen
-  // fields: provider/model/immuneTurns/maxDeltaMessages). Runs AFTER
+  // fields: provider/model/maxDeltaMessages). Runs AFTER
   // the single-reviewer claim like `installTuiClient`, so the section
   // registers at most once per process (duplicate-ns registration is
   // contained inside the module). The inject is conditional: profiles without

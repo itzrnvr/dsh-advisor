@@ -2,8 +2,8 @@
  * dsh-advisor plugin configuration contract (spec §5 / S4).
  *
  * The exported schemastery `Config` schema is what the cordis Loader uses to
- * validate the plugin row config: it applies defaults (`immuneTurns` 3,
- * `maxDeltaMessages` 0 (unbounded; fork default), `systemPrompt` "", `proseFallback` false,
+ * validate the plugin row config: it applies defaults (`maxDeltaMessages`
+ * 0 (unbounded; fork default), `systemPrompt` "", `proseFallback` false,
  * `nextPrompt` true, `defaultEnabled` true) and enforces types/bounds
  * (integers ≥ 0).
  * `reasoningEffort` has NO default — an absent value means
@@ -13,7 +13,7 @@
  * caps reasoning + content together, so with thinking models the budget
  * intermittently starved the final content — the advisor call now sends no
  * `maxTokens` at all and output is bounded at extraction by
- * `ADVISOR_NOTE_MAX_CHARS`). All nine live fields are declared
+ * `ADVISOR_NOTE_MAX_CHARS`). All thirteen live fields are declared
  * `.volatile()`:
  * the Loader commits edits to them into the running fiber's references WITHOUT
  * a remount (dsh 0.1.7-rc.1 — the settings.yaml user layer is gone), so
@@ -50,8 +50,6 @@ export interface AdvisorConfig {
   readonly model?: string
   /** Optional system prompt override; "" = built-in reviewer prompt (T4). */
   readonly systemPrompt: string
-  /** Cooldown after a delivered interrupt; integer ≥ 0, default 3. */
-  readonly immuneTurns: number
   /** Delta window; integer ≥ 0, default 0 = unbounded (KD-3; fork default). */
   readonly maxDeltaMessages: number
   /**
@@ -158,7 +156,6 @@ export interface ResolvedAdvisorConfig {
   readonly provider?: string
   readonly model?: string
   readonly systemPrompt: string
-  readonly immuneTurns: number
   readonly maxDeltaMessages: number
   /** Reviewer call timeout in minutes (integer ≥ 1, default 10) — the value
    * threaded into the per-session runtime's `callTimeoutMs`. Optional on the
@@ -219,7 +216,6 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'provider',
   'model',
   'systemPrompt',
-  'immuneTurns',
   'maxDeltaMessages',
   'callTimeoutMinutes',
   'mainSessionOnly',
@@ -235,7 +231,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
 /**
  * Removed config keys the strict unknown-key rejection TOLERATES — accepted
  * into a raw config but stripped from every snapshot/write so they are never
- * read and never re-persisted. Two keys live here:
+ * read and never re-persisted. Three keys live here:
  *
  * - the 2026-09-26-removed `enabled`: the plugin-row enable/disable toggle
  *   replaced the config-level master switch, and stored profiles still
@@ -246,13 +242,19 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
  *   APIs `max_tokens` caps reasoning + content together, so the budget
  *   starved the final content on thinking models). Stored profiles still
  *   carrying a `maxTokens` line (e.g. the operator's live workaround value)
- *   keep loading cleanly; the key is simply dropped.
+ *   keep loading cleanly; the key is simply dropped;
+ * - the 2026-11-04-removed `immuneTurns`: the interrupt cooldown died with
+ *   the pre-step review gate (0.6.48) — the gate's step clock paces notes,
+ *   so no separate damping window exists. The settings card persisted the
+ *   schema default (3) on every save, so stored rows are everywhere; they
+ *   load cleanly and the key is dropped like the other two.
  *
  * Every other unknown key stays a hard reject (spec §5.2).
  */
 const LEGACY_KEYS: ReadonlySet<string> = new Set([
   'enabled',
   'maxTokens',
+  'immuneTurns',
 ])
 
 /**
@@ -264,7 +266,9 @@ const LEGACY_KEYS: ReadonlySet<string> = new Set([
  * stored `enabled:` key is tolerated and dropped by the resolver
  * ({@link LEGACY_KEYS}) — never read, never persisted. Likewise there is no
  * `maxTokens` field (2026-10-18 ruling): a stored `maxTokens:` line is
- * tolerated and dropped the same way.
+ * tolerated and dropped the same way, and neither is there an `immuneTurns`
+ * field (2026-11-04 ruling: the cooldown died with the pre-step review gate;
+ * stored rows are tolerated and dropped the same way).
  *
  * Volatile (dsh 0.1.7-rc.1): every field is a LIVE field. The Loader commits
  * edits into the running fiber's references without remounting the plugin
@@ -283,7 +287,6 @@ export const Config = z.object({
   provider: z.string().volatile(),
   model: z.string().volatile(),
   systemPrompt: z.string().default('').volatile(),
-  immuneTurns: z.number().step(1).min(0).default(3).volatile(),
   // 0 = unbounded (fork change: the full delta by default; the card also
   // exposes an explicit "no limit" toggle).
   maxDeltaMessages: z.number().step(1).min(0).default(0).volatile(),
@@ -346,7 +349,6 @@ export interface VolatileAdvisorConfig {
   readonly provider?: unknown
   readonly model?: unknown
   readonly systemPrompt: unknown
-  readonly immuneTurns: unknown
   readonly maxDeltaMessages: unknown
   /** Optional like {@link AdvisorConfig.proseFallback}: plain entries may omit it; the Loader path always carries it. */
   readonly callTimeoutMinutes?: unknown
@@ -414,17 +416,17 @@ function normalizeReasoningEffort(value: unknown): string | undefined {
  * config `resolveAdvisorConfig` consumes.
  */
 export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
-  // The raw side is loose on purpose: the schema-removed `enabled` and
-  // `maxTokens` are not VolatileAdvisorConfig members but can arrive on any
-  // plain entry — the cast widens only to let the destructure strip them.
+  // The raw side is loose on purpose: the schema-removed `enabled`,
+  // `maxTokens` and `immuneTurns` are not VolatileAdvisorConfig members but
+  // can arrive on any plain entry — the cast widens only to let the
+  // destructure strip them.
   const { enabled, provider, model, systemPrompt, immuneTurns, maxDeltaMessages, callTimeoutMinutes, mainSessionOnly, historyMaxTokens, reviewEveryTurns, reviewEverySteps, proseFallback, reasoningEffort, nextPrompt, defaultEnabled, maxTokens, ...rest } =
-    raw as VolatileAdvisorConfig & { readonly enabled?: unknown; readonly maxTokens?: unknown }
+    raw as VolatileAdvisorConfig & { readonly enabled?: unknown; readonly maxTokens?: unknown; readonly immuneTurns?: unknown }
   return {
     ...rest,
     provider: unwrapReference<string | undefined>(provider) ?? undefined,
     model: unwrapReference<string | undefined>(model) ?? undefined,
     systemPrompt: unwrapReference<string>(systemPrompt),
-    immuneTurns: unwrapReference<number>(immuneTurns),
     maxDeltaMessages: unwrapReference<number>(maxDeltaMessages),
     callTimeoutMinutes: unwrapReference<number | undefined>(callTimeoutMinutes),
     mainSessionOnly: unwrapReference<boolean | undefined>(mainSessionOnly),
@@ -442,7 +444,8 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
  * Resolve the raw config into the runtime contract.
  *
  * - Rejects unknown keys (strict schema, spec §5.2) and non-object input.
- *   The 2026-09-26-removed `enabled` and the 2026-10-18-removed `maxTokens`
+ *   The 2026-09-26-removed `enabled`, the 2026-10-18-removed `maxTokens`
+ *   and the 2026-11-04-removed `immuneTurns`
  *   are the tolerated exceptions ({@link LEGACY_KEYS}): a stored profile
  *   still carrying either loads cleanly, the key is stripped from the
  *   snapshot and never persisted (2026-09-27 / 2026-10-18 user rulings —

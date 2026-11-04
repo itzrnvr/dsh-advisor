@@ -3,7 +3,7 @@
  *
  * Contract under test:
  * - The exported schemastery `Config` schema (the cordis Loader path) applies
- *   defaults (`immuneTurns` 3, `maxDeltaMessages` 60, `systemPrompt` "",
+ *   defaults (`maxDeltaMessages` 0 (fork: unbounded delta; the schema line
  *   `proseFallback` false) and enforces types/bounds (int ≥ 0). There is NO
  *   `maxTokens` key (2026-10-18 user ruling: the model-side token budget is
  *   removed — output is bounded at extraction by ADVISOR_NOTE_MAX_CHARS).
@@ -36,7 +36,7 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
     // fiber's references. A resolved field must duck-type as `{ get() }` —
     // every runtime read (unwrapAdvisorConfig → the gate) depends on it.
     const resolved: Record<string, unknown> = Config({})
-    for (const key of ['provider', 'model', 'systemPrompt', 'immuneTurns', 'maxDeltaMessages', 'callTimeoutMinutes', 'mainSessionOnly', 'proseFallback', 'nextPrompt', 'defaultEnabled']) {
+    for (const key of ['provider', 'model', 'systemPrompt', 'maxDeltaMessages', 'callTimeoutMinutes', 'mainSessionOnly', 'proseFallback', 'nextPrompt', 'defaultEnabled']) {
       expect(typeof (resolved[key] as { get?: unknown }).get, key).toBe('function')
     }
   })
@@ -44,7 +44,7 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
   it('applies defaults for an empty config', () => {
     expect(unwrapAdvisorConfig(Config({}))).toEqual({
       systemPrompt: '',
-      immuneTurns: 3,
+
       maxDeltaMessages: 0,
       callTimeoutMinutes: 10, mainSessionOnly: true,
       historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3,
@@ -59,14 +59,14 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
       provider: 'deepseek',
       model: 'deepseek-chat',
       systemPrompt: 'custom reviewer prompt',
-      immuneTurns: 5,
+
       maxDeltaMessages: 10,
       proseFallback: true,
     }))).toEqual({
       provider: 'deepseek',
       model: 'deepseek-chat',
       systemPrompt: 'custom reviewer prompt',
-      immuneTurns: 5,
+
       maxDeltaMessages: 10,
       callTimeoutMinutes: 10, mainSessionOnly: true,
       historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3,
@@ -101,7 +101,7 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
 
   it('rejects non-number / non-string values', () => {
     // `as never` — inputs are intentionally invalid; runtime must reject them.
-    expect(() => Config({ immuneTurns: '3' as never })).toThrow()
+    expect(() => Config({ callTimeoutMinutes: '7' as never })).toThrow()
     expect(() => Config({ systemPrompt: 42 as never })).toThrow()
     expect(() => Config({ provider: 7 as never })).toThrow()
   })
@@ -111,12 +111,24 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
   })
 
   it('enforces integer ≥ 0 bounds; 0 = unbounded is allowed', () => {
-    expect(() => Config({ immuneTurns: -1 })).toThrow()
-    expect(() => Config({ immuneTurns: 2.5 })).toThrow()
     expect(() => Config({ maxDeltaMessages: -1 })).toThrow()
     expect(() => Config({ maxDeltaMessages: 1.5 })).toThrow()
     expect(unwrapAdvisorConfig(Config({ maxDeltaMessages: 0 })).maxDeltaMessages).toBe(0)
-    expect(unwrapAdvisorConfig(Config({ immuneTurns: 0 })).immuneTurns).toBe(0)
+  })
+
+  it('tolerates the removed immuneTurns key (LEGACY_KEYS strip, 2026-11-04 ruling)', () => {
+    // The interrupt cooldown died with the pre-step review gate, but stored
+    // profile rows still carry `immuneTurns` (the settings card persisted the
+    // old schema default on every save). A bare key removal would hard-reject
+    // the plugin row at load; the migration contract is: LOADS cleanly, is
+    // never read into any snapshot, and can never be re-persisted from one.
+    const resolved = resolveAdvisorConfig({ provider: 'p', model: 'm', immuneTurns: 7 })
+    expect(resolved.enabled).toBe(true)
+    expect('immuneTurns' in resolved).toBe(false)
+    const snapshot = unwrapAdvisorConfig(Config({ immuneTurns: 7 }))
+    expect('immuneTurns' in snapshot).toBe(false)
+    // Every OTHER unknown key stays a hard reject (spec §5.2 strict schema).
+    expect(() => resolveAdvisorConfig({ immuneTurns: 7, notAKey: 1 })).toThrow()
   })
 })
 
@@ -128,7 +140,6 @@ describe('explicit model gate (S4 / spec §5.2)', () => {
     expect(resolved.enabled).toBe(false)
     expect(resolved.disabledReason).toBeTruthy()
     expect(resolved.systemPrompt).toBe('')
-    expect(resolved.immuneTurns).toBe(3)
     expect(resolved.maxDeltaMessages).toBe(0)
   })
 
@@ -186,7 +197,7 @@ describe('explicit model gate (S4 / spec §5.2)', () => {
       provider: 'p',
       model: 'm',
       systemPrompt: 'custom',
-      immuneTurns: 5,
+
       maxDeltaMessages: 0,
       proseFallback: true,
     })).toEqual({
@@ -194,7 +205,7 @@ describe('explicit model gate (S4 / spec §5.2)', () => {
       provider: 'p',
       model: 'm',
       systemPrompt: 'custom',
-      immuneTurns: 5,
+
       maxDeltaMessages: 0,
       callTimeoutMinutes: 10,
       historyMaxTokens: 1_000_000,
@@ -272,7 +283,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
     expect(unwrapAdvisorConfig(Config({ enabled: true, provider: 'p' }))).toEqual({
       provider: 'p',
       systemPrompt: '',
-      immuneTurns: 3,
+
       maxDeltaMessages: 0,
       callTimeoutMinutes: 10, mainSessionOnly: true,
       historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3,
@@ -293,7 +304,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
     expect(unwrapAdvisorConfig(Config({ maxTokens: 5128, provider: 'p' }))).toEqual({
       provider: 'p',
       systemPrompt: '',
-      immuneTurns: 3,
+
       maxDeltaMessages: 0,
       callTimeoutMinutes: 10, mainSessionOnly: true,
       historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3,
@@ -314,7 +325,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
       provider: 'deepseek',
       model: 'deepseek-chat',
       systemPrompt: 'custom reviewer prompt',
-      immuneTurns: 5,
+
       maxDeltaMessages: 10,
       proseFallback: true,
       reasoningEffort: 'high',
@@ -330,7 +341,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
       provider: 'deepseek',
       model: 'deepseek-chat',
       systemPrompt: 'custom reviewer prompt',
-      immuneTurns: 5,
+
       maxDeltaMessages: 10,
       proseFallback: true,
       reasoningEffort: 'high',
@@ -338,7 +349,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
       provider: 'deepseek',
       model: 'deepseek-chat',
       systemPrompt: 'custom reviewer prompt',
-      immuneTurns: 5,
+
       maxDeltaMessages: 10,
       callTimeoutMinutes: 10, mainSessionOnly: true,
       historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3,

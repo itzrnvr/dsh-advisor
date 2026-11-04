@@ -36,7 +36,7 @@
  *
  * Field subset (2026-09-26; extended 2026-09-29, issue #102; `maxTokens`
  * removed 2026-10-18; `defaultEnabled` added 2026-10-21, issue #124): the
- * section covers the seven §5.1 keys (`provider` / `model` / `immuneTurns` /
+ * section covers the six §5.1 keys (`provider` / `model` /
  * `maxDeltaMessages` / `proseFallback` / `defaultEnabled` /
  * `reasoningEffort`). `enabled` is
  * gone with the config-level switch it edited (the plugin-row toggle is the
@@ -137,7 +137,7 @@ export const TUI_SETTINGS_SECTIONS = 'tuiSettingsSections'
 export const ADVISOR_TUI_SETTINGS_NS = 'advisor'
 
 /** The declared "Advisor" section for the dsh-tui `/settings` screen: the
- * seven §5.1 keys (provider/model/immuneTurns/maxDeltaMessages/
+ * six §5.1 keys (provider/model/maxDeltaMessages/
  * proseFallback/defaultEnabled/reasoningEffort) with zh/en labels + hints.
  * Field paths are single-element §5.1 flat keys, so staged edits map 1:1 onto
  * the namespace `mutate` paths. */
@@ -166,14 +166,6 @@ export const ADVISOR_TUI_SETTINGS_SECTION: TuiSettingsSection = {
       hint: 'Model id; required (non-empty).',
       hintDescriptions: { zh: '模型 ID；必须非空。', en: 'Model id; required (non-empty).' },
       placeholder: 'e.g. deepseek-flash',
-    },
-    {
-      path: ['immuneTurns'],
-      kind: 'number',
-      label: 'Immune turns',
-      descriptions: { zh: '免疫轮数', en: 'Immune turns' },
-      hint: 'Cooldown after a delivered interrupt (integer ≥ 0).',
-      hintDescriptions: { zh: '投递一次建议后的冷却轮数（整数 ≥ 0）。', en: 'Cooldown after a delivered interrupt (integer ≥ 0).' },
     },
     {
       path: ['maxDeltaMessages'],
