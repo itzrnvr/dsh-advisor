@@ -17,6 +17,14 @@
  *
  * Location: `$DSH_ADVISOR_DATA_DIR`, else `$DSH_HOME/advisor`, else
  * `~/.dsh/advisor`.
+ *
+ * Disk cost, stated plainly: per FILE the store is bounded (80 attempts, 40
+ * traces, ~4 MB ceiling), and `session-state.json` is capped at 2 000 entries.
+ * The `sessions/` DIRECTORY itself is intentionally UNBOUNDED by default — one
+ * file per session that ever recorded an attempt, each up to ~4 MB — because
+ * the product rule is "persist everything". Total disk usage therefore grows
+ * with the number of sessions; `DSH_ADVISOR_RETENTION_DAYS=N` is the only
+ * global bound, deleting session files older than N days at startup.
  */
 
 import {
