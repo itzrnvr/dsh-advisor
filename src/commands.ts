@@ -213,10 +213,19 @@ export type AdvisorModelSource = 'session' | 'global'
  * is pruned to the newest 2000 entries — that bound, not liveness, is what keeps
  * memory finite now.
  */
+/** Ceiling for both the in-memory override maps and the persisted snapshot. */
+const MAX_OVERRIDE_ENTRIES = 2_000
+
 export class AdvisorSessionOverrides {
   private readonly enables = new Map<string, boolean>()
   private readonly models = new Map<string, AdvisorModelPair>()
   private readonly generations = new Map<string, number>()
+  /**
+   * Per-session write time (fork addition). Restored entries keep the stamp
+   * they were written with, so pruning compares real ages instead of a single
+   * boot-time tie; every mutation re-stamps its own session.
+   */
+  private readonly writtenAt = new Map<string, number>()
 
   /**
    * Fork addition — durable snapshot hooks. `initial` restores the snapshot
@@ -236,6 +245,7 @@ export class AdvisorSessionOverrides {
       if (pair !== undefined && typeof pair.provider === 'string' && typeof pair.model === 'string') {
         this.models.set(sessionId, { provider: pair.provider, model: pair.model })
       }
+      if (typeof entry.at === 'number') this.writtenAt.set(sessionId, entry.at)
     }
   }
 
@@ -245,24 +255,38 @@ export class AdvisorSessionOverrides {
     for (const sessionId of this.overrideSessionIds()) {
       const enabled = this.enables.get(sessionId)
       const model = this.models.get(sessionId)
+      const at = this.writtenAt.get(sessionId)
       sessions[sessionId] = {
         ...(enabled === undefined ? {} : { enabled }),
         ...(model === undefined ? {} : { model }),
+        ...(at === undefined ? {} : { at }),
       }
     }
     return { sessions }
   }
 
-  /** Notify the persistence hook after a mutation. */
+  /** Notify the persistence hook after a mutation, evicting stale sessions. */
   private changed(): void {
-    const state = this.snapshot()
-    const at = Date.now()
-    const stamped: AdvisorPersistedState = {
-      sessions: Object.fromEntries(
-        Object.entries(state.sessions).map(([sessionId, entry]) => [sessionId, { ...entry, at }]),
-      ),
+    this.evictIfNeeded()
+    this.options.onChange?.(this.snapshot())
+  }
+
+  /**
+   * Bound the in-memory maps as well as the file (fork addition): once more
+   * than MAX entries exist, the oldest stamps are dropped together with their
+   * persisted counterpart. Without this, `clear` retaining state would grow
+   * both maps for the life of the host.
+   */
+  private evictIfNeeded(): void {
+    const ids = [...this.overrideSessionIds()]
+    if (ids.length <= MAX_OVERRIDE_ENTRIES) return
+    ids.sort((left, right) => (this.writtenAt.get(left) ?? 0) - (this.writtenAt.get(right) ?? 0))
+    for (const sessionId of ids.slice(0, ids.length - MAX_OVERRIDE_ENTRIES)) {
+      this.enables.delete(sessionId)
+      this.models.delete(sessionId)
+      this.writtenAt.delete(sessionId)
+      this.generations.delete(sessionId)
     }
-    this.options.onChange?.(stamped)
   }
 
   /**
@@ -276,6 +300,7 @@ export class AdvisorSessionOverrides {
   /** Set the enable override for one session. */
   set(sessionId: string, enabled: boolean): void {
     this.enables.set(sessionId, enabled)
+    this.writtenAt.set(sessionId, Date.now())
     this.changed()
   }
 
@@ -287,6 +312,7 @@ export class AdvisorSessionOverrides {
   /** Commit the (already validated) atomic pair for one session. */
   setModel(sessionId: string, pair: AdvisorModelPair): void {
     this.models.set(sessionId, pair)
+    this.writtenAt.set(sessionId, Date.now())
     this.changed()
   }
 
@@ -297,7 +323,13 @@ export class AdvisorSessionOverrides {
    */
   clearModel(sessionId: string): boolean {
     const removed = this.models.delete(sessionId)
-    if (removed) this.changed()
+    if (removed) {
+      // Only re-stamp while some override survives; a fully cleared session
+      // keeps no age entry and is evicted by the next prune pass.
+      if (this.enables.has(sessionId)) this.writtenAt.set(sessionId, Date.now())
+      else this.writtenAt.delete(sessionId)
+      this.changed()
+    }
     return removed
   }
 

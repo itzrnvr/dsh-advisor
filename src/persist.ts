@@ -94,6 +94,9 @@ function mutedForTests(locationExplicit: boolean): boolean {
   return !locationExplicit && process.env.VITEST !== undefined
 }
 
+/** Retained trace text on disk (the in-memory copy keeps the full 200k). */
+const TRACE_DISK_MAX_CHARS = 32_000
+
 /** Durable per-session attempt + trace history. */
 export class AttemptStore {
   private readonly dir: string
@@ -106,7 +109,7 @@ export class AttemptStore {
     this.dir = options.dir ?? join(advisorDataDir(), 'sessions')
     this.maxTurns = options.maxTurns ?? 80
     this.maxTraces = options.maxTraces ?? 40
-    this.maxBytes = options.maxBytes ?? 2_000_000
+    this.maxBytes = options.maxBytes ?? 4_000_000
     this.muted = mutedForTests(explicitDir(options.dir))
   }
 
@@ -146,7 +149,23 @@ export class AttemptStore {
 
   /** Append one retained trace; never throws. */
   appendTrace(sessionId: string, trace: AdvisorTrace): void {
-    this.append(sessionId, { t: 'trace', v: trace })
+    const cap = (value: string | undefined): string | undefined =>
+      value === undefined ? undefined : value.slice(0, TRACE_DISK_MAX_CHARS)
+    const userText = cap(trace.userText)
+    const replyText = cap(trace.replyText)
+    const summary = cap(trace.summary)
+    this.append(sessionId, {
+      t: 'trace',
+      v: {
+        id: trace.id,
+        at: trace.at,
+        kind: trace.kind,
+        ...(userText === undefined ? {} : { userText }),
+        ...(replyText === undefined ? {} : { replyText }),
+        ...(summary === undefined ? {} : { summary }),
+        ...(trace.error === undefined ? {} : { error: trace.error }),
+      },
+    })
   }
 
   /** The JSONL file backing one session (exposed for diagnostics/tests). */
@@ -185,6 +204,9 @@ export class AttemptStore {
       ],
       turns.map((v) => ({ t: 'turn' as const, v })),
       turns.slice(-Math.max(1, Math.floor(this.maxTurns / 2))).map((v) => ({ t: 'turn' as const, v })),
+      // Last resort: an empty file is always under the ceiling, so one
+      // compaction can never leave a file that re-compacts on every append.
+      [],
     ]
     let payload = ''
     for (const lines of candidates) {
