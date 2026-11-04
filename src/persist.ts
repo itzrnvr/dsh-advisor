@@ -22,8 +22,10 @@
 import {
   appendFileSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
@@ -82,6 +84,12 @@ export interface AttemptStoreOptions {
   readonly maxTraces?: number
   /** File size that triggers a compaction, in bytes. */
   readonly maxBytes?: number
+  /**
+   * Opt-in retention window. `0`/absent keeps history forever (the default);
+   * a positive value deletes session files older than that many days at
+   * construction. Set `DSH_ADVISOR_RETENTION_DAYS` to enable it.
+   */
+  readonly retentionDays?: number
 }
 
 /** Whether a caller named an explicit location (test suites do). */
@@ -104,6 +112,7 @@ export class AttemptStore {
   private readonly maxTraces: number
   private readonly maxBytes: number
   private readonly muted: boolean
+  private readonly retentionDays: number
 
   constructor(options: AttemptStoreOptions = {}) {
     this.dir = options.dir ?? join(advisorDataDir(), 'sessions')
@@ -111,6 +120,9 @@ export class AttemptStore {
     this.maxTraces = options.maxTraces ?? 40
     this.maxBytes = options.maxBytes ?? 4_000_000
     this.muted = mutedForTests(explicitDir(options.dir))
+    const configured = options.retentionDays ?? Number(process.env.DSH_ADVISOR_RETENTION_DAYS ?? '0')
+    this.retentionDays = Number.isFinite(configured) && configured > 0 ? configured : 0
+    if (!this.muted && this.retentionDays > 0) this.pruneOldFiles()
   }
 
   /** Read one session's persisted history (bounded, order-preserving). */
@@ -171,6 +183,29 @@ export class AttemptStore {
   /** The JSONL file backing one session (exposed for diagnostics/tests). */
   fileFor(sessionId: string): string {
     return join(this.dir, `${sanitize(sessionId)}.jsonl`)
+  }
+
+  /**
+   * Opt-in retention: delete session files older than the configured window.
+   * Runs once per process at construction; the default (0) deletes nothing.
+   */
+  private pruneOldFiles(): void {
+    const cutoff = Date.now() - this.retentionDays * 24 * 60 * 60 * 1_000
+    let entries: string[]
+    try {
+      entries = readdirSync(this.dir)
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith('.jsonl')) continue
+      const file = join(this.dir, entry)
+      try {
+        if (statSync(file).mtimeMs < cutoff) rmSync(file, { force: true })
+      } catch {
+        // Best-effort cleanup; a locked file is retried on the next boot.
+      }
+    }
   }
 
   private append(sessionId: string, line: StoredLine): void {
