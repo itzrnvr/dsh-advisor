@@ -379,6 +379,9 @@ export class AdvisorSessionOverrides {
     this.enables.clear()
     this.models.clear()
     this.generations.clear()
+    // Fork addition: the write stamps must die with the maps, or the eviction
+    // pass would compare against stale ages after an owner teardown.
+    this.writtenAt.clear()
   }
 }
 

@@ -1067,6 +1067,9 @@ describe('AdvisorSessionOverrides — model pair API (spec §5.3)', () => {
     expect(overrides.model('s1')).toBeUndefined()
     expect(overrides.modelGeneration('s1')).toBe(0)
     expect(overrides.modelGeneration('s2')).toBe(0)
+    // Fork addition: the write stamps are cleared with the maps, so the
+    // eviction pass cannot compare against stale ages after teardown.
+    expect(overrides.snapshot()).toEqual({ sessions: {} })
   })
 
   it('overrideSessionIds enumerates sessions holding enable and/or pair state', () => {
