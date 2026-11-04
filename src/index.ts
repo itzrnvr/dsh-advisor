@@ -634,6 +634,23 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     // which runtimeSignature normalizes with to stay in sync. No maxTokens
     // is threaded anymore (2026-10-18 ruling — no model-side budget).
     const globalResolved = safeResolved()
+    // Fork addition: capture the session's first human request so every review
+    // can judge proportionality against the actual ask (the "analyse one
+    // session → five reports" guard).
+    const askSession = ctx.agents.get(sessionId as SessionId)?.session
+    const askEvents = typeof askSession?.snapshotEvents === 'function'
+      ? askSession.snapshotEvents() as readonly {
+        readonly type?: string
+        readonly data?: { readonly source?: { readonly kind?: string }; readonly content?: readonly { readonly type?: string; readonly text?: string }[] }
+      }[]
+      : []
+    const askEvent = askEvents.find((event) =>
+      event.type === 'user/message' && event.data?.source?.kind === 'user')
+    const askText = askEvent?.data?.content
+      ?.filter((block) => block.type === 'text')
+      .map((block) => block.text ?? '')
+      .join(' ')
+      .trim()
     runtime = new AdvisorRuntime({
       provider: effective.provider!,
       model: effective.model!,
@@ -642,6 +659,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // per conversation on a header need it on every advisor call.
       sessionId: sessionId as SessionId,
       systemPrompt: globalResolved.systemPrompt || DEFAULT_ADVISOR_SYSTEM_PROMPT,
+      ...(askText === undefined || askText === '' ? {} : { sessionAsk: askText }),
       proseFallback: globalResolved.proseFallback,
       // Plan dsh-advisor-reasoning-effort (RD-1/RD-2): absent/empty = the
       // smallest effort the resolved model declares.

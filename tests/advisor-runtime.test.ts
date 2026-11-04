@@ -291,8 +291,24 @@ describe('AdvisorRuntime — drain calls llm.stream once per delta with expected
     const direct = (message.content[0] as { text: string }).text
     expect(direct).toContain('Reviewer task:')
     expect(direct).toContain('### Session update\n\n**user**: fix the bug')
+    // No sessionAsk → no scope block.
+    expect(direct).not.toContain('### Scope anchor')
     expect(runtime.status()).toBe('running')
     expect(runtime.pendingCount).toBe(0)
+  })
+
+  it('prepends the session scope anchor so the reviewer can judge proportionality', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('{"note":"nothing to add"}') }])
+    const { runtime } = makeRuntime(llm, { sessionAsk: 'analyse this zcode session' })
+
+    runtime.enqueue(delta('### Session update\n\n**user**: more work'))
+    await runtime.waitForDrain()
+
+    const text = (llm.calls[0]!.messages[0]!.content[0] as { text: string }).text
+    expect(text).toContain('### Scope anchor')
+    expect(text).toContain('analyse this zcode session')
+    // The anchor must precede the transcript delta it is judging.
+    expect(text.indexOf('### Scope anchor')).toBeLessThan(text.indexOf('### Session update'))
   })
 
   it('marks the trajectory record delivered=false when the delivery seam drops the note (no agent)', async () => {
