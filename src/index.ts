@@ -67,18 +67,19 @@ import type { Delta } from './transcript.js'
 import { AdvisorRuntime } from './advisor-runtime.js'
 import type { AdviceNote, AdvisorTrace, AdvisorTurnRecord } from './advisor-runtime.js'
 import { AdvisorDelivery } from './delivery.js'
-import { DEFAULT_ADVISOR_SYSTEM_PROMPT } from './prompts.js'
+import { DEFAULT_ADVISOR_SYSTEM_PROMPT, composeAdvisorSystemPrompt } from './prompts.js'
 import { findTraceEntry, renderTraceEntry } from './trace-entry.js'
 import { AttemptStore, SessionStateStore } from './persist.js'
 import { notesFromSessionEvents } from './seed.js'
 import { DEFAULT_HISTORY_MAX_TOKENS } from './limits.js'
 import { advisorSuggestionFace, NextPromptManager } from './next-prompt.js'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
-import { AdvisorSessionOverrides, registerAdvisorCommands, summarizeSystemPrompt, ADVISOR_MODEL_VALIDATION_TIMEOUT_MS } from './commands.js'
+import { AdvisorSessionOverrides, registerAdvisorCommands, summarizeSystemPrompt, validateAdvisorRule, ADVISOR_MODEL_VALIDATION_TIMEOUT_MS } from './commands.js'
 import type {
   AdvisorCommandController,
   AdvisorModelRoute,
   AdvisorResetModelOutcome,
+  AdvisorRuleOutcome,
   AdvisorSessionStatus,
   AdvisorSetModelOutcome,
 } from './commands.js'
@@ -280,6 +281,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     return {
       enabled: false,
       systemPrompt: raw?.systemPrompt ?? '',
+      ...(raw?.systemPromptAppend === undefined || raw.systemPromptAppend === '' ? {} : { systemPromptAppend: raw.systemPromptAppend }),
       maxDeltaMessages: raw?.maxDeltaMessages ?? 0,
       callTimeoutMinutes: raw?.callTimeoutMinutes ?? 10,
       // Fork additions: same containment rule — concrete schema defaults, so
@@ -287,7 +289,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // constant or the runtime signature.
       historyMaxTokens: raw?.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS,
       reviewEveryTurns: raw?.reviewEveryTurns ?? 1,
-      reviewEverySteps: raw?.reviewEverySteps ?? 3,
+      reviewEverySteps: raw?.reviewEverySteps ?? 5,
       // T1 (plan dsh-advisor-next-prompt-n12): the resolved contract types
       // nextPrompt as a plain boolean — an absent raw key means the schema
       // default (true; enabled:false already blocks every prediction call).
@@ -593,6 +595,9 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       effective.provider ?? '',
       effective.model ?? '',
       effective.systemPrompt,
+      // Appended system prompt (fork addition): a runtime-construction
+      // constant, so a committed edit rebuilds the session runtime.
+      effective.systemPromptAppend ?? '',
       globalResolved.proseFallback ?? false,
       globalResolved.reasoningEffort ?? '',
       // Call timeout (minutes) is a runtime-construction constant too: an edit
@@ -641,7 +646,13 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // request option is the host's branded SessionId). Providers that route
       // per conversation on a header need it on every advisor call.
       sessionId: sessionId as SessionId,
-      systemPrompt: globalResolved.systemPrompt || DEFAULT_ADVISOR_SYSTEM_PROMPT,
+      systemPrompt: composeAdvisorSystemPrompt(
+        globalResolved.systemPrompt || DEFAULT_ADVISOR_SYSTEM_PROMPT,
+        globalResolved.systemPromptAppend,
+      ),
+      // Standing session rules (fork addition): read live on every review and
+      // prepended to the new user turn — cache-safe (no stored prefix rewrite).
+      rules: () => overrides.rulesFor(sessionId),
       proseFallback: globalResolved.proseFallback,
       // Plan dsh-advisor-reasoning-effort (RD-1/RD-2): absent/empty = the
       // smallest effort the resolved model declares.
@@ -1201,6 +1212,24 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       if (!overrides.clearModel(sessionId)) return { kind: 'noop' }
       applyRouteChange(sessionId, before, sessionLength)
       return { kind: 'reset', status: sessionStatus(sessionId) }
+    },
+    // Fork addition — standing session rules. Stored in the durable override
+    // map (session-scoped, persisted, never pruned) and read LIVE by the
+    // runtime through the `rules` getter, so a rule added mid-session applies
+    // to the very next review. Nothing rewrites the reviewer's stored history:
+    // the rule rides the NEW user turn, which keeps the provider prefix cache
+    // valid — the explicit requirement for this feature.
+    getRules(sessionId: string): readonly string[] {
+      return overrides.rulesFor(sessionId)
+    },
+    addRule(sessionId: string, text: string): AdvisorRuleOutcome {
+      const validated = validateAdvisorRule(text, overrides.rulesFor(sessionId))
+      if (!validated.ok) return validated
+      overrides.addRule(sessionId, validated.text)
+      return { ok: true, count: overrides.rulesFor(sessionId).length }
+    },
+    clearRules(sessionId: string): number {
+      return overrides.clearRules(sessionId)
     },
     // T2 (plan dsh-advisor-tui-client-n8): the composed-config readback.
     // Session-less BY DESIGN — reads `safeResolved()` (the live entry config

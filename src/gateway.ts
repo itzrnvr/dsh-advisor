@@ -859,11 +859,12 @@ export class AdvisorConfigGateway extends TypertRemoteService {
       config = {
         enabled: false,
         systemPrompt: raw?.systemPrompt ?? '',
+        ...(raw?.systemPromptAppend === undefined || raw.systemPromptAppend === '' ? {} : { systemPromptAppend: raw.systemPromptAppend }),
         maxDeltaMessages: raw?.maxDeltaMessages ?? 0,
         callTimeoutMinutes: raw?.callTimeoutMinutes ?? 10,
         historyMaxTokens: raw?.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS,
         reviewEveryTurns: raw?.reviewEveryTurns ?? 1,
-        reviewEverySteps: raw?.reviewEverySteps ?? 3,
+        reviewEverySteps: raw?.reviewEverySteps ?? 5,
         proseFallback: raw?.proseFallback,
         // The resolver never ran on this arm, so the RD-1 empty = automatic
         // normalization (config.ts) is mirrored here: a raw empty/blank value
@@ -885,11 +886,11 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     // Key census (qc1 W-1, issue #102; T2 plan dsh-advisor-reasoning-effort;
     // T1 plan dsh-advisor-next-prompt-n12; GitHub issue #124; fork cadence/
     // history additions; 0.6.48: immuneTurns removed with the interrupt
-    // cooldown — the pre-step gate paces notes): THIRTEEN live `CONFIG_KEYS`
-    // in src/config.ts — systemPrompt, maxDeltaMessages, callTimeoutMinutes,
-    // proseFallback, reasoningEffort, provider, model, nextPrompt,
-    // defaultEnabled, mainSessionOnly, historyMaxTokens, reviewEveryTurns,
-    // reviewEverySteps. The scalar pair
+    // cooldown — the pre-step gate paces notes): FOURTEEN live `CONFIG_KEYS`
+    // in src/config.ts — systemPrompt, systemPromptAppend, maxDeltaMessages,
+    // callTimeoutMinutes, proseFallback, reasoningEffort, provider, model,
+    // nextPrompt, defaultEnabled, mainSessionOnly, historyMaxTokens,
+    // reviewEveryTurns, reviewEverySteps. The scalar pair
     // (provider/model) and reasoningEffort are omitted while unset; the
     // schema-defaulted numbers/booleans ride every resolved get. Plus TWO
     // non-persisted live fields: `enabled`/`disabledReason` (the gate state,
@@ -908,6 +909,9 @@ export class AdvisorConfigGateway extends TypertRemoteService {
       reviewEverySteps: config.reviewEverySteps,
     }
     if (config.proseFallback !== undefined) wire.proseFallback = config.proseFallback
+    if (config.systemPromptAppend !== undefined && config.systemPromptAppend !== '') {
+      wire.systemPromptAppend = config.systemPromptAppend
+    }
     if (config.reasoningEffort !== undefined) wire.reasoningEffort = config.reasoningEffort
     // T1 (plan dsh-advisor-next-prompt-n12): a persisted key whose resolver
     // normalizes it to a plain boolean (the schema default fills true), so it

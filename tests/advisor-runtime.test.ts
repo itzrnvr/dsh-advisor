@@ -1752,6 +1752,45 @@ describe('AdvisorRuntime — reviewed-turn attribution (fork addition)', () => {
   })
 })
 
+describe('AdvisorRuntime — standing session rules + wake flag (fork addition)', () => {
+  it('prepends the rules block to the new user turn', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('{"note":"x"}') }])
+    const { runtime } = makeRuntime(llm, { rules: () => ['do not overshoot', 'be terse'] })
+    runtime.enqueue(delta('update'))
+    await runtime.waitForDrain()
+
+    const sent = textOfMessage(llm.calls[0]!.messages[0]!)
+    expect(sent.startsWith('## Standing advisor rules (this session)')).toBe(true)
+    expect(sent).toContain('1. do not overshoot')
+    expect(sent).toContain('2. be terse')
+  })
+
+  it('reads the rule source live, so a new rule applies without rebuilding the runtime', async () => {
+    const rules = ['first rule']
+    const llm = new FakeLlm([
+      { chunks: textReply('{"note":"one"}') },
+      { chunks: textReply('{"note":"two"}') },
+    ])
+    const { runtime } = makeRuntime(llm, { rules: () => rules })
+    runtime.enqueue(delta('first'))
+    await runtime.waitForDrain()
+    rules.push('second rule')
+    runtime.enqueue(delta('second'))
+    await runtime.waitForDrain()
+
+    const second = textOfMessage(llm.calls[1]!.messages.at(-1)!)
+    expect(second).toContain('1. first rule')
+    expect(second).toContain('2. second rule')
+  })
+
+  it('extracts an explicit wake flag; an absent/invalid flag stays undefined (legacy default)', () => {
+    expect(extractAdviceNote('{"note":"x","wake":false}')?.wake).toBe(false)
+    expect(extractAdviceNote('{"note":"x","wake":true}')?.wake).toBe(true)
+    expect(extractAdviceNote('{"note":"x"}')?.wake).toBeUndefined()
+    expect(extractAdviceNote('{"note":"x","wake":"no"}')?.wake).toBeUndefined()
+  })
+})
+
 describe('AdvisorRuntime — compaction (fork addition)', () => {
   it('compacts the old conversation and continues in a single user turn', async () => {
     const llm = new FakeLlm([
@@ -1760,7 +1799,7 @@ describe('AdvisorRuntime — compaction (fork addition)', () => {
       { chunks: textReply('{"note":"second note"}') },
     ])
     const turns: AdvisorTurnRecord[] = []
-    const { runtime } = makeRuntime(llm, { historyMaxTokens: 100, onTurn: (record) => turns.push(record) })
+    const { runtime } = makeRuntime(llm, { historyMaxTokens: 150, onTurn: (record) => turns.push(record) })
 
     runtime.enqueue(delta('first update'))
     await runtime.waitForDrain()
@@ -1792,7 +1831,7 @@ describe('AdvisorRuntime — compaction (fork addition)', () => {
       { chunks: textReply('{"note":"second note"}') },
     ])
     const turns: AdvisorTurnRecord[] = []
-    const { runtime } = makeRuntime(llm, { historyMaxTokens: 100, onTurn: (record) => turns.push(record) })
+    const { runtime } = makeRuntime(llm, { historyMaxTokens: 150, onTurn: (record) => turns.push(record) })
 
     runtime.enqueue(delta('first update'))
     await runtime.waitForDrain()
@@ -1954,7 +1993,7 @@ describe('AdvisorRuntime — full trace sink (fork addition)', () => {
       { chunks: textReply('{"note":"two"}') },
     ])
     const turns: AdvisorTurnRecord[] = []
-    const { runtime } = makeRuntime(llm, { historyMaxTokens: 100, onTrace: (trace) => traces.push(trace), onTurn: (record) => turns.push(record) })
+    const { runtime } = makeRuntime(llm, { historyMaxTokens: 150, onTrace: (trace) => traces.push(trace), onTurn: (record) => turns.push(record) })
 
     runtime.enqueue(delta('first update'))
     await runtime.waitForDrain()

@@ -60,7 +60,7 @@ const baseConfig = (): ResolvedAdvisorConfig => ({
   maxDeltaMessages: 60,
   historyMaxTokens: 1_000_000,
   reviewEveryTurns: 1,
-  reviewEverySteps: 3,
+  reviewEverySteps: 5,
   nextPrompt: true,
   defaultEnabled: true,
 })

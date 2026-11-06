@@ -50,6 +50,13 @@ export interface AdvisorConfig {
   readonly model?: string
   /** Optional system prompt override; "" = built-in reviewer prompt (T4). */
   readonly systemPrompt: string
+  /**
+   * Text appended after the reviewer system prompt (fork addition). "" = no
+   * append. Composed once at runtime construction as
+   * `${base}\n\n${append}`; it is a runtime-construction constant, so a
+   * committed edit rebuilds the session runtime via its signature.
+   */
+  readonly systemPromptAppend?: string
   /** Delta window; integer ≥ 0, default 0 = unbounded (KD-3; fork default). */
   readonly maxDeltaMessages: number
   /**
@@ -83,7 +90,7 @@ export interface AdvisorConfig {
    */
   readonly reviewEveryTurns?: number
   /**
-   * Step-clock cadence (fork addition; schema default 3, 0 = off). Review
+   * Step-clock cadence (fork addition; schema default 5, 0 = off). Review
    * inside a turn after every Nth completed model step. The review fires on
    * the following step's start, so the reviewed step is always complete.
    */
@@ -156,6 +163,12 @@ export interface ResolvedAdvisorConfig {
   readonly provider?: string
   readonly model?: string
   readonly systemPrompt: string
+  /**
+   * Text appended to the reviewer system prompt (fork addition). Absent = no
+   * append (the common case; an empty value is normalized away so old configs
+   * and reads stay byte-identical). Composed at runtime construction.
+   */
+  readonly systemPromptAppend?: string
   readonly maxDeltaMessages: number
   /** Reviewer call timeout in minutes (integer ≥ 1, default 10) — the value
    * threaded into the per-session runtime's `callTimeoutMs`. Optional on the
@@ -179,7 +192,7 @@ export interface ResolvedAdvisorConfig {
    */
   readonly reviewEveryTurns: number
   /**
-   * Step-clock cadence (fork addition; default 3, 0 = off). Review inside a
+   * Step-clock cadence (fork addition; default 5, 0 = off). Review inside a
    * turn after every Nth completed model step (reasoning + response + tool
    * calls + tool results = one step). Fires on the next step's start, so the
    * reviewed step is always complete.
@@ -216,6 +229,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'provider',
   'model',
   'systemPrompt',
+  'systemPromptAppend',
   'maxDeltaMessages',
   'callTimeoutMinutes',
   'mainSessionOnly',
@@ -287,6 +301,9 @@ export const Config = z.object({
   provider: z.string().volatile(),
   model: z.string().volatile(),
   systemPrompt: z.string().default('').volatile(),
+  // Text appended after the reviewer system prompt (fork addition). "" = no
+  // append. Part of the runtime signature, so an edit rebuilds the runtime.
+  systemPromptAppend: z.string().default('').volatile(),
   // 0 = unbounded (fork change: the full delta by default; the card also
   // exposes an explicit "no limit" toggle).
   maxDeltaMessages: z.number().step(1).min(0).default(0).volatile(),
@@ -349,6 +366,8 @@ export interface VolatileAdvisorConfig {
   readonly provider?: unknown
   readonly model?: unknown
   readonly systemPrompt: unknown
+  /** Optional like {@link AdvisorConfig.systemPromptAppend}: plain entries may omit it. */
+  readonly systemPromptAppend?: unknown
   readonly maxDeltaMessages: unknown
   /** Optional like {@link AdvisorConfig.proseFallback}: plain entries may omit it; the Loader path always carries it. */
   readonly callTimeoutMinutes?: unknown
@@ -420,13 +439,17 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
   // `maxTokens` and `immuneTurns` are not VolatileAdvisorConfig members but
   // can arrive on any plain entry — the cast widens only to let the
   // destructure strip them.
-  const { enabled, provider, model, systemPrompt, immuneTurns, maxDeltaMessages, callTimeoutMinutes, mainSessionOnly, historyMaxTokens, reviewEveryTurns, reviewEverySteps, proseFallback, reasoningEffort, nextPrompt, defaultEnabled, maxTokens, ...rest } =
+  const { enabled, provider, model, systemPrompt, systemPromptAppend, immuneTurns, maxDeltaMessages, callTimeoutMinutes, mainSessionOnly, historyMaxTokens, reviewEveryTurns, reviewEverySteps, proseFallback, reasoningEffort, nextPrompt, defaultEnabled, maxTokens, ...rest } =
     raw as VolatileAdvisorConfig & { readonly enabled?: unknown; readonly maxTokens?: unknown; readonly immuneTurns?: unknown }
+  const append = unwrapReference<string | undefined>(systemPromptAppend) ?? ''
   return {
     ...rest,
     provider: unwrapReference<string | undefined>(provider) ?? undefined,
     model: unwrapReference<string | undefined>(model) ?? undefined,
     systemPrompt: unwrapReference<string>(systemPrompt),
+    // Absent-or-empty is normalized to ABSENT: every legacy fixture/read stays
+    // identical, and consumers default to '' when they need a string.
+    ...(append === '' ? {} : { systemPromptAppend: append }),
     maxDeltaMessages: unwrapReference<number>(maxDeltaMessages),
     callTimeoutMinutes: unwrapReference<number | undefined>(callTimeoutMinutes),
     mainSessionOnly: unwrapReference<boolean | undefined>(mainSessionOnly),
@@ -486,7 +509,7 @@ export function resolveAdvisorConfig(raw: unknown): ResolvedAdvisorConfig {
       callTimeoutMinutes: normalized.callTimeoutMinutes ?? 10,
       historyMaxTokens: normalized.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS,
       reviewEveryTurns: normalized.reviewEveryTurns ?? 1,
-      reviewEverySteps: normalized.reviewEverySteps ?? 3,
+      reviewEverySteps: normalized.reviewEverySteps ?? 5,
       enabled: true,
       nextPrompt: normalized.nextPrompt ?? true,
       // GitHub issue #124: `defaultEnabled` is a plain boolean on EVERY
@@ -507,7 +530,7 @@ export function resolveAdvisorConfig(raw: unknown): ResolvedAdvisorConfig {
     callTimeoutMinutes: normalized.callTimeoutMinutes ?? 10,
     historyMaxTokens: normalized.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS,
     reviewEveryTurns: normalized.reviewEveryTurns ?? 1,
-    reviewEverySteps: normalized.reviewEverySteps ?? 3,
+    reviewEverySteps: normalized.reviewEverySteps ?? 5,
     enabled: false,
     nextPrompt: normalized.nextPrompt ?? true,
     defaultEnabled: normalized.defaultEnabled ?? true,

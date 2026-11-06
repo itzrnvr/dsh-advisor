@@ -113,6 +113,22 @@ describe('AdvisorDelivery — one-rule routing (0.6.48)', () => {
     expect(steer).toHaveBeenCalledTimes(1)
   })
 
+  it('records without waking when the advisor sets wake: false at a turn boundary', () => {
+    const { agent, commit, steer } = makeAgent()
+    const delivery = makeDelivery()
+    delivery.registerAgent(agent)
+
+    // The advisor's explicit "record, don't interrupt" choice.
+    expect(delivery.route('s1', { note: 'useful, not urgent', severity: 'concern', wake: false })).toBe('commit')
+    expect(commit).toHaveBeenCalledTimes(1)
+    expect(steer).not.toHaveBeenCalled()
+
+    // An explicit true (and an absent flag) keeps the legacy waking behavior.
+    expect(delivery.route('s1', { note: 'fix this now', severity: 'blocker', wake: true })).toBe('steer')
+    expect(delivery.route('s1', { note: 'legacy shape', severity: 'nit' })).toBe('steer')
+    expect(steer).toHaveBeenCalledTimes(2)
+  })
+
   it('resolves the agent via the registry fallback when the map has no entry (KD-4)', () => {
     const { agent, steer } = makeAgent()
     // The map is empty; only the registry fallback can resolve the agent.

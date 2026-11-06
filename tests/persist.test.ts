@@ -81,4 +81,12 @@ describe('SessionStateStore — durable /advisor overrides', () => {
     writeFileSync(join(dir, 'session-state.json'), '{ nope', 'utf8')
     expect(new SessionStateStore(dir).load()).toEqual({ sessions: {} })
   })
+
+  it('round-trips standing session rules', () => {
+    const dir = tempDir()
+    new SessionStateStore(dir).save({
+      sessions: { s1: { rules: ['do not overshoot', 'be terse'], at: 30 } },
+    })
+    expect(new SessionStateStore(dir).load().sessions.s1?.rules).toEqual(['do not overshoot', 'be terse'])
+  })
 })

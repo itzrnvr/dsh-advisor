@@ -50,7 +50,17 @@ export type AdvisorCommand =
   | { readonly kind: 'status' }
   | { readonly kind: 'config' }
   | { readonly kind: 'model'; readonly sub: AdvisorModelCommand }
+  | { readonly kind: 'rule'; readonly sub: AdvisorRuleCommand }
   | { readonly kind: 'usage' }
+
+/**
+ * The parsed form of the text following `/advisor rule` (fork addition):
+ * bare → list, `clear` → clear, anything else → add that text as a rule.
+ */
+export type AdvisorRuleCommand =
+  | { readonly kind: 'list' }
+  | { readonly kind: 'add'; readonly text: string }
+  | { readonly kind: 'clear' }
 
 /**
  * The parsed form of the text following `/advisor model` (spec §5.3 B1
@@ -135,6 +145,45 @@ export function parseModelSetArgs(rawArgs: string): ModelSetArgs {
 }
 
 /**
+ * Standing session-rule limits (fork addition). Rules are prepended to every
+ * review, so they are deliberately small: a rule is an instruction, not a
+ * document. These bounds keep the per-review prefix affordable and make
+ * overload a visible rejection instead of silent truncation.
+ */
+export const MAX_ADVISOR_RULES = 20
+export const MAX_ADVISOR_RULE_CHARS = 2_000
+export const MAX_ADVISOR_RULES_TOTAL_CHARS = 8_000
+
+/** Outcome of one `/advisor rule <text>` attempt. */
+export type AdvisorRuleOutcome =
+  | { readonly ok: true; readonly count: number }
+  | { readonly ok: false; readonly reason: string }
+
+/**
+ * Validate one rule against the session's existing rules. Trims, rejects
+ * empty/oversized input and the count/total bounds. Never throws — every
+ * rejection carries a user-facing reason.
+ */
+export function validateAdvisorRule(
+  text: string,
+  existing: readonly string[],
+): { readonly ok: true; readonly text: string } | { readonly ok: false; readonly reason: string } {
+  const trimmed = text.trim()
+  if (trimmed === '') return { ok: false, reason: 'usage: /advisor rule <text>' }
+  if (trimmed.length > MAX_ADVISOR_RULE_CHARS) {
+    return { ok: false, reason: `rule too long — max ${MAX_ADVISOR_RULE_CHARS} characters` }
+  }
+  if (existing.length >= MAX_ADVISOR_RULES) {
+    return { ok: false, reason: `too many rules — max ${MAX_ADVISOR_RULES} per session; clear some first` }
+  }
+  const total = existing.reduce((sum, rule) => sum + rule.length, 0) + trimmed.length
+  if (total > MAX_ADVISOR_RULES_TOTAL_CHARS) {
+    return { ok: false, reason: `rules exceed ${MAX_ADVISOR_RULES_TOTAL_CHARS} characters total; clear some first` }
+  }
+  return { ok: true, text: trimmed }
+}
+
+/**
  * Parse the text following `/advisor` (the dsh `parseCommand` split already
  * yields `rawInput` including the separator whitespace, e.g. `' on'` for
  * `/advisor on`). Subcommands match exactly after trimming — same
@@ -149,6 +198,11 @@ export function parseAdvisorCommand(rawInput: string): AdvisorCommand {
   if (argument === 'config') return { kind: 'config' }
   if (argument === 'model' || argument.startsWith('model ') || argument.startsWith('model\t')) {
     return { kind: 'model', sub: parseAdvisorModelCommand(argument.slice('model'.length)) }
+  }
+  if (argument === 'rule') return { kind: 'rule', sub: { kind: 'list' } }
+  if (argument === 'rule clear') return { kind: 'rule', sub: { kind: 'clear' } }
+  if (argument.startsWith('rule ') || argument.startsWith('rule\t')) {
+    return { kind: 'rule', sub: { kind: 'add', text: argument.slice('rule'.length).trim() } }
   }
   return { kind: 'usage' }
 }
@@ -173,6 +227,8 @@ export interface AdvisorModelPair {
 export interface AdvisorPersistedOverride {
   readonly enabled?: boolean
   readonly model?: AdvisorModelPair
+  /** Standing session rules (fork addition), oldest → newest. */
+  readonly rules?: readonly string[]
   /** Write time, used to bound the snapshot to the newest entries. */
   readonly at?: number
 }
@@ -219,6 +275,8 @@ export type AdvisorModelSource = 'session' | 'global'
 export class AdvisorSessionOverrides {
   private readonly enables = new Map<string, boolean>()
   private readonly models = new Map<string, AdvisorModelPair>()
+  /** Standing session rules (fork addition), oldest → newest, never pruned. */
+  private readonly rules = new Map<string, string[]>()
   private readonly generations = new Map<string, number>()
   /**
    * Per-session write time (fork addition). Restored entries keep the stamp
@@ -246,6 +304,15 @@ export class AdvisorSessionOverrides {
         this.models.set(sessionId, { provider: pair.provider, model: pair.model })
       }
       if (typeof entry.at === 'number') this.writtenAt.set(sessionId, entry.at)
+      // Fork addition: restore standing rules (best-effort shape check — a
+      // corrupt entry drops its rules rather than failing the whole snapshot).
+      if (Array.isArray(entry.rules)) {
+        const restored = entry.rules
+          .filter((rule): rule is string => typeof rule === 'string')
+          .map((rule) => rule.trim())
+          .filter((rule) => rule.length > 0)
+        if (restored.length > 0) this.rules.set(sessionId, restored)
+      }
     }
   }
 
@@ -255,10 +322,12 @@ export class AdvisorSessionOverrides {
     for (const sessionId of this.overrideSessionIds()) {
       const enabled = this.enables.get(sessionId)
       const model = this.models.get(sessionId)
+      const rules = this.rules.get(sessionId)
       const at = this.writtenAt.get(sessionId)
       sessions[sessionId] = {
         ...(enabled === undefined ? {} : { enabled }),
         ...(model === undefined ? {} : { model }),
+        ...(rules === undefined || rules.length === 0 ? {} : { rules }),
         ...(at === undefined ? {} : { at }),
       }
     }
@@ -330,9 +399,39 @@ export class AdvisorSessionOverrides {
     return this.generations.get(sessionId) ?? 0
   }
 
-  /** Sessions holding ANY per-session override state (enable and/or pair). */
+  /** The session's standing rules (oldest → newest); empty when none. */
+  rulesFor(sessionId: string): readonly string[] {
+    return this.rules.get(sessionId) ?? []
+  }
+
+  /**
+   * Append one validated standing rule for a session. The runtime reads the
+   * list live, so the next review picks it up without a restart; nothing in
+   * the reviewer's stored history is rewritten, so the prefix cache survives.
+   */
+  addRule(sessionId: string, text: string): void {
+    const existing = this.rules.get(sessionId)
+    if (existing === undefined) this.rules.set(sessionId, [text])
+    else existing.push(text)
+    this.writtenAt.set(sessionId, Date.now())
+    this.changed()
+  }
+
+  /** Clear every standing rule for a session. @returns how many were dropped. */
+  clearRules(sessionId: string): number {
+    const existing = this.rules.get(sessionId)
+    if (existing === undefined) return 0
+    const count = existing.length
+    this.rules.delete(sessionId)
+    if (this.enables.has(sessionId) || this.models.has(sessionId)) this.writtenAt.set(sessionId, Date.now())
+    else this.writtenAt.delete(sessionId)
+    this.changed()
+    return count
+  }
+
+  /** Sessions holding ANY per-session override state (enable and/or pair and/or rules). */
   overrideSessionIds(): IterableIterator<string> {
-    return new Set([...this.enables.keys(), ...this.models.keys()]).keys()
+    return new Set([...this.enables.keys(), ...this.models.keys(), ...this.rules.keys()]).keys()
   }
 
   /**
@@ -359,6 +458,7 @@ export class AdvisorSessionOverrides {
   disposeAll(): void {
     this.enables.clear()
     this.models.clear()
+    this.rules.clear()
     this.generations.clear()
     // Fork addition: the write stamps must die with the maps, or the eviction
     // pass would compare against stale ages after an owner teardown.
@@ -727,6 +827,12 @@ export interface AdvisorCommandController {
    *   when the effective route actually changes.
    */
   resetModel(sessionId: string, sessionLength?: number): AdvisorResetModelOutcome
+  /** The session's standing advisor rules (oldest → newest). */
+  getRules(sessionId: string): readonly string[]
+  /** Validate and append one standing rule for the invoking session. */
+  addRule(sessionId: string, text: string): AdvisorRuleOutcome
+  /** Clear every standing rule for the session; returns how many were dropped. */
+  clearRules(sessionId: string): number
 }
 
 /** Minimal command registry surface (satisfied by the dsh `CommandService`). */
@@ -736,7 +842,7 @@ export interface AdvisorCommandRegistry {
 
 /** Usage text for an unknown `/advisor` subcommand. */
 export const USAGE = [
-  'Usage: /advisor [on|off|status|config|model]',
+  'Usage: /advisor [on|off|status|config|model|rule]',
   '  /advisor          toggle the advisor for this session',
   '  /advisor on       enable the advisor for this session',
   '  /advisor off      disable the advisor for this session',
@@ -747,6 +853,9 @@ export const USAGE = [
   '                    pin the reviewer model for this session only (separate args; ids may contain /)',
   '  /advisor model reset',
   '                    drop the session pin and re-inherit the current global defaults',
+  '  /advisor rule                 list this session\'s standing advisor rules',
+  '  /advisor rule <text>          append a rule the reviewer must follow for this session',
+  '  /advisor rule clear           remove all standing rules for this session',
 ].join('\n')
 
 /** Usage text for an unknown `/advisor model` subcommand. */
@@ -824,6 +933,8 @@ function createAdvisorCommandHandler(controller: AdvisorCommandController) {
         return { kind: 'success', text: advisorConfigText(controller.getConfig()) }
       case 'model':
         return handleModelCommand(controller, sessionId, invocation)
+      case 'rule':
+        return handleRuleCommand(controller, sessionId, invocation)
       case 'usage':
         return { kind: 'success', text: USAGE }
     }
@@ -860,6 +971,54 @@ function handleModelCommand(
 }
 
 /**
+ * `/advisor rule` dispatch (fork addition). Session-scoped: rules are stored
+ * per session, persisted, and read live by the reviewer runtime. They ride the
+ * NEW user turn of every review, so adding one never rewrites the stored
+ * conversation prefix (the provider cache stays valid).
+ */
+function handleRuleCommand(
+  controller: AdvisorCommandController,
+  sessionId: string,
+  invocation: CommandInvocation,
+): CommandResult {
+  const command = parseAdvisorCommand(invocation.rawInput)
+  if (command.kind !== 'rule') return { kind: 'success', text: USAGE }
+  switch (command.sub.kind) {
+    case 'list': {
+      const rules = controller.getRules(sessionId)
+      if (rules.length === 0) {
+        return {
+          kind: 'success',
+          text: 'No standing advisor rules for this session.\nAdd one with: /advisor rule <text>',
+        }
+      }
+      const lines = ['Standing advisor rules for this session:']
+      rules.forEach((rule, index) => lines.push(`${index + 1}. ${rule}`))
+      lines.push('', 'Clear them with: /advisor rule clear')
+      return { kind: 'success', text: lines.join('\n') }
+    }
+    case 'clear': {
+      const count = controller.clearRules(sessionId)
+      return {
+        kind: 'success',
+        text: count === 0
+          ? 'No standing advisor rules to clear.'
+          : `Cleared ${count} standing advisor rule${count === 1 ? '' : 's'} for this session.`,
+      }
+    }
+    case 'add': {
+      const outcome = controller.addRule(sessionId, command.sub.text)
+      return {
+        kind: 'success',
+        text: outcome.ok
+          ? `Rule added for this session (${outcome.count} total). It applies to the next review; earlier reviewer turns stay cached.`
+          : outcome.reason,
+      }
+    }
+  }
+}
+
+/**
  * Register the `/advisor` command with a command registry (the dsh
  * `CommandService`, or a fake in tests). Called from the plugin's conditional
  * `ctx.inject(['commands'], ...)` child — the command exists only when a
@@ -872,8 +1031,8 @@ export function registerAdvisorCommands(
 ): () => void {
   return registry.register({
     name: 'advisor',
-    description: 'Toggle, enable, disable, inspect, or re-route the per-session advisor',
-    input: { hint: '[on|off|status|config|model]' },
+    description: 'Toggle, enable, disable, inspect, re-route, or add session rules to the advisor',
+    input: { hint: '[on|off|status|config|model|rule]' },
     handler: createAdvisorCommandHandler(controller),
   })
 }

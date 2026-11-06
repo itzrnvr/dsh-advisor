@@ -96,6 +96,8 @@ export interface AdvisorConfigView {
   model?: string
   /** System prompt override ('' = built-in reviewer prompt). */
   systemPrompt: string
+  /** Text appended to the reviewer system prompt (fork addition; '' = none). */
+  systemPromptAppend?: string
   /** Delta window; integer ≥ 0, 0 = unbounded. */
   maxDeltaMessages: number
   /** Reviewer call timeout in minutes (integer ≥ 1, default 10); bounds one advisor model call. */
@@ -104,7 +106,7 @@ export interface AdvisorConfigView {
   historyMaxTokens?: number
   /** Turn-clock cadence: review every Nth completed turn (fork addition; default 1). */
   reviewEveryTurns?: number
-  /** Step-clock cadence: review every Nth model step inside a turn (fork addition; default 3, 0 = off). */
+  /** Step-clock cadence: review every Nth model step inside a turn (fork addition; default 5, 0 = off). */
   reviewEverySteps?: number
   /** Main-session-only scope (fork addition); default true excludes subagent sessions. */
   mainSessionOnly?: boolean
@@ -202,6 +204,8 @@ export interface AdvisorDraft {
   model?: string
   /** Optional system prompt override; '' = built-in reviewer prompt. */
   systemPrompt: string
+  /** Text appended after the reviewer system prompt; '' = no append. */
+  systemPromptAppend: string
   /** Delta window; integer ≥ 0, default 60, 0 = unbounded. Cleared input → undefined (left unchanged on apply). */
   maxDeltaMessages?: number
   /** Reviewer call timeout in minutes (integer ≥ 1, default 10). Cleared input → undefined (left unchanged on apply). */
@@ -210,7 +214,7 @@ export interface AdvisorDraft {
   historyMaxTokens?: number
   /** Turn-clock cadence (fork addition; default 1). */
   reviewEveryTurns?: number
-  /** Step-clock cadence (fork addition; default 3, 0 = off). */
+  /** Step-clock cadence (fork addition; default 5, 0 = off). */
   reviewEverySteps?: number
   /** Main-session-only scope (fork addition); default true excludes subagent sessions. */
   mainSessionOnly?: boolean
@@ -321,12 +325,13 @@ export interface AdvisorSettingsState {
 function defaultDraft(): AdvisorDraft {
   return {
     systemPrompt: '',
+    systemPromptAppend: '',
     maxDeltaMessages: 0,
     callTimeoutMinutes: 10,
     // Fork additions: schema-default cadence/history values.
     historyMaxTokens: DEFAULT_HISTORY_MAX_TOKENS,
     reviewEveryTurns: 1,
-    reviewEverySteps: 3,
+    reviewEverySteps: 5,
     mainSessionOnly: true,
   }
 }
@@ -351,15 +356,16 @@ function draftOfConfig(config: AdvisorConfigView | undefined): AdvisorDraft {
     provider: stringField(config?.provider),
     model: stringField(config?.model),
     systemPrompt: typeof config?.systemPrompt === 'string' ? config.systemPrompt : '',
+    systemPromptAppend: typeof config?.systemPromptAppend === 'string' ? config.systemPromptAppend : '',
     maxDeltaMessages: numberField(config?.maxDeltaMessages, 0),
     // Reviewer call deadline (fork addition): the seed shows the effective
     // value; an omitted containment wire reads the schema default (10).
     callTimeoutMinutes: numberField(config?.callTimeoutMinutes, 10),
     // Fork additions: the seed shows the effective budget/cadence; an omitted
-    // containment wire reads the schema defaults (1M / 1 / 3).
+    // containment wire reads the schema defaults (1M / 1 / 5).
     historyMaxTokens: numberField(config?.historyMaxTokens, DEFAULT_HISTORY_MAX_TOKENS),
     reviewEveryTurns: numberField(config?.reviewEveryTurns, 1),
-    reviewEverySteps: numberField(config?.reviewEverySteps, 3),
+    reviewEverySteps: numberField(config?.reviewEverySteps, 5),
     // Fork addition: an omitted containment wire reads the schema default (true).
     mainSessionOnly: typeof config?.mainSessionOnly === 'boolean' ? config.mainSessionOnly : true,
     // The scalar fields show the effective values: the gateway returns the
@@ -847,6 +853,11 @@ export class AdvisorSettingsStore {
     this.setField('systemPrompt', prompt)
   }
 
+  /** Set the appended reviewer system-prompt text ("" = no append). */
+  setSystemPromptAppend(text: string): void {
+    this.setField('systemPromptAppend', text)
+  }
+
   /** Set the delta-message window (int ≥ 0; non-numeric input keeps the current value; undefined clears → omitted from patch). */
   setMaxDeltaMessages(value: number | undefined): void {
     if (value === undefined) {
@@ -894,7 +905,7 @@ export class AdvisorSettingsStore {
       this.clearField('reviewEverySteps')
       return
     }
-    this.setField('reviewEverySteps', this.clampInt(value, this.store.getSnapshot().draft.reviewEverySteps ?? 3, 0, 50))
+    this.setField('reviewEverySteps', this.clampInt(value, this.store.getSnapshot().draft.reviewEverySteps ?? 5, 0, 50))
   }
 
   /** Set the opt-in prose fallback (KD-I2, issue #102). */
@@ -1039,7 +1050,7 @@ export class AdvisorSettingsStore {
    */
   private patchFor(draft: AdvisorDraft): Record<string, unknown> {
     const patch: Record<string, unknown> = {}
-    const always = ['systemPrompt', 'maxDeltaMessages', 'callTimeoutMinutes', 'historyMaxTokens', 'reviewEveryTurns', 'reviewEverySteps', 'mainSessionOnly', 'proseFallback', 'nextPrompt', 'defaultEnabled'] as const
+    const always = ['systemPrompt', 'systemPromptAppend', 'maxDeltaMessages', 'callTimeoutMinutes', 'historyMaxTokens', 'reviewEveryTurns', 'reviewEverySteps', 'mainSessionOnly', 'proseFallback', 'nextPrompt', 'defaultEnabled'] as const
     for (const key of always) {
       const next = draft[key]
       // A cleared number input (undefined) means "leave the stored value

@@ -230,11 +230,10 @@ const effective = (overrides: Partial<ResolvedAdvisorConfig> = {}): ResolvedAdvi
   provider: 'deepseek',
   model: 'deepseek-chat',
   systemPrompt: '',
-  
   maxDeltaMessages: 60,
   historyMaxTokens: 1_000_000,
   reviewEveryTurns: 1,
-  reviewEverySteps: 3,
+  reviewEverySteps: 5,
   nextPrompt: true,
   defaultEnabled: true,
   ...overrides,

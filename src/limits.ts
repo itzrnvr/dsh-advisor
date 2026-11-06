@@ -22,5 +22,9 @@ export const DEFAULT_HISTORY_MAX_TOKENS = 1_000_000
 /** Default turn-clock cadence: review every completed turn. */
 export const DEFAULT_REVIEW_EVERY_TURNS = 1
 
-/** Default step-clock cadence: review every 3 completed model steps inside a turn. */
-export const DEFAULT_REVIEW_EVERY_STEPS = 3
+/**
+ * Default step-clock cadence: review every 5 completed model steps inside a
+ * turn (the 4–6 band the operator asked for: frequent enough to correct
+ * mid-task, sparse enough that reviews never outpace real work).
+ */
+export const DEFAULT_REVIEW_EVERY_STEPS = 5

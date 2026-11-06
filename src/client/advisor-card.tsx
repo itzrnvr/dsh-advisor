@@ -368,6 +368,18 @@ export function AdvisorCard(props: AdvisorCardProps): ReactNode {
           <p className={styles['hint']}>{t('systemPromptHint')}</p>
         </div>
         <div className={styles['field']}>
+          <label htmlFor="advisor-system-prompt-append" className={styles['fieldLabel']}>{t('systemPromptAppend')}</label>
+          <textarea
+            id="advisor-system-prompt-append"
+            aria-label={t('systemPromptAppend')}
+            className={styles['textarea']}
+            value={draft.systemPromptAppend}
+            disabled={busy}
+            onChange={(event) => { controller.setSystemPromptAppend(event.target.value) }}
+          />
+          <p className={styles['hint']}>{t('systemPromptAppendHint')}</p>
+        </div>
+        <div className={styles['field']}>
           <label htmlFor="advisor-prose-fallback" className={styles['fieldLabel']}>{t('proseFallback')}</label>
           {/* Boolean toggle (KD-I2, issue #102): one of the card's three
               checkboxes (the config-level `enabled` switch is gone — the row

@@ -40,6 +40,7 @@ import {
   parseModelSetArgs,
   registerAdvisorCommands,
   summarizeSystemPrompt,
+  validateAdvisorRule,
 } from '../src/commands'
 import type {
   AdvisorCommandController,
@@ -109,6 +110,8 @@ class FakeController implements AdvisorCommandController {
   readonly setCalls: Array<{ sessionId: string; enabled: boolean; sessionLength?: number }> = []
   readonly setModelCalls: Array<{ sessionId: string; provider: string; model: string; sessionIdArg: string; signal?: AbortSignal }> = []
   readonly resetModelCalls: Array<{ sessionId: string; sessionLength?: number }> = []
+  /** Standing session rules (fork addition), mirroring the real store. */
+  rules: string[] = []
 
   constructor(status: AdvisorSessionStatus, config?: AdvisorComposedConfig) {
     this.status = status
@@ -149,6 +152,21 @@ class FakeController implements AdvisorCommandController {
   resetModel(sessionId: string, sessionLength?: number): AdvisorResetModelOutcome {
     this.resetModelCalls.push({ sessionId, sessionLength })
     return this.nextResetOutcome
+  }
+
+  getRules(_sessionId: string): readonly string[] {
+    return this.rules
+  }
+
+  addRule(_sessionId: string, text: string): { ok: true; count: number } {
+    this.rules.push(text)
+    return { ok: true, count: this.rules.length }
+  }
+
+  clearRules(_sessionId: string): number {
+    const count = this.rules.length
+    this.rules = []
+    return count
   }
 }
 
@@ -304,9 +322,50 @@ describe('registerAdvisorCommands (registration function, brief: test directly)'
     const registry = new FakeRegistry()
     registerAdvisorCommands(registry, new FakeController(baseStatus()))
     const hint = registry.definitions[0]!.input?.hint
-    expect(hint).toBe('[on|off|status|config|model]')
+    expect(hint).toBe('[on|off|status|config|model|rule]')
     expect(hint).toContain('config')
     expect(hint).toContain('model')
+    expect(hint).toContain('rule')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// /advisor rule — standing session rules (fork addition)
+// ---------------------------------------------------------------------------
+
+describe('/advisor rule (standing session rules)', () => {
+  it('parses list, add, and clear forms', () => {
+    expect(parseAdvisorCommand(' rule')).toEqual({ kind: 'rule', sub: { kind: 'list' } })
+    expect(parseAdvisorCommand(' rule clear')).toEqual({ kind: 'rule', sub: { kind: 'clear' } })
+    expect(parseAdvisorCommand(' rule do not overshoot')).toEqual({
+      kind: 'rule',
+      sub: { kind: 'add', text: 'do not overshoot' },
+    })
+  })
+
+  it('adds, lists, and clears session rules through the controller', () => {
+    const controller = new FakeController(baseStatus())
+    const handler = registerAndGetHandler(controller)
+
+    const added = invoke(handler, ' rule do not overshoot')
+    expect(added.kind).toBe('success')
+    expect(added.text).toContain('Rule added for this session')
+    expect(controller.rules).toEqual(['do not overshoot'])
+
+    const listed = invoke(handler, ' rule')
+    expect(listed.text).toContain('Standing advisor rules for this session:')
+    expect(listed.text).toContain('1. do not overshoot')
+
+    const cleared = invoke(handler, ' rule clear')
+    expect(cleared.text).toContain('Cleared 1 standing advisor rule')
+    expect(controller.rules).toEqual([])
+  })
+
+  it('rejects an empty or oversized rule and enforces the count bound', () => {
+    expect(validateAdvisorRule('   ', []).ok).toBe(false)
+    expect(validateAdvisorRule('x'.repeat(2_001), []).ok).toBe(false)
+    const twenty = Array.from({ length: 20 }, (_, index) => `rule ${index}`)
+    expect(validateAdvisorRule('one more', twenty).ok).toBe(false)
   })
 })
 
@@ -316,10 +375,11 @@ describe('registerAdvisorCommands (registration function, brief: test directly)'
 
 describe('USAGE (unknown-subcommand fallback)', () => {
   it('header and subcommand list include config and the model surface', () => {
-    expect(USAGE).toContain('Usage: /advisor [on|off|status|config|model]')
+    expect(USAGE).toContain('Usage: /advisor [on|off|status|config|model|rule]')
     expect(USAGE).toContain('  /advisor config   show the composed advisor config (global defaults readback)')
     expect(USAGE).toContain('/advisor model set <provider> <model>')
     expect(USAGE).toContain('/advisor model reset')
+    expect(USAGE).toContain('/advisor rule <text>')
   })
 })
 

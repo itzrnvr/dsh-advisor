@@ -72,7 +72,7 @@ describe('plain-value entry (integration harness form, behavior identical to tod
       callTimeoutMinutes: 10,
       historyMaxTokens: 1_000_000,
       reviewEveryTurns: 1,
-      reviewEverySteps: 3,
+      reviewEverySteps: 5,
       proseFallback: false,
     })
   })

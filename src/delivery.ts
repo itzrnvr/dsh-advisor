@@ -58,10 +58,11 @@ import type { AdviceNote } from './advisor-runtime.js'
 
 /**
  * The channel one accepted note was delivered on (post-gate rule):
- * `commit` — appended directly to the session log DURING the pre-step gate
- * hold, so it joins the held step's own model request; `steer` — the default
- * waking delivery, consumed at the next step boundary (or the first step of
- * the turn it wakes).
+ * `commit` — appended directly to the session log, either DURING the pre-step
+ * gate hold (so it joins the held step's own model request) or because the
+ * advisor set `wake: false` at a turn boundary (recorded without interrupting);
+ * `steer` — the default waking delivery, consumed at the next step boundary
+ * (or the first step of the turn it wakes).
  */
 export type DeliveryChannel = 'commit' | 'steer'
 
@@ -205,9 +206,14 @@ export class AdvisorDelivery {
       return undefined
     }
     const message = buildAdvisorMessage(note)
-    if (this.holding.has(sessionId)) {
-      // Gate-hold commit: durable immediately, visible in the chat flow at
-      // the step boundary it gates, and part of that very step's request
+    // Fork addition: `wake: false` is the advisor's explicit "record, don't
+    // interrupt" choice at a turn boundary. It uses the same durable shape as
+    // the hold commit (a user/message event), just without a steer — the
+    // primary sees it on its next run instead of being started for it. Inside
+    // a hold the note already commits; there is no wake to suppress.
+    if (this.holding.has(sessionId) || note.wake === false) {
+      // Gate-hold commit / passive record: durable immediately, visible in the
+      // chat flow, and (during a hold) part of that very step's request
       // (`buildRequest` derives from the session surface AFTER the pre-step
       // waterfall resolves). src/seed.ts derives the notes views from this
       // exact event shape.

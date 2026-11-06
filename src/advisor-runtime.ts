@@ -112,6 +112,13 @@ export type AdviceSeverity = 'nit' | 'concern' | 'blocker'
 export interface AdviceNote {
   readonly note: string
   readonly severity: AdviceSeverity
+  /**
+   * Wake decision (fork addition): `true`/undefined = at a turn boundary the
+   * note starts a new agent turn; `false` = record the note without waking
+   * (the primary sees it on its next run). Ignored inside a pre-step hold,
+   * where the note is committed into the running step.
+   */
+  readonly wake?: boolean
 }
 
 /**
@@ -178,6 +185,14 @@ export interface AdvisorRuntimeOptions {
   readonly sessionId: SessionId
   /** System prompt sent with every advisor call (config override or KD-2 default). */
   readonly systemPrompt: string
+  /**
+   * Standing session rules (fork addition): read fresh on every review and
+   * prepended to the update text as a "## Standing advisor rules" block.
+   * Reading live keeps `/advisor rule` changes immediate; prepending to the
+   * NEW user turn (never the system prompt or earlier history) keeps the
+   * provider prefix cache intact.
+   */
+  readonly rules?: () => readonly string[]
   /** Backoff for the single transient retry (KD-5); default 1000ms. */
   readonly retryBackoffMs?: number
   /**
@@ -459,6 +474,9 @@ export function extractAdviceNote(reply: string): AdviceNote | undefined {
         ? `${trimmed.slice(0, ADVISOR_NOTE_MAX_CHARS - 1)}…`
         : trimmed,
       severity: severity === 'concern' || severity === 'blocker' ? severity : 'nit',
+      // Fork addition: an explicit boolean is honored; absent/anything else
+      // means the legacy default (wake at a turn boundary).
+      wake: typeof record.wake === 'boolean' ? record.wake : undefined,
     }
   }
   return undefined
@@ -646,6 +664,8 @@ export class AdvisorRuntime {
   /** Owning conversation's session id; see {@link AdvisorRuntimeOptions.sessionId}. */
   private readonly sessionId: SessionId
   private readonly systemPrompt: string
+  /** Live standing-rule source (see {@link AdvisorRuntimeOptions.rules}). */
+  private readonly rules: () => readonly string[]
   private readonly proseFallback: boolean
   /** Configured effort id, normalized: `undefined` = automatic (smallest declared). */
   private readonly reasoningEffort: string | undefined
@@ -766,6 +786,7 @@ export class AdvisorRuntime {
     this.model = options.model
     this.sessionId = options.sessionId
     this.systemPrompt = options.systemPrompt
+    this.rules = options.rules ?? (() => [])
     this.proseFallback = options.proseFallback ?? false
     // Empty/whitespace = automatic, identical to an absent option: the config
     // snapshot already normalizes it, and re-checking here keeps a direct
@@ -1348,10 +1369,18 @@ export class AdvisorRuntime {
 
   /** The exact user-message text for one review; stored verbatim in history. */
   private userTextFor(delta: Delta): string {
+    // Standing session rules ride the NEW user turn, not the system prompt and
+    // not an earlier history entry: the provider prefix (system + history) is
+    // untouched, so the cache still matches, and the rules are always the most
+    // recent instruction before the update — the position that gets followed.
+    const rules = this.rules()
+    const rulesBlock = rules.length === 0
+      ? ''
+      : `## Standing advisor rules (this session)\n${rules.map((rule, index) => `${index + 1}. ${rule}`).join('\n')}\n\n`
     // Task reminder AFTER the delta: the last instruction wins, and
     // "above" points at the transcript. A prefix reminder was followed
     // unreliably on code-heavy deltas (the model continued the code).
-    return `${delta.markdown}\n\n---\n${ADVISOR_TASK_REMINDER}`
+    return `${rulesBlock}${delta.markdown}\n\n---\n${ADVISOR_TASK_REMINDER}`
   }
 
   /**

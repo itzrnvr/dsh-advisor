@@ -29,6 +29,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { Config, resolveAdvisorConfig, unwrapAdvisorConfig } from '../src/config'
+import { composeAdvisorSystemPrompt } from '../src/prompts'
 
 describe('schema defaults (cordis Loader path, spec §5.1)', () => {
   it('resolves every live field to a volatile reference (the no-remount edit channel)', () => {
@@ -47,7 +48,7 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
 
       maxDeltaMessages: 0,
       callTimeoutMinutes: 10, mainSessionOnly: true,
-      historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3,
+      historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 5,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -69,7 +70,7 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
 
       maxDeltaMessages: 10,
       callTimeoutMinutes: 10, mainSessionOnly: true,
-      historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3,
+      historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 5,
       proseFallback: true,
       nextPrompt: true,
       defaultEnabled: true,
@@ -210,7 +211,7 @@ describe('explicit model gate (S4 / spec §5.2)', () => {
       callTimeoutMinutes: 10,
       historyMaxTokens: 1_000_000,
       reviewEveryTurns: 1,
-      reviewEverySteps: 3,
+      reviewEverySteps: 5,
       proseFallback: true,
       nextPrompt: true,
       defaultEnabled: true,
@@ -286,7 +287,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
 
       maxDeltaMessages: 0,
       callTimeoutMinutes: 10, mainSessionOnly: true,
-      historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3,
+      historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 5,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -307,7 +308,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
 
       maxDeltaMessages: 0,
       callTimeoutMinutes: 10, mainSessionOnly: true,
-      historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3,
+      historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 5,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -352,7 +353,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
 
       maxDeltaMessages: 10,
       callTimeoutMinutes: 10, mainSessionOnly: true,
-      historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 3,
+      historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 5,
       proseFallback: true,
       reasoningEffort: 'high',
       nextPrompt: true,
@@ -481,5 +482,21 @@ describe('nextPrompt key (plan dsh-advisor-next-prompt-n12, T1)', () => {
       .toThrow(/unknown config key "nextPrompts"/)
     expect(() => resolveAdvisorConfig({ provider: 'p', model: 'm', nextPrompt: 'yes' as never }))
       .toThrow()
+  })
+})
+
+describe('systemPromptAppend (fork addition)', () => {
+  it('resolves a non-empty append and normalizes an empty one to absent', () => {
+    expect(resolveAdvisorConfig({ provider: 'p', model: 'm', systemPromptAppend: 'Be brief.' }).systemPromptAppend)
+      .toBe('Be brief.')
+    expect(resolveAdvisorConfig({ provider: 'p', model: 'm' }).systemPromptAppend).toBeUndefined()
+    expect(resolveAdvisorConfig({ provider: 'p', model: 'm', systemPromptAppend: '' }).systemPromptAppend).toBeUndefined()
+    expect(() => resolveAdvisorConfig({ provider: 'p', model: 'm', systemPromptAppend: 'x' })).not.toThrow()
+  })
+
+  it('composes the reviewer prompt without touching the base when the append is empty', () => {
+    expect(composeAdvisorSystemPrompt('base', '')).toBe('base')
+    expect(composeAdvisorSystemPrompt('base', '   ')).toBe('base')
+    expect(composeAdvisorSystemPrompt('base', 'extra')).toBe('base\n\nextra')
   })
 })
