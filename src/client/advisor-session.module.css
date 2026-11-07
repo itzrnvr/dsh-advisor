@@ -203,48 +203,12 @@
  * Prompts & rules tab (fork addition, 2026-11-07)
  * ------------------------------------------------------------------------- */
 
-/* The session panel grew a second tab; the four surfaces need room. */
-.panelWide {
-  width: 440px;
-  max-height: min(70vh, 640px);
-  overflow-y: auto;
-}
-
-.tabs {
+/* The Session Panel section shell (fork addition, 2026-11-07) — rendered
+   inside the panel's content area, so it only needs vertical rhythm. */
+.panelSection {
   display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--dsw-alias-border-l2);
-  padding-bottom: 6px;
-}
-
-.tab,
-.tabActive {
-  appearance: none;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  font: inherit;
-  font-size: 12.5px;
-  line-height: 20px;
-  padding: 3px 9px;
-  cursor: pointer;
-  color: var(--dsw-alias-label-secondary);
-}
-
-.tab:hover {
-  color: var(--dsw-alias-label-primary);
-}
-
-.tabActive {
-  background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-label-primary);
-  font-weight: 600;
-}
-
-.tab:focus-visible,
-.tabActive:focus-visible {
-  outline: 2px solid var(--dsw-alias-brand-primary);
-  outline-offset: 1px;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .promptEditor {

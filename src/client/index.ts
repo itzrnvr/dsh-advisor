@@ -55,8 +55,8 @@ import type {} from '@deepseek-ai/dsh-api-remotes/types'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { AdvisorCard } from './advisor-card.tsx'
 import { AdvisorSessionAction } from './advisor-session.tsx'
-import { AdvisorSessionPromptController } from './advisor-prompt-store.ts'
 import { AdvisorPromptPage } from './advisor-prompt-page.tsx'
+import { AdvisorPanelSection, ADVISOR_PANEL_SECTION_ID } from './advisor-panel-section.tsx'
 import { AdvisorSessionModelController, AdvisorSettingsStore, refreshIfLoaded } from './advisor-store.ts'
 import { NextPromptOverlay } from './next-prompt-overlay.tsx'
 import { AdvisorSuggestionController } from './next-prompt-store.ts'
@@ -275,6 +275,30 @@ export function apply(ctx: ClientContext): void {
     })
   })
 
+  // 2026-11-07 — the Session Panel section (user's `@local/dsh-session-inspector`
+  // third column, slot `dsh.sessionInspector.panel`). This is the one editor
+  // for the four prompt surfaces (system-wide append / workspace / session /
+  // rules); the advisor's own header action stays the model-pin control. The
+  // slot is root-scoped and non-session-bound, so the section reads the
+  // session from the panel's owner props (`useSessionId`) and hides itself
+  // while another section is selected. No `inject` face: the component closes
+  // over the connection's RPC caller through a thin wrapper.
+  ctx.slots.inject('dsh.sessionInspector.panel' as never, function* () {
+    yield (ctx.slots as any).register({
+      name: 'dsh.sessionInspector.panel',
+      id: ADVISOR_PANEL_SECTION_ID,
+      order: 10,
+      label: () => 'Advisor',
+      locale: NS,
+    }, function AdvisorPanelSectionSeat(props: Record<string, unknown>) {
+      return createElement(AdvisorPanelSection, {
+        ...props,
+        rpc: connection.rpc,
+        t: (props.t as ((key: AdvisorKey) => string) | undefined) ?? ((key: AdvisorKey) => en[key] ?? key),
+      })
+    })
+  })
+
   // B2 (issue #88 web session control): the session header's Advisor action —
   // the web surface of the per-session model override. Registered into the
   // shell-declared `conversation.session.header.actions` list slot (NOT the
@@ -297,20 +321,14 @@ export function apply(ctx: ClientContext): void {
       locale: NS,
       inject: (sessionId: string) => {
         const sessionController = new AdvisorSessionModelController(sessionId, connection.rpc)
-        // Fork addition (2026-11-07): the prompts & rules tab's controller.
-        // One per binding, like the model controller — its writes carry this
-        // session's id only.
-        const promptController = new AdvisorSessionPromptController(sessionId, connection.rpc)
         return {
           sessionId,
           controller: sessionController,
-          promptController,
           // READ-only directory reuse: provider/model options come from the
           // global card's store; the session surface never writes through it.
           directory: controller,
           hooks: {
             snapshot: sessionController.store,
-            prompt: promptController.store,
             refreshSignal,
             directory: controller.store,
           },

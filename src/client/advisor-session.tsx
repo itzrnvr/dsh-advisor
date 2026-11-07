@@ -34,8 +34,6 @@ import { useState, type ReactNode } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { AdvisorSessionMenuState, AdvisorSessionModelController, AdvisorSettingsState, AdvisorSettingsStore } from './advisor-store.ts'
-import { AdvisorPromptEditor } from './advisor-prompt-editor.tsx'
-import type { AdvisorPromptMenuState, AdvisorSessionPromptController } from './advisor-prompt-store.ts'
 import styles from './advisor-session.module.css'
 
 /**
@@ -49,16 +47,12 @@ export interface AdvisorSessionActionInjected {
   readonly sessionId: string
   /** The per-session session-model controller (one per binding). */
   readonly controller: AdvisorSessionModelController
-  /** The per-session prompt-layer controller (fork addition). */
-  readonly promptController: AdvisorSessionPromptController
   /** The shared provider/model directory (READ-only reuse of the card's store). */
   readonly directory: AdvisorSettingsStore
   /** Bare snapshot sources the renderer binds as selector hooks. */
   readonly hooks: {
     /** The per-session menu snapshot. */
     readonly snapshot: SnapshotStore<AdvisorSessionMenuState>
-    /** The per-session prompt-layer snapshot (fork addition). */
-    readonly prompt: SnapshotStore<AdvisorPromptMenuState>
     /** Refresh-signal epoch (bumped on connection reset / window focus). */
     readonly refreshSignal: SnapshotStore<{ epoch: number }>
     /** The shared provider/model directory state. */
@@ -85,13 +79,11 @@ export type AdvisorSessionActionProps =
  * @returns the action.
  */
 export function AdvisorSessionAction(props: AdvisorSessionActionProps): ReactNode {
-  const { controller, directory, promptController, useSnapshot, useRefreshSignal, useDirectory, usePrompt, t } = props
+  const { controller, directory, useSnapshot, useRefreshSignal, useDirectory, t } = props
   const state = useSnapshot((s) => s)
-  const promptState = usePrompt((s) => s)
   const epoch = useRefreshSignal((s) => s.epoch)
   const directoryState = useDirectory((s) => s)
   const [open, setOpen] = useState(false)
-  const [tab, setTab] = useState<'model' | 'prompts'>('model')
   // The staged pin selection is LOCAL user input (never seeded from the
   // snapshot — the effective pair is displayed as text above; a stale host
   // pair must not look like staged edits).
@@ -109,18 +101,10 @@ export function AdvisorSessionAction(props: AdvisorSessionActionProps): ReactNod
     void controller.refresh()
     if (directoryState.status === 'idle') void directory.load()
   }
-  // The prompt tab is lazy: its first open is the fetch point (the panel's
-  // model tab keeps the old single-request behavior).
-  const openPrompts = (): void => {
-    setTab('prompts')
-    promptController.takeSignal(epoch)
-    void promptController.refresh()
-  }
   // Refresh-signal watcher (fetch on reconnect / focus while open):
   // takeSignal is idempotent per epoch, so a re-render never double-fetches —
   // same render-time guarded-side-effect shape as the card's idle load.
   if (open && controller.takeSignal(epoch)) void controller.refresh()
-  if (open && tab === 'prompts' && promptController.takeSignal(epoch)) void promptController.refresh()
 
   const snapshot = state.snapshot
   const busy = state.pending
@@ -232,40 +216,12 @@ export function AdvisorSessionAction(props: AdvisorSessionActionProps): ReactNod
       </button>
       {open
         ? (
-            <div className={`${styles.panel} ${styles.panelWide}`} role="dialog" aria-label={t('sessionTrigger')}>
-              <div className={styles.tabs} role="tablist" aria-label={t('sessionTrigger')}>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={tab === 'model'}
-                  className={tab === 'model' ? styles.tabActive : styles.tab}
-                  onClick={() => { setTab('model') }}
-                >
-                  {t('sessionTabModel')}
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={tab === 'prompts'}
-                  className={tab === 'prompts' ? styles.tabActive : styles.tab}
-                  onClick={openPrompts}
-                >
-                  {t('sessionTabPrompts')}
-                </button>
-              </div>
-              {tab === 'model'
-                ? (
-                    <>
-                      <p className={styles.panelHeading}>{t('sessionModelHeading')}</p>
-                      {directoryState.providers.length === 0 && directoryState.status === 'ready' && !state.unavailable
-                        ? <p className={styles.mutedLine}>{t('noProviders')}</p>
-                        : null}
-                      {body}
-                    </>
-                  )
-                : (
-                    <AdvisorPromptEditor controller={promptController} state={promptState} t={t} />
-                  )}
+            <div className={styles.panel} role="dialog" aria-label={t('sessionModelHeading')}>
+              <p className={styles.panelHeading}>{t('sessionModelHeading')}</p>
+              {directoryState.providers.length === 0 && directoryState.status === 'ready' && !state.unavailable
+                ? <p className={styles.mutedLine}>{t('noProviders')}</p>
+                : null}
+              {body}
             </div>
           )
         : null}

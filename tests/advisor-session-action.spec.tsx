@@ -32,7 +32,6 @@ import { fakeSchema } from './support/schema-ops'
 import { AdvisorSessionAction } from '../src/client/advisor-session'
 import type { AdvisorSessionActionProps } from '../src/client/advisor-session'
 import { AdvisorSessionModelController, AdvisorSettingsStore } from '../src/client/advisor-store'
-import { AdvisorSessionPromptController } from '../src/client/advisor-prompt-store'
 import type { AdvisorSettingsState } from '../src/client/advisor-store'
 import { en } from '../src/client/locales'
 
@@ -99,16 +98,13 @@ interface Harness {
 function harness(snapshot: unknown): Harness {
   const rpc = new ScriptedRpc()
   const controller = new AdvisorSessionModelController('sess-1', rpc as unknown as ClientConnectionRpc)
-  const promptController = new AdvisorSessionPromptController('sess-1', rpc as unknown as ClientConnectionRpc)
   const epoch = createSnapshotStore<{ epoch: number }>({ epoch: 0 })
   const directory = directoryStore()
   const props = {
     sessionId: 'sess-1',
     controller,
-    promptController,
     directory,
     useSnapshot: bindSnapshotSelector(controller.store),
-    usePrompt: bindSnapshotSelector(promptController.store),
     useRefreshSignal: bindSnapshotSelector(epoch),
     useDirectory: bindSnapshotSelector(directory.store),
     // The conversation/global standard seats are never read by this
