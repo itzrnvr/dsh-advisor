@@ -128,7 +128,7 @@ export { refreshIfLoaded } from './advisor-store.ts'
  * the `connection.rpc` gateway channel. Reference shape:
  * ../deepseek-harness/packages/client/ui-settings-models/src/client/index.ts.
  */
-export const inject = ['slots', 'locale', 'connection', 'settingsSchema', 'remote', 'remote.llm', 'remote.settings', 'remote.session']
+export const inject = ['slots', 'locale', 'connection', 'settingsSchema', 'remote', 'remote.llm', 'remote.settings', 'remote.session', 'uiConversation']
 
 /**
  * Register the Advisor card once the `plugins.bundle.config` declaration is on
@@ -409,18 +409,31 @@ export function apply(ctx: ClientContext): void {
     }, AdvisorTurnTail)
   })
   // Inline activation — the reference idiom (dsh-agy-link's
-  // installTranslationUi, a shipped third-party chat-node contributor):
-  // DEFENSIVE SERVICE LOOKUP, not a child fiber. `ctx.get('uiConversation')`
-  // with a `ctx[name]` fallback, both contained; the engine's
-  // events.register disposer is kept so a HALF-registered inline surface
-  // (definition landed, keyed renderer failed) is withdrawn entirely — an
-  // orphan `advisor-note` kind would otherwise render raw JSON through the
-  // host's fallback while the tail stays mounted (every note twice in two
-  // shapes).
-  const engineService = ((): { readonly events: { readonly register: (definition: unknown) => unknown } } | undefined => {
+  // installTranslationUi, a shipped third-party chat-node contributor): the
+  // conversation engine is a CONTEXT SERVICE reached through the declared
+  // `inject` dependency above (`uiConversation` — the host's own consumers
+  // list the same key, and `UiConversation extends Service` registers under
+  // exactly that name).
+  //
+  // ROOT CAUSE of the wrong-order notes: the previous lookup was a defensive
+  // `ctx.get('uiConversation')` / `ctx['uiConversation']` WITHOUT declaring
+  // the dependency, and cordis blocks undeclared service access — so the
+  // lookup returned undefined every time, `buildAdvisorNoteDefinition` was
+  // never handed to the engine, no `advisor-note` node was ever published,
+  // and every card rendered through the turn tail above (grouped at the
+  // turn's end, therefore out of log order). Declaring the dependency is the
+  // fix; the read stays defensive so a host without the engine keeps the
+  // tail.
+  //
+  // On success the tail seat is disposed — never both surfaces (no double
+  // render). The engine's events.register disposer is kept so a HALF-registered
+  // inline surface (definition landed, keyed renderer failed) is withdrawn
+  // entirely — an orphan `advisor-note` kind would otherwise render raw JSON
+  // through the host's fallback while the tail stays mounted.
+  const engineService = ((): { readonly events?: { readonly register?: (definition: unknown) => unknown } } | undefined => {
     try {
-      const fromGet = (ctx as unknown as { get?: (key: string) => unknown }).get?.('uiConversation')
-      if (fromGet !== undefined && fromGet !== null) return fromGet as never
+      const viaGet = (ctx as unknown as { get?: (key: string) => unknown }).get?.('uiConversation')
+      if (viaGet !== undefined && viaGet !== null) return viaGet as never
     } catch {
       // Fall through to the direct property read.
     }
@@ -456,11 +469,13 @@ export function apply(ctx: ClientContext): void {
       // face: the card reads `props.node.data` / `props.t` straight from the
       // owner props. Plain-arrow factory — the reference implementation's
       // exact form for this slot.
-      ctx.slots.inject(CHAT_NODE_SLOT as never, () => (ctx.slots as any).register({
-        name: CHAT_NODE_SLOT,
-        key: ADVISOR_NOTE_KIND,
-        locale: NS,
-      }, AdvisorNoteRow))
+      ctx.slots.inject(CHAT_NODE_SLOT as never, function* () {
+        yield (ctx.slots as any).register({
+          name: CHAT_NODE_SLOT,
+          key: ADVISOR_NOTE_KIND,
+          locale: NS,
+        }, AdvisorNoteRow)
+      })
       // Inline won: retire the fallback tail seat (its per-session note
       // controllers stop polling with it — the inline nodes need no store).
       tailSeatDisposer()

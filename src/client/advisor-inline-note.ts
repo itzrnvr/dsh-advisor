@@ -165,14 +165,32 @@ export function buildAdvisorNoteDefinition(options: {
     publication: () => 'immediate' as const,
     /**
      * The framework hands the definition context the stable key/id/location
-     * of the matched event; the node mirrors the host's chatNode shape:
-     * { key, kind, id, target, anchorSeq, location, visibility, groupTree,
-     * data }. anchorSeq = the event seq → the card sits exactly where the
-     * note landed in the log: between the steps it was delivered between.
+     * of the matched event; the node mirrors the host's own node shape — the
+     * shared `trajectoryNode(context, anchorSeq, data)` helper every shipped
+     * definition uses (verified in the extracted bundle:
+     * `dsh-client-ui-trajectory/lib/client.js` →
+     * `location: context.start?.location ?? { kind: 'unresolved' }`, with
+     * `anchorSeq` taken from `context.start.event.seq`).
+     *
+     * Ordering is `anchorSeq` = the START event's seq → the card sits exactly
+     * where the note landed in the log: between the steps it was delivered
+     * between. `visibility: 'visible'` stays: the host hides the context row
+     * it builds from the same message (kind `context`), and this flag is what
+     * makes the plugin-owned node show at all.
+     *
+     * CAUTION for the next reader: field tweaks here were NOT what fixed the
+     * wrong-order notes. The definition was never reaching the engine at all —
+     * `uiConversation` was missing from the module's `inject` list, so the
+     * service read returned undefined and this file was dead code while every
+     * card rendered through the turn tail (grouped at the turn's end). The fix
+     * was the declared dependency in `src/client/index.ts`. If placement ever
+     * regresses, check that the definition is REGISTERED before touching these
+     * fields.
      */
     buildViewNode: (context: {
       readonly key?: string
       readonly id?: string
+      readonly kind?: string
       readonly state?: AdvisorInlineNote
       readonly start?: { readonly event?: unknown; readonly location?: unknown }
       readonly matches?: readonly { readonly event?: unknown; readonly location?: unknown }[]
@@ -180,16 +198,19 @@ export function buildAdvisorNoteDefinition(options: {
       try {
         const data = context.state
         if (data === undefined) return null
-        const location = context.start?.location ?? context.matches?.[0]?.location
+        // anchorSeq: the START event's seq — the host's own convention. The
+        // payload's own seq is the same number (derived from that event) and
+        // is kept as the fallback so a context without `start` still orders.
+        const startSeq = (context.start as { readonly event?: { readonly seq?: unknown } } | undefined)?.event?.seq
+        const anchorSeq = typeof startSeq === 'number' ? startSeq : data.seq
         return {
           key: context.key ?? `advisor-note-${data.seq}`,
-          kind: ADVISOR_NOTE_KIND,
+          kind: context.kind ?? ADVISOR_NOTE_KIND,
           id: context.id ?? `advisor-note-${data.seq}`,
           target: 'chat',
-          anchorSeq: data.seq,
-          ...(location === undefined ? {} : { location }),
+          anchorSeq,
+          location: context.start?.location ?? context.matches?.[0]?.location ?? { kind: 'unresolved' },
           visibility: 'visible',
-          groupTree: 'turn',
           data,
         }
       } catch {

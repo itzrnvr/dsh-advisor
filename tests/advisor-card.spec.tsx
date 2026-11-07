@@ -311,11 +311,13 @@ function fakeRuntime(scripted: Scripted) {
       },
       bind: (): never => { throw new Error('test: apply must not bind t — the card t seat comes from PropsLocale') },
     },
-    // 0.6.51 inline-notes activation is a DEFENSIVE SERVICE LOOKUP, not a
-    // child fiber: the wiring calls `ctx.get('uiConversation')` and falls
-    // back to `ctx['uiConversation']`. This harness provides neither, so
-    // the lookup returns undefined and the plugin keeps the turn-tail seat —
-    // the pre-0.6.50 behavior these card tests pin.
+    // 0.6.51 inline-notes activation reads the DECLARED `uiConversation`
+    // dependency (the module's `inject` list — cordis blocks undeclared
+    // service access, which is exactly why the earlier defensive lookup
+    // silently found nothing and every note fell back to the turn tail).
+    // This harness provides no `uiConversation` service, so the read returns
+    // undefined and the plugin keeps the turn-tail seat — the pre-0.6.50
+    // behavior these card tests pin.
     get: (key: string): unknown => {
       if (key === 'connection') return { rpc: scripted.rpc }
       return services[key]
@@ -348,7 +350,7 @@ describe('AdvisorCard registration (plugins.bundle.config)', () => {
     // `cannot get property "remote.llm" without inject` at card load.
     expect(inject).toEqual([
       'slots', 'locale', 'connection', 'settingsSchema', 'remote',
-      'remote.llm', 'remote.settings', 'remote.session',
+      'remote.llm', 'remote.settings', 'remote.session', 'uiConversation',
     ])
   })
 

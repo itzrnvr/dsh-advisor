@@ -334,7 +334,7 @@ describe('buildAdvisorNoteDefinition.buildViewNode — chat node shape', () => {
     return deriveInlineNote(advisorNoteEvent('[advisor:concern] check the edge case'))!
   }
 
-  it('mirrors the host chatNode shape: kind/target/anchorSeq/visibility/groupTree/data + location passthrough', () => {
+  it('mirrors the host chatNode shape: kind/target/anchorSeq/visibility/data + location passthrough', () => {
     const state = derivedState()
     const node = def.buildViewNode({ key: 'k1', id: 'i1', state, start: { location: turnLocation } })
     expect(node).toEqual({
@@ -347,7 +347,6 @@ describe('buildAdvisorNoteDefinition.buildViewNode — chat node shape', () => {
       anchorSeq: state.seq,
       location: turnLocation,
       visibility: 'visible',
-      groupTree: 'turn',
       data: state,
     })
     // The node carries the derived object itself — no copy, no reshape.
@@ -365,11 +364,16 @@ describe('buildAdvisorNoteDefinition.buildViewNode — chat node shape', () => {
       .toEqual(matchesLocation)
   })
 
-  it('omits the location key entirely when neither start nor matches carry one', () => {
+  it('defaults location to { kind: "unresolved" } when neither start nor matches carry one', () => {
     const state = derivedState()
-    expect(def.buildViewNode({ key: 'k3', id: 'i3', state })).not.toHaveProperty('location')
-    // An empty matches list is not a location either.
-    expect(def.buildViewNode({ key: 'k3', id: 'i3', state, matches: [] })).not.toHaveProperty('location')
+    // No location anywhere → the host's own default (`{ kind: 'unresolved' }`
+    // from the shared `trajectoryNode` helper): the flow needs a location to
+    // resolve the node to, so it is never omitted.
+    expect(def.buildViewNode({ key: 'k3', id: 'i3', state })!.location)
+      .toEqual({ kind: 'unresolved' })
+    // An empty matches list is not a location either — same default.
+    expect(def.buildViewNode({ key: 'k3', id: 'i3', state, matches: [] })!.location)
+      .toEqual({ kind: 'unresolved' })
   })
 
   it('derives stable key/id from the note seq when the context omits them', () => {
