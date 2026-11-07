@@ -130,6 +130,41 @@ export function advisorSessionError(tag: AdvisorSessionErrorTag, message: string
   return { error: { tag, message } }
 }
 
+/** Scope of one live advisor prompt/rule layer (fork addition, 2026-11-07). */
+export type AdvisorPromptScope = 'system' | 'workspace' | 'session'
+
+/** One active rule on the wire (index is the scope-local row). */
+export interface AdvisorPromptRuleView {
+  readonly scope: AdvisorPromptScope
+  readonly index: number
+  readonly text: string
+}
+
+/** The session-panel prompt state (the four editable surfaces). */
+export interface AdvisorPromptState {
+  readonly systemWide: string
+  readonly workspace: string
+  readonly session: string
+  readonly rules: readonly AdvisorPromptRuleView[]
+  /** False when the session has no cwd — the workspace layer cannot be written. */
+  readonly workspaceKnown: boolean
+}
+
+/** One prompt-state response: the refreshed state, or a tagged data error. */
+export type AdvisorPromptRpcResult =
+  | { readonly state: AdvisorPromptState }
+  | { readonly error: { readonly tag: AdvisorSessionErrorTag; readonly message: string } }
+
+/** Build one tagged prompt-state error (same shape as the session errors). */
+export function advisorPromptError(tag: AdvisorSessionErrorTag, message: string): AdvisorPromptRpcResult {
+  return { error: { tag, message } }
+}
+
+/** Whether an unknown wire value names one of the three prompt scopes. */
+function isPromptScope(value: unknown): value is AdvisorPromptScope {
+  return value === 'system' || value === 'workspace' || value === 'session'
+}
+
 // ---------------------------------------------------------------------------
 // Model capability surface (plan dsh-advisor-reasoning-effort T2)
 // ---------------------------------------------------------------------------
@@ -252,6 +287,16 @@ export interface AdvisorSessionGatewayFace {
   setSessionModel(sessionId: string, provider: string, model: string): Promise<AdvisorSessionRpcResult>
   /** Drop the pin and re-inherit (selection: null); never touches the enable override. */
   resetSessionModel(sessionId: string): AdvisorSessionRpcResult
+  /** Read the four live prompt layers + every active rule (fork addition). */
+  getPromptState?(sessionId: string): AdvisorPromptRpcResult
+  /** Replace one free-text layer (system | workspace | session). */
+  setPromptLayer?(sessionId: string, layer: AdvisorPromptScope, text: string): Promise<AdvisorPromptRpcResult>
+  /** Append one rule to a scope. */
+  addPromptRule?(sessionId: string, scope: AdvisorPromptScope, text: string): Promise<AdvisorPromptRpcResult>
+  /** Replace one rule by scope-local index. */
+  updatePromptRule?(sessionId: string, scope: AdvisorPromptScope, index: number, text: string): Promise<AdvisorPromptRpcResult>
+  /** Delete one rule by scope-local index. */
+  deletePromptRule?(sessionId: string, scope: AdvisorPromptScope, index: number): Promise<AdvisorPromptRpcResult>
 }
 
 // ---------------------------------------------------------------------------
@@ -615,6 +660,110 @@ export class AdvisorConfigGateway extends TypertRemoteService {
     const validated = parseModelPair(pair.provider, pair.model)
     if (!validated.ok) return advisorSessionError('advisor/rejected', `advisor: ${validated.reason}`)
     return face.setSessionModel(sessionId, validated.provider, validated.model)
+  }
+
+  /**
+   * Fork addition (2026-11-07) — the session panel's layered prompt state:
+   * the profile-wide append, the workspace prompt, the session instructions,
+   * and every active rule (all scopes, with a scope-local index for edits).
+   * Read-only and tag-in-data, like the model surface.
+   */
+  getPromptState(sessionId: string): AdvisorPromptRpcResult {
+    const resolved = this.promptFace(sessionId)
+    if (resolved.error !== undefined) return resolved.error
+    if (resolved.face!.getPromptState === undefined) {
+      return advisorPromptError('advisor/unavailable', 'advisor: this owner has no prompt-state surface')
+    }
+    return resolved.face!.getPromptState(sessionId)
+  }
+
+  /**
+   * Replace one free-text layer. The host writes the profile append through
+   * the config gateway, the workspace prompt through the durable workspace
+   * store, and the session prompt through the per-session overrides. The
+   * response is the refreshed four-field state.
+   */
+  async setPromptLayer(sessionId: string, layer: unknown, text: unknown): Promise<AdvisorPromptRpcResult> {
+    const resolved = this.promptFace(sessionId)
+    if (resolved.error !== undefined) return resolved.error
+    if (!isPromptScope(layer)) {
+      return advisorPromptError('advisor/rejected', `advisor: unknown prompt layer "${String(layer)}"`)
+    }
+    if (typeof text !== 'string') {
+      return advisorPromptError('advisor/rejected', 'advisor: prompt text must be a string')
+    }
+    if (resolved.face!.setPromptLayer === undefined) {
+      return advisorPromptError('advisor/unavailable', 'advisor: this owner has no prompt-state surface')
+    }
+    return resolved.face!.setPromptLayer(sessionId, layer, text)
+  }
+
+  /** Append one rule to one scope (system | workspace | session). */
+  async addPromptRule(sessionId: string, scope: unknown, text: unknown): Promise<AdvisorPromptRpcResult> {
+    const resolved = this.promptFace(sessionId)
+    if (resolved.error !== undefined) return resolved.error
+    if (!isPromptScope(scope)) {
+      return advisorPromptError('advisor/rejected', `advisor: unknown rule scope "${String(scope)}"`)
+    }
+    if (typeof text !== 'string' || text.trim() === '') {
+      return advisorPromptError('advisor/rejected', 'advisor: a rule needs non-empty text')
+    }
+    if (resolved.face!.addPromptRule === undefined) {
+      return advisorPromptError('advisor/unavailable', 'advisor: this owner has no prompt-state surface')
+    }
+    return resolved.face!.addPromptRule(sessionId, scope, text.trim())
+  }
+
+  /** Replace one rule by its scope-local index. */
+  async updatePromptRule(sessionId: string, scope: unknown, index: unknown, text: unknown): Promise<AdvisorPromptRpcResult> {
+    const resolved = this.promptFace(sessionId)
+    if (resolved.error !== undefined) return resolved.error
+    if (!isPromptScope(scope)) {
+      return advisorPromptError('advisor/rejected', `advisor: unknown rule scope "${String(scope)}"`)
+    }
+    if (!Number.isInteger(index) || (index as number) < 0) {
+      return advisorPromptError('advisor/rejected', 'advisor: rule index must be a non-negative integer')
+    }
+    if (typeof text !== 'string' || text.trim() === '') {
+      return advisorPromptError('advisor/rejected', 'advisor: a rule needs non-empty text')
+    }
+    if (resolved.face!.updatePromptRule === undefined) {
+      return advisorPromptError('advisor/unavailable', 'advisor: this owner has no prompt-state surface')
+    }
+    return resolved.face!.updatePromptRule(sessionId, scope, index as number, text.trim())
+  }
+
+  /** Delete one rule by its scope-local index. */
+  async deletePromptRule(sessionId: string, scope: unknown, index: unknown): Promise<AdvisorPromptRpcResult> {
+    const resolved = this.promptFace(sessionId)
+    if (resolved.error !== undefined) return resolved.error
+    if (!isPromptScope(scope)) {
+      return advisorPromptError('advisor/rejected', `advisor: unknown rule scope "${String(scope)}"`)
+    }
+    if (!Number.isInteger(index) || (index as number) < 0) {
+      return advisorPromptError('advisor/rejected', 'advisor: rule index must be a non-negative integer')
+    }
+    if (resolved.face!.deletePromptRule === undefined) {
+      return advisorPromptError('advisor/unavailable', 'advisor: this owner has no prompt-state surface')
+    }
+    return resolved.face!.deletePromptRule(sessionId, scope, index as number)
+  }
+
+  /** Shared session-facing resolution + the common rejections. */
+  private promptFace(sessionId: unknown): { face?: AdvisorSessionGatewayFace; error?: AdvisorPromptRpcResult } {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      return { error: advisorPromptError('advisor/rejected', 'advisor: a non-empty sessionId is required') }
+    }
+    const face = this.sessionControl()
+    if (face === undefined) {
+      return {
+        error: advisorPromptError(
+          'advisor/unavailable',
+          'advisor: the session control surface is not owned by this gateway — no elected owner on this fiber',
+        ),
+      }
+    }
+    return { face }
   }
 
   /**
@@ -1001,6 +1150,73 @@ export function advisorTypertContribution(): TypertContribution {
         parameters: [
           { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },
           { name: 'selection', wire: 'selection', source: 'json', codec: { mode: 'src-json' } },
+        ],
+        result: { mode: 'src-json' },
+      },
+      // Fork addition (2026-11-07) — the session panel's four prompt surfaces.
+      // Same direct/src-json dispatch; one plain-object `args` keyed by the
+      // parameter names below.
+      {
+        id: 'dsh-advisor#advisor/getPromptState',
+        service: 'advisor',
+        namespace: 'advisor',
+        method: 'getPromptState',
+        invocation: { kind: 'direct' },
+        parameters: [
+          { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },
+        ],
+        result: { mode: 'src-json' },
+      },
+      {
+        id: 'dsh-advisor#advisor/setPromptLayer',
+        service: 'advisor',
+        namespace: 'advisor',
+        method: 'setPromptLayer',
+        invocation: { kind: 'direct' },
+        parameters: [
+          { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },
+          { name: 'layer', wire: 'layer', source: 'json', codec: { mode: 'src-json' } },
+          { name: 'text', wire: 'text', source: 'json', codec: { mode: 'src-json' } },
+        ],
+        result: { mode: 'src-json' },
+      },
+      {
+        id: 'dsh-advisor#advisor/addPromptRule',
+        service: 'advisor',
+        namespace: 'advisor',
+        method: 'addPromptRule',
+        invocation: { kind: 'direct' },
+        parameters: [
+          { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },
+          { name: 'scope', wire: 'scope', source: 'json', codec: { mode: 'src-json' } },
+          { name: 'text', wire: 'text', source: 'json', codec: { mode: 'src-json' } },
+        ],
+        result: { mode: 'src-json' },
+      },
+      {
+        id: 'dsh-advisor#advisor/updatePromptRule',
+        service: 'advisor',
+        namespace: 'advisor',
+        method: 'updatePromptRule',
+        invocation: { kind: 'direct' },
+        parameters: [
+          { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },
+          { name: 'scope', wire: 'scope', source: 'json', codec: { mode: 'src-json' } },
+          { name: 'index', wire: 'index', source: 'json', codec: { mode: 'src-json' } },
+          { name: 'text', wire: 'text', source: 'json', codec: { mode: 'src-json' } },
+        ],
+        result: { mode: 'src-json' },
+      },
+      {
+        id: 'dsh-advisor#advisor/deletePromptRule',
+        service: 'advisor',
+        namespace: 'advisor',
+        method: 'deletePromptRule',
+        invocation: { kind: 'direct' },
+        parameters: [
+          { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'src-json' } },
+          { name: 'scope', wire: 'scope', source: 'json', codec: { mode: 'src-json' } },
+          { name: 'index', wire: 'index', source: 'json', codec: { mode: 'src-json' } },
         ],
         result: { mode: 'src-json' },
       },

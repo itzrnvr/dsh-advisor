@@ -1760,9 +1760,9 @@ describe('AdvisorRuntime — standing session rules + wake flag (fork addition)'
     await runtime.waitForDrain()
 
     const sent = textOfMessage(llm.calls[0]!.messages[0]!)
-    expect(sent.startsWith('## Standing advisor rules (this session)')).toBe(true)
-    expect(sent).toContain('1. do not overshoot')
-    expect(sent).toContain('2. be terse')
+    expect(sent.startsWith('## Advisor instructions (live)')).toBe(true)
+    expect(sent).toContain('1. [session] do not overshoot')
+    expect(sent).toContain('2. [session] be terse')
   })
 
   it('reads the rule source live, so a new rule applies without rebuilding the runtime', async () => {
@@ -1779,8 +1779,8 @@ describe('AdvisorRuntime — standing session rules + wake flag (fork addition)'
     await runtime.waitForDrain()
 
     const second = textOfMessage(llm.calls[1]!.messages.at(-1)!)
-    expect(second).toContain('1. first rule')
-    expect(second).toContain('2. second rule')
+    expect(second).toContain('1. [session] first rule')
+    expect(second).toContain('2. [session] second rule')
   })
 
   it('extracts an explicit wake flag; an absent/invalid flag stays undefined (legacy default)', () => {
@@ -1788,6 +1788,33 @@ describe('AdvisorRuntime — standing session rules + wake flag (fork addition)'
     expect(extractAdviceNote('{"note":"x","wake":true}')?.wake).toBe(true)
     expect(extractAdviceNote('{"note":"x"}')?.wake).toBeUndefined()
     expect(extractAdviceNote('{"note":"x","wake":"no"}')?.wake).toBeUndefined()
+  })
+
+  it('renders every live layer with its scope label', async () => {
+    const llm = new FakeLlm([{ chunks: textReply('{"note":"x"}') }])
+    const { runtime } = makeRuntime(llm, {
+      layers: () => ({
+        systemWide: 'system instruction',
+        workspace: 'workspace instruction',
+        session: 'session instruction',
+        rules: [
+          { scope: 'system', text: 'sys rule' },
+          { scope: 'workspace', text: 'ws rule' },
+          { scope: 'session', text: 'sess rule' },
+        ],
+      }),
+    })
+    runtime.enqueue(delta('update'))
+    await runtime.waitForDrain()
+
+    const sent = textOfMessage(llm.calls[0]!.messages[0]!)
+    expect(sent).toContain('## Advisor instructions (live)')
+    expect(sent).toContain('### System-wide\nsystem instruction')
+    expect(sent).toContain('### Workspace\nworkspace instruction')
+    expect(sent).toContain('### Session\nsession instruction')
+    expect(sent).toContain('1. [system] sys rule')
+    expect(sent).toContain('2. [workspace] ws rule')
+    expect(sent).toContain('3. [session] sess rule')
   })
 })
 

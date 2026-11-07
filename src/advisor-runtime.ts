@@ -108,7 +108,21 @@ declare module '@deepseek-ai/dsh-llm' {
 /** Severity vocabulary (spec §6) carried by every delivered advice note. */
 export type AdviceSeverity = 'nit' | 'concern' | 'blocker'
 
-/** One extracted advice note, fed to the T5 emission guard for delivery. */
+/** One live prompt layer (fork addition, 2026-11-07). */
+export interface AdvisorContextLayers {
+  /** Profile-wide append (the plugin-row `systemPromptAppend`). */
+  readonly systemWide: string
+  /** Workspace instructions (keyed by the session's cwd). */
+  readonly workspace: string
+  /** Session instructions (the durable per-session override). */
+  readonly session: string
+  /** Active rules across every scope, in display order. */
+  readonly rules: readonly { readonly scope: 'system' | 'workspace' | 'session'; readonly text: string }[]
+}
+
+/**
+ * One extracted advice note, fed to the T5 emission guard for delivery.
+ */
 export interface AdviceNote {
   readonly note: string
   readonly severity: AdviceSeverity
@@ -193,6 +207,15 @@ export interface AdvisorRuntimeOptions {
    * provider prefix cache intact.
    */
   readonly rules?: () => readonly string[]
+  /**
+   * Layered live instructions (fork addition): profile append + workspace
+   * prompt + session prompt + every scope's rules, read per review. Rendered
+   * as a "## Advisor instructions (live)" block at the top of the NEW user
+   * turn — never the system prompt, never an earlier history entry — so a
+   * change applies immediately while the provider prefix cache stays valid.
+   * When absent, {@link rules} feeds the session-rule fallback.
+   */
+  readonly layers?: () => AdvisorContextLayers
   /** Backoff for the single transient retry (KD-5); default 1000ms. */
   readonly retryBackoffMs?: number
   /**
@@ -666,6 +689,8 @@ export class AdvisorRuntime {
   private readonly systemPrompt: string
   /** Live standing-rule source (see {@link AdvisorRuntimeOptions.rules}). */
   private readonly rules: () => readonly string[]
+  /** Live layered-instruction source (see {@link AdvisorRuntimeOptions.layers}). */
+  private readonly layers: () => AdvisorContextLayers
   private readonly proseFallback: boolean
   /** Configured effort id, normalized: `undefined` = automatic (smallest declared). */
   private readonly reasoningEffort: string | undefined
@@ -787,6 +812,13 @@ export class AdvisorRuntime {
     this.sessionId = options.sessionId
     this.systemPrompt = options.systemPrompt
     this.rules = options.rules ?? (() => [])
+    const legacyRules = this.rules
+    this.layers = options.layers ?? (() => ({
+      systemWide: '',
+      workspace: '',
+      session: '',
+      rules: legacyRules().map((text) => ({ scope: 'session' as const, text })),
+    }))
     this.proseFallback = options.proseFallback ?? false
     // Empty/whitespace = automatic, identical to an absent option: the config
     // snapshot already normalizes it, and re-checking here keeps a direct
@@ -1369,18 +1401,32 @@ export class AdvisorRuntime {
 
   /** The exact user-message text for one review; stored verbatim in history. */
   private userTextFor(delta: Delta): string {
-    // Standing session rules ride the NEW user turn, not the system prompt and
-    // not an earlier history entry: the provider prefix (system + history) is
-    // untouched, so the cache still matches, and the rules are always the most
-    // recent instruction before the update — the position that gets followed.
-    const rules = this.rules()
-    const rulesBlock = rules.length === 0
+    // Live layered instructions ride the NEW user turn — never the system
+    // prompt and never an earlier history entry — so the provider prefix
+    // (system + history) is untouched and the cache still matches. The block
+    // is the most recent instruction before the update, the position models
+    // follow most reliably.
+    const layers = this.layers()
+    const sections: string[] = []
+    const systemWide = layers.systemWide.trim()
+    const workspace = layers.workspace.trim()
+    const session = layers.session.trim()
+    if (systemWide !== '') sections.push(`### System-wide\n${systemWide}`)
+    if (workspace !== '') sections.push(`### Workspace\n${workspace}`)
+    if (session !== '') sections.push(`### Session\n${session}`)
+    if (layers.rules.length > 0) {
+      const rules = layers.rules
+        .filter((rule) => rule.text.trim() !== '')
+        .map((rule, index) => `${index + 1}. [${rule.scope}] ${rule.text.trim()}`)
+      if (rules.length > 0) sections.push(`### Active rules\n${rules.join('\n')}`)
+    }
+    const block = sections.length === 0
       ? ''
-      : `## Standing advisor rules (this session)\n${rules.map((rule, index) => `${index + 1}. ${rule}`).join('\n')}\n\n`
+      : `## Advisor instructions (live)\n\n${sections.join('\n\n')}\n\n`
     // Task reminder AFTER the delta: the last instruction wins, and
     // "above" points at the transcript. A prefix reminder was followed
     // unreliably on code-heavy deltas (the model continued the code).
-    return `${rulesBlock}${delta.markdown}\n\n---\n${ADVISOR_TASK_REMINDER}`
+    return `${block}${delta.markdown}\n\n---\n${ADVISOR_TASK_REMINDER}`
   }
 
   /**

@@ -229,6 +229,8 @@ export interface AdvisorPersistedOverride {
   readonly model?: AdvisorModelPair
   /** Standing session rules (fork addition), oldest → newest. */
   readonly rules?: readonly string[]
+  /** Session free-text instructions (fork addition; ''/absent = none). */
+  readonly prompt?: string
   /** Write time, used to bound the snapshot to the newest entries. */
   readonly at?: number
 }
@@ -277,6 +279,8 @@ export class AdvisorSessionOverrides {
   private readonly models = new Map<string, AdvisorModelPair>()
   /** Standing session rules (fork addition), oldest → newest, never pruned. */
   private readonly rules = new Map<string, string[]>()
+  /** Session free-text instructions (fork addition), never pruned. */
+  private readonly prompts = new Map<string, string>()
   private readonly generations = new Map<string, number>()
   /**
    * Per-session write time (fork addition). Restored entries keep the stamp
@@ -313,6 +317,9 @@ export class AdvisorSessionOverrides {
           .filter((rule) => rule.length > 0)
         if (restored.length > 0) this.rules.set(sessionId, restored)
       }
+      if (typeof entry.prompt === 'string' && entry.prompt.trim() !== '') {
+        this.prompts.set(sessionId, entry.prompt)
+      }
     }
   }
 
@@ -323,11 +330,13 @@ export class AdvisorSessionOverrides {
       const enabled = this.enables.get(sessionId)
       const model = this.models.get(sessionId)
       const rules = this.rules.get(sessionId)
+      const prompt = this.prompts.get(sessionId)
       const at = this.writtenAt.get(sessionId)
       sessions[sessionId] = {
         ...(enabled === undefined ? {} : { enabled }),
         ...(model === undefined ? {} : { model }),
         ...(rules === undefined || rules.length === 0 ? {} : { rules }),
+        ...(prompt === undefined ? {} : { prompt }),
         ...(at === undefined ? {} : { at }),
       }
     }
@@ -429,9 +438,47 @@ export class AdvisorSessionOverrides {
     return count
   }
 
-  /** Sessions holding ANY per-session override state (enable and/or pair and/or rules). */
+  /** The session's free-text instructions ('' when none). */
+  prompt(sessionId: string): string {
+    return this.prompts.get(sessionId) ?? ''
+  }
+
+  /** Replace the session's free-text instructions ('' keeps the entry empty). */
+  setPrompt(sessionId: string, text: string): void {
+    if (text.trim() === '') this.prompts.delete(sessionId)
+    else this.prompts.set(sessionId, text)
+    this.writtenAt.set(sessionId, Date.now())
+    this.changed()
+  }
+
+  /** Replace one session rule by index. @returns whether it existed. */
+  updateRule(sessionId: string, index: number, text: string): boolean {
+    const existing = this.rules.get(sessionId)
+    if (existing === undefined || !Number.isInteger(index) || index < 0 || index >= existing.length) return false
+    existing[index] = text
+    this.writtenAt.set(sessionId, Date.now())
+    this.changed()
+    return true
+  }
+
+  /** Delete one session rule by index. @returns whether it existed. */
+  deleteRule(sessionId: string, index: number): boolean {
+    const existing = this.rules.get(sessionId)
+    if (existing === undefined || !Number.isInteger(index) || index < 0 || index >= existing.length) return false
+    existing.splice(index, 1)
+    if (existing.length === 0) this.rules.delete(sessionId)
+    if (this.enables.has(sessionId) || this.models.has(sessionId) || this.prompts.has(sessionId)) {
+      this.writtenAt.set(sessionId, Date.now())
+    } else {
+      this.writtenAt.delete(sessionId)
+    }
+    this.changed()
+    return true
+  }
+
+  /** Sessions holding ANY per-session override state (enable and/or pair and/or rules and/or prompt). */
   overrideSessionIds(): IterableIterator<string> {
-    return new Set([...this.enables.keys(), ...this.models.keys(), ...this.rules.keys()]).keys()
+    return new Set([...this.enables.keys(), ...this.models.keys(), ...this.rules.keys(), ...this.prompts.keys()]).keys()
   }
 
   /**
@@ -459,6 +506,7 @@ export class AdvisorSessionOverrides {
     this.enables.clear()
     this.models.clear()
     this.rules.clear()
+    this.prompts.clear()
     this.generations.clear()
     // Fork addition: the write stamps must die with the maps, or the eviction
     // pass would compare against stale ages after an owner teardown.

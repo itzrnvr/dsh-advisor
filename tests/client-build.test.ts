@@ -160,8 +160,9 @@ describe('client bundle contract (scripts/build-client.mjs)', () => {
     // The collapsed-chrome classes must not resurface in the card. The generic
     // local name `header` is not pinned: the Advisor trajectory module added in
     // the fork legitimately uses it, and the old chrome class was only ever a
-    // local name in the removed card layout.
-    expect(bundle).not.toContain('"card"')
+    // local name in the removed card layout. `card` is likewise no longer
+    // pinned: the 2026-11-07 Settings-page prompt editor legitimately uses a
+    // `.card` container (the Global AGENTS.md panel pattern).
     expect(bundle).not.toContain('"chevronOpen"')
   })
 

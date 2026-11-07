@@ -367,6 +367,20 @@ describe('/advisor rule (standing session rules)', () => {
     const twenty = Array.from({ length: 20 }, (_, index) => `rule ${index}`)
     expect(validateAdvisorRule('one more', twenty).ok).toBe(false)
   })
+
+  it('persists the session prompt and rule edits in the override snapshot', () => {
+    const overrides = new AdvisorSessionOverrides()
+    overrides.setPrompt('s1', 'stay inside the ask')
+    overrides.addRule('s1', 'rule a')
+    overrides.addRule('s1', 'rule b')
+    expect(overrides.prompt('s1')).toBe('stay inside the ask')
+    expect(overrides.updateRule('s1', 0, 'rule A')).toBe(true)
+    expect(overrides.deleteRule('s1', 1)).toBe(true)
+    expect(overrides.snapshot().sessions.s1?.prompt).toBe('stay inside the ask')
+    expect(overrides.snapshot().sessions.s1?.rules).toEqual(['rule A'])
+    expect(overrides.updateRule('s1', 5, 'x')).toBe(false)
+    expect(overrides.deleteRule('s1', 5)).toBe(false)
+  })
 })
 
 // ---------------------------------------------------------------------------

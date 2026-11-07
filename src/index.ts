@@ -60,16 +60,17 @@ import type {} from '@deepseek-ai/dsh-commands'
 import { resolveAdvisorConfig } from './config.js'
 import type { AdvisorConfig, ResolvedAdvisorConfig } from './config.js'
 import { installAdvisorSettings } from './settings.js'
-import { AdvisorConfigGateway, advisorSessionError, advisorTypertContribution } from './gateway.js'
-import type { AdvisorNotesFace, AdvisorNoteView, AdvisorSessionGatewayFace, AdvisorSessionRpcResult, AdvisorSuggestionFace, AdvisorTrajectoryFace, AdvisorTurnView } from './gateway.js'
+import { AdvisorConfigGateway, advisorPromptError, advisorSessionError, advisorTypertContribution } from './gateway.js'
+import type { AdvisorNotesFace, AdvisorNoteView, AdvisorPromptRpcResult, AdvisorPromptScope, AdvisorPromptState, AdvisorSessionGatewayFace, AdvisorSessionRpcResult, AdvisorSuggestionFace, AdvisorTrajectoryFace, AdvisorTurnView } from './gateway.js'
 import { SessionTranscriptObserver } from './transcript.js'
 import type { Delta } from './transcript.js'
 import { AdvisorRuntime } from './advisor-runtime.js'
-import type { AdviceNote, AdvisorTrace, AdvisorTurnRecord } from './advisor-runtime.js'
+import type { AdviceNote, AdvisorContextLayers, AdvisorTrace, AdvisorTurnRecord } from './advisor-runtime.js'
 import { AdvisorDelivery } from './delivery.js'
-import { DEFAULT_ADVISOR_SYSTEM_PROMPT, composeAdvisorSystemPrompt } from './prompts.js'
+import { DEFAULT_ADVISOR_SYSTEM_PROMPT } from './prompts.js'
 import { findTraceEntry, renderTraceEntry } from './trace-entry.js'
 import { AttemptStore, SessionStateStore } from './persist.js'
+import { PromptLayerStore, workspaceKey } from './prompt-store.js'
 import { notesFromSessionEvents } from './seed.js'
 import { DEFAULT_HISTORY_MAX_TOKENS } from './limits.js'
 import { advisorSuggestionFace, NextPromptManager } from './next-prompt.js'
@@ -233,8 +234,9 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   let notesControl: AdvisorNotesFace | undefined
   // Fork addition: the advisor-trajectory face served to the Advisor tab.
   let trajectoryControl: AdvisorTrajectoryFace | undefined
+  let configGateway: AdvisorConfigGateway | undefined
   try {
-    new AdvisorConfigGateway(ctx, bridge, () => sessionControl, (provider, model, signal) =>
+    configGateway = new AdvisorConfigGateway(ctx, bridge, () => sessionControl, (provider, model, signal) =>
       appRootLlm().resolveModelInfo(provider, model, signal), ctx.logger('advisor'), () => suggestionControl, () => notesControl, () => trajectoryControl)
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('has been registered')) throw error
@@ -387,6 +389,10 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   // `/advisor status` shows the reason (spec §5.2; qc3 I-1) — the gate itself
   // still blocks every runtime (the resolver is the SSOT for the gate).
   const sessionState = new SessionStateStore()
+  // Fork addition (2026-11-07): durable profile + workspace prompt layers.
+  // The session layer lives in the overrides below; this store owns the other
+  // two so every scope survives a reinstall (append-only, never auto-deleted).
+  const promptStore = new PromptLayerStore()
   // Fork addition: per-session `/advisor on|off` and model pins are persisted,
   // so a plugin reinstall or host restart no longer silently turns the
   // reviewer off for every existing session.
@@ -394,6 +400,45 @@ export function apply(ctx: Context, config: AdvisorConfig) {
     initial: sessionState.load(),
     onChange: (state) => { sessionState.save(state) },
   })
+  /** The session's workspace root (the durable key for the workspace layer). */
+  const workspaceCwdOf = (sessionId: string): string | undefined => {
+    try {
+      return ctx.agents.get(sessionId as SessionId)?.session?.header?.cwd
+    } catch {
+      return undefined
+    }
+  }
+  /**
+   * The four editable surfaces the session panel reads: profile append,
+   * workspace prompt, session instructions, and every active rule across the
+   * three scopes (scope-local indexes make edits/deletes addressable).
+   */
+  const promptStateOf = (sessionId: string): AdvisorPromptState => {
+    const cwd = workspaceCwdOf(sessionId)
+    const workspace = promptStore.workspace(cwd)
+    const rules: AdvisorPromptState['rules'] = [
+      ...promptStore.globalRulesList().map((text, index) => ({ scope: 'system' as const, index, text })),
+      ...workspace.rules.map((text, index) => ({ scope: 'workspace' as const, index, text })),
+      ...overrides.rulesFor(sessionId).map((text, index) => ({ scope: 'session' as const, index, text })),
+    ]
+    return {
+      systemWide: safeResolved().systemPromptAppend ?? '',
+      workspace: workspace.prompt,
+      session: overrides.prompt(sessionId),
+      rules,
+      workspaceKnown: cwd !== undefined && workspaceKey(cwd) !== undefined,
+    }
+  }
+  /** The runtime-facing form: the non-empty layers + the flattened rule list. */
+  const layersFor = (sessionId: string): AdvisorContextLayers => {
+    const state = promptStateOf(sessionId)
+    return {
+      systemWide: state.systemWide,
+      workspace: state.workspace,
+      session: state.session,
+      rules: state.rules.map(({ scope, text }) => ({ scope, text })),
+    }
+  }
   /**
    * The effective on/off switch for one session. Applies the SAME AND as
    * `safeEffective` on one session-scoped resolution — the session's complete
@@ -595,9 +640,9 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       effective.provider ?? '',
       effective.model ?? '',
       effective.systemPrompt,
-      // Appended system prompt (fork addition): a runtime-construction
-      // constant, so a committed edit rebuilds the session runtime.
-      effective.systemPromptAppend ?? '',
+      // `systemPromptAppend` is deliberately ABSENT: the live prompt layers
+      // (profile append / workspace / session / rules) ride the new reviewer
+      // turn, so editing one never rebuilds the runtime or resets the cache.
       globalResolved.proseFallback ?? false,
       globalResolved.reasoningEffort ?? '',
       // Call timeout (minutes) is a runtime-construction constant too: an edit
@@ -646,13 +691,11 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // request option is the host's branded SessionId). Providers that route
       // per conversation on a header need it on every advisor call.
       sessionId: sessionId as SessionId,
-      systemPrompt: composeAdvisorSystemPrompt(
-        globalResolved.systemPrompt || DEFAULT_ADVISOR_SYSTEM_PROMPT,
-        globalResolved.systemPromptAppend,
-      ),
-      // Standing session rules (fork addition): read live on every review and
-      // prepended to the new user turn — cache-safe (no stored prefix rewrite).
-      rules: () => overrides.rulesFor(sessionId),
+      systemPrompt: globalResolved.systemPrompt || DEFAULT_ADVISOR_SYSTEM_PROMPT,
+      // Layered live instructions (fork addition): read on every review and
+      // prepended to the new user turn — cache-safe (no stored prefix rewrite)
+      // and immediate (no runtime rebuild when a rule or layer changes).
+      layers: () => layersFor(sessionId),
       proseFallback: globalResolved.proseFallback,
       // Plan dsh-advisor-reasoning-effort (RD-1/RD-2): absent/empty = the
       // smallest effort the resolved model declares.
@@ -1353,6 +1396,13 @@ export function apply(ctx: Context, config: AdvisorConfig) {
   }
   const mapResetOutcome = (sessionId: string, outcome: AdvisorResetModelOutcome): AdvisorSessionRpcResult =>
     outcome.kind === 'reset' ? snapshotOfStatus(sessionId, outcome.status) : snapshotOfStatus(sessionId, sessionStatus(sessionId))
+  const promptUnknown = (sessionId: string): AdvisorPromptRpcResult | undefined => {
+    const unknown = sessionLiveError(sessionId)
+    if (unknown === undefined) return undefined
+    return 'error' in unknown
+      ? { error: unknown.error }
+      : advisorPromptError('advisor/session-unknown', 'advisor: the session is unknown or disposed')
+  }
   const sessionControlFace: AdvisorSessionGatewayFace = {
     getSession(sessionId) {
       const unknown = sessionLiveError(sessionId)
@@ -1378,6 +1428,92 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // reports the inheriting (possibly gate-blocked) state, matching the
       // command face's truthfulness.
       return mapResetOutcome(sessionId, controller.resetModel(sessionId, agent.session.seq))
+    },
+    // Fork addition (2026-11-07) — the session panel's four prompt surfaces.
+    // Reads compose the profile append (config), the workspace layer (keyed by
+    // header.cwd), the session layer (durable overrides), and every active
+    // rule. Writes refresh and return the same composed state; the runtime
+    // reads it live on the next review, so nothing here rebuilds a runtime or
+    // rewrites stored history.
+    getPromptState(sessionId) {
+      const unknown = promptUnknown(sessionId)
+      if (unknown !== undefined) return unknown
+      return { state: promptStateOf(sessionId) }
+    },
+    async setPromptLayer(sessionId, layer, text) {
+      const unknown = promptUnknown(sessionId)
+      if (unknown !== undefined) return unknown
+      if (layer === 'system') {
+        if (configGateway === undefined) {
+          return advisorPromptError('advisor/unavailable', 'advisor: the config gateway is not available on this fiber')
+        }
+        try {
+          await configGateway.set({ systemPromptAppend: text })
+        } catch (error) {
+          return advisorPromptError('advisor/rejected', error instanceof Error ? error.message : String(error))
+        }
+      } else if (layer === 'workspace') {
+        const cwd = workspaceCwdOf(sessionId)
+        if (cwd === undefined) {
+          return advisorPromptError('advisor/rejected', 'advisor: this session has no workspace directory')
+        }
+        promptStore.setWorkspacePrompt(cwd, text)
+      } else {
+        overrides.setPrompt(sessionId, text)
+      }
+      return { state: promptStateOf(sessionId) }
+    },
+    async addPromptRule(sessionId, scope, text) {
+      const unknown = promptUnknown(sessionId)
+      if (unknown !== undefined) return unknown
+      if (scope === 'system') {
+        promptStore.addGlobalRule(text)
+      } else if (scope === 'workspace') {
+        const cwd = workspaceCwdOf(sessionId)
+        if (cwd === undefined) {
+          return advisorPromptError('advisor/rejected', 'advisor: this session has no workspace directory')
+        }
+        promptStore.addWorkspaceRule(cwd, text)
+      } else {
+        overrides.addRule(sessionId, text)
+      }
+      return { state: promptStateOf(sessionId) }
+    },
+    async updatePromptRule(sessionId, scope, index, text) {
+      const unknown = promptUnknown(sessionId)
+      if (unknown !== undefined) return unknown
+      let updated: boolean
+      if (scope === 'system') {
+        updated = promptStore.updateGlobalRule(index, text)
+      } else if (scope === 'workspace') {
+        const cwd = workspaceCwdOf(sessionId)
+        if (cwd === undefined) {
+          return advisorPromptError('advisor/rejected', 'advisor: this session has no workspace directory')
+        }
+        updated = promptStore.updateWorkspaceRule(cwd, index, text)
+      } else {
+        updated = overrides.updateRule(sessionId, index, text)
+      }
+      if (!updated) return advisorPromptError('advisor/rejected', 'advisor: rule not found')
+      return { state: promptStateOf(sessionId) }
+    },
+    async deletePromptRule(sessionId, scope, index) {
+      const unknown = promptUnknown(sessionId)
+      if (unknown !== undefined) return unknown
+      let deleted: boolean
+      if (scope === 'system') {
+        deleted = promptStore.deleteGlobalRule(index)
+      } else if (scope === 'workspace') {
+        const cwd = workspaceCwdOf(sessionId)
+        if (cwd === undefined) {
+          return advisorPromptError('advisor/rejected', 'advisor: this session has no workspace directory')
+        }
+        deleted = promptStore.deleteWorkspaceRule(cwd, index)
+      } else {
+        deleted = overrides.deleteRule(sessionId, index)
+      }
+      if (!deleted) return advisorPromptError('advisor/rejected', 'advisor: rule not found')
+      return { state: promptStateOf(sessionId) }
     },
   }
   sessionControl = sessionControlFace

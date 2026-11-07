@@ -16,6 +16,7 @@
  * cordis injection (`ctx.get('connection')`, slot inject faces, the
  * `settingsSchema` service). Mirrors the ui-models reference entry.
  */
+import { createElement } from 'react'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 // Type-only: pulls the Plugins page's config card slot SlotMap merge (the
@@ -54,6 +55,8 @@ import type {} from '@deepseek-ai/dsh-api-remotes/types'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { AdvisorCard } from './advisor-card.tsx'
 import { AdvisorSessionAction } from './advisor-session.tsx'
+import { AdvisorSessionPromptController } from './advisor-prompt-store.ts'
+import { AdvisorPromptPage } from './advisor-prompt-page.tsx'
 import { AdvisorSessionModelController, AdvisorSettingsStore, refreshIfLoaded } from './advisor-store.ts'
 import { NextPromptOverlay } from './next-prompt-overlay.tsx'
 import { AdvisorSuggestionController } from './next-prompt-store.ts'
@@ -257,6 +260,21 @@ export function apply(ctx: ClientContext): void {
     }, AdvisorCard)
   })
 
+  // Settings page — the focused reviewer-prompt editor, modelled on the
+  // operator's Global AGENTS.md section (same card / editor / save rhythm).
+  // The Plugins-page bundle card remains the full config surface (route,
+  // cadence, toggles); this section is the one users look for under Settings.
+  ctx.slots.inject('settings.section' as never, function* () {
+    yield (ctx.slots as any).register({
+      name: 'settings.section',
+      id: 'advisor-prompt',
+      order: 37,
+      label: () => 'Advisor',
+    }, function AdvisorPromptSettings() {
+      return createElement(AdvisorPromptPage, { rpc: connection.rpc })
+    })
+  })
+
   // B2 (issue #88 web session control): the session header's Advisor action —
   // the web surface of the per-session model override. Registered into the
   // shell-declared `conversation.session.header.actions` list slot (NOT the
@@ -279,14 +297,20 @@ export function apply(ctx: ClientContext): void {
       locale: NS,
       inject: (sessionId: string) => {
         const sessionController = new AdvisorSessionModelController(sessionId, connection.rpc)
+        // Fork addition (2026-11-07): the prompts & rules tab's controller.
+        // One per binding, like the model controller — its writes carry this
+        // session's id only.
+        const promptController = new AdvisorSessionPromptController(sessionId, connection.rpc)
         return {
           sessionId,
           controller: sessionController,
+          promptController,
           // READ-only directory reuse: provider/model options come from the
           // global card's store; the session surface never writes through it.
           directory: controller,
           hooks: {
             snapshot: sessionController.store,
+            prompt: promptController.store,
             refreshSignal,
             directory: controller.store,
           },

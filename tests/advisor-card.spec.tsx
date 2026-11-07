@@ -352,7 +352,7 @@ describe('AdvisorCard registration (plugins.bundle.config)', () => {
     ])
   })
 
-  it('registers the advisor card and leaves no advisor entry in settings.section', () => {
+  it('registers the advisor card and the Settings-page prompt section', () => {
     const scripted = scriptedApi()
     const { ctx, ledger, locales } = fakeRuntime(scripted)
     apply(ctx as unknown as ClientContext)
@@ -380,11 +380,11 @@ describe('AdvisorCard registration (plugins.bundle.config)', () => {
     expect(face).not.toHaveProperty('useSnapshot')
     expect(face).not.toHaveProperty('t')
 
-    // The old section registration is gone (nav removal regression): the
-    // section ledger holds no advisor entry at all.
+    // The focused prompt editor is registered into Settings (2026-11-07); the
+    // Plugins-page bundle card remains the full config surface.
     const sections = ledger['settings.section'] ?? []
-    expect(sections.some(entry => entry.options.id === 'advisor')).toBe(false)
-    expect(sections).toHaveLength(0)
+    expect(sections).toHaveLength(1)
+    expect(sections[0]!.options.id).toBe('advisor-prompt')
 
     // The dictionary namespace registers with the en/zh pair.
     expect(locales['settings.advisor']).toEqual({ zh, en })

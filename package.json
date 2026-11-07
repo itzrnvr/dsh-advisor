@@ -1,6 +1,6 @@
 {
   "name": "dsh-advisor",
-  "version": "0.6.62",
+  "version": "0.6.63",
   "type": "module",
   "description": "dsh plugin bundle porting the omp advisor subsystem: a per-session reviewer model that observes the primary transcript and injects severity-ranked advice (nit/concern/blocker).",
   "repository": {
@@ -50,7 +50,8 @@
       "inject": [
         "@deepseek-ai/dsh-client-store",
         "@deepseek-ai/dsh-client-ui-plugin-manager",
-        "@deepseek-ai/dsh-client-locale"
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
       ],
       "platform": "web"
     }
