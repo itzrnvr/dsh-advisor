@@ -232,6 +232,7 @@ const effective = (overrides: Partial<ResolvedAdvisorConfig> = {}): ResolvedAdvi
   systemPrompt: '',
   maxDeltaMessages: 60,
   historyMaxTokens: 1_000_000,
+  cacheWarmSeconds: 240,
   reviewEveryTurns: 1,
   reviewEverySteps: 5,
   nextPrompt: true,

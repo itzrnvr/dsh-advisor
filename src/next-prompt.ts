@@ -341,6 +341,7 @@ export class NextPromptManager {
         // because the disabled gate blocks every prediction call, but the
         // concrete schema defaults keep the arming signature total.
         historyMaxTokens: 1_000_000,
+        cacheWarmSeconds: 240,
         reviewEveryTurns: 1,
         reviewEverySteps: 5,
         nextPrompt: false,

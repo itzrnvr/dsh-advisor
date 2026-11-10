@@ -1012,6 +1012,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
         maxDeltaMessages: raw?.maxDeltaMessages ?? 0,
         callTimeoutMinutes: raw?.callTimeoutMinutes ?? 10,
         historyMaxTokens: raw?.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS,
+        cacheWarmSeconds: 240,
         reviewEveryTurns: raw?.reviewEveryTurns ?? 1,
         reviewEverySteps: raw?.reviewEverySteps ?? 5,
         proseFallback: raw?.proseFallback,
@@ -1054,6 +1055,7 @@ export class AdvisorConfigGateway extends TypertRemoteService {
       // Fork additions: the reviewer-history budget and the two review clocks.
       // Concrete on every resolver arm, so they always ride the get.
       historyMaxTokens: config.historyMaxTokens,
+      cacheWarmSeconds: 240,
       reviewEveryTurns: config.reviewEveryTurns,
       reviewEverySteps: config.reviewEverySteps,
     }

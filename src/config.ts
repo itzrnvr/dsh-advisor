@@ -40,7 +40,7 @@
  */
 
 import z from '@deepseek-ai/schemastery'
-import { DEFAULT_HISTORY_MAX_TOKENS, DEFAULT_REVIEW_EVERY_STEPS, DEFAULT_REVIEW_EVERY_TURNS } from './limits.js'
+import { DEFAULT_CACHE_WARM_SECONDS, DEFAULT_HISTORY_MAX_TOKENS, DEFAULT_REVIEW_EVERY_STEPS, DEFAULT_REVIEW_EVERY_TURNS } from './limits.js'
 
 /** Raw plugin row config after Loader defaults — spec §5.1. */
 export interface AdvisorConfig {
@@ -95,6 +95,15 @@ export interface AdvisorConfig {
    * the following step's start, so the reviewed step is always complete.
    */
   readonly reviewEverySteps?: number
+  /**
+   * Prompt-cache warm window in seconds (fork addition; 0 = off, schema
+   * default 240). Reviews are step-gated, so a long tool run can outlive the
+   * provider's prefix-cache TTL; when no request has touched the prefix for
+   * this long the runtime refreshes it with a note-less probe. Warmth is only
+   * maintained for prefixes above the warm minimum, where re-writing costs
+   * more than refreshing.
+   */
+  readonly cacheWarmSeconds?: number
   /**
    * Opt-in prose fallback (KD-I2, issue #102): when true, a reply with no
    * parseable JSON frame but non-empty text is delivered as a `nit` note
@@ -199,6 +208,12 @@ export interface ResolvedAdvisorConfig {
    */
   readonly reviewEverySteps: number
   /**
+   * Prompt-cache warm window in seconds (fork addition; 0 = off, default
+   * 240). A runtime-construction constant: an edit rebuilds the session
+   * runtime so the timer window takes effect.
+   */
+  readonly cacheWarmSeconds: number
+  /**
    * Reasoning effort id (RD-1/RD-2); absent/empty = automatic — the runtime
    * sends the smallest effort the resolved model declares, or omits the
    * option when the model declares no reasoning metadata.
@@ -234,6 +249,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   'callTimeoutMinutes',
   'mainSessionOnly',
   'historyMaxTokens',
+  'cacheWarmSeconds',
   'reviewEveryTurns',
   'reviewEverySteps',
   'proseFallback',
@@ -320,6 +336,14 @@ export const Config = z.object({
   // disables history entirely (every review starts cold). Values are estimated
   // at ~4 chars/token; see AdvisorConfig.historyMaxTokens.
   historyMaxTokens: z.number().step(1).min(0).max(10_000_000).default(DEFAULT_HISTORY_MAX_TOKENS).volatile(),
+  // Prompt-cache warm window (fork addition). A review runs inside the
+  // `agent/pre-step` gate, so a long tool execution emits no review at all and
+  // can outlive the provider's prefix-cache TTL (300s on DashScope). Past that
+  // point the next review re-writes the entire history instead of reading it —
+  // measured at 92% of the advisor's cache-write volume for one 4.5h session.
+  // `cacheWarmSeconds` refreshes the prefix with a NOTE-LESS probe (no delta,
+  // no history append, no delivery) so the next review stays warm. 0 = off.
+  cacheWarmSeconds: z.number().step(1).min(0).max(3600).default(DEFAULT_CACHE_WARM_SECONDS).volatile(),
   // Turn-clock cadence (fork addition): review every Nth completed turn.
   // 1 = every turn (the pre-fork behavior); inert in agentic sessions that
   // never emit `turn/end`.
@@ -439,8 +463,8 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
   // `maxTokens` and `immuneTurns` are not VolatileAdvisorConfig members but
   // can arrive on any plain entry — the cast widens only to let the
   // destructure strip them.
-  const { enabled, provider, model, systemPrompt, systemPromptAppend, immuneTurns, maxDeltaMessages, callTimeoutMinutes, mainSessionOnly, historyMaxTokens, reviewEveryTurns, reviewEverySteps, proseFallback, reasoningEffort, nextPrompt, defaultEnabled, maxTokens, ...rest } =
-    raw as VolatileAdvisorConfig & { readonly enabled?: unknown; readonly maxTokens?: unknown; readonly immuneTurns?: unknown }
+  const { enabled, provider, model, systemPrompt, systemPromptAppend, immuneTurns, maxDeltaMessages, callTimeoutMinutes, mainSessionOnly, historyMaxTokens, cacheWarmSeconds, reviewEveryTurns, reviewEverySteps, proseFallback, reasoningEffort, nextPrompt, defaultEnabled, maxTokens, ...rest } =
+    raw as VolatileAdvisorConfig & { readonly enabled?: unknown; readonly maxTokens?: unknown; readonly immuneTurns?: unknown; readonly cacheWarmSeconds?: unknown }
   const append = unwrapReference<string | undefined>(systemPromptAppend) ?? ''
   return {
     ...rest,
@@ -454,6 +478,7 @@ export function unwrapAdvisorConfig(raw: VolatileAdvisorConfig): AdvisorConfig {
     callTimeoutMinutes: unwrapReference<number | undefined>(callTimeoutMinutes),
     mainSessionOnly: unwrapReference<boolean | undefined>(mainSessionOnly),
     historyMaxTokens: unwrapReference<number | undefined>(historyMaxTokens),
+    cacheWarmSeconds: unwrapReference<number | undefined>(cacheWarmSeconds),
     reviewEveryTurns: unwrapReference<number | undefined>(reviewEveryTurns),
     reviewEverySteps: unwrapReference<number | undefined>(reviewEverySteps),
     proseFallback: unwrapReference<boolean | undefined>(proseFallback),
@@ -508,6 +533,7 @@ export function resolveAdvisorConfig(raw: unknown): ResolvedAdvisorConfig {
       ...resolvedBase,
       callTimeoutMinutes: normalized.callTimeoutMinutes ?? 10,
       historyMaxTokens: normalized.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS,
+      cacheWarmSeconds: normalized.cacheWarmSeconds ?? DEFAULT_CACHE_WARM_SECONDS,
       reviewEveryTurns: normalized.reviewEveryTurns ?? 1,
       reviewEverySteps: normalized.reviewEverySteps ?? 5,
       enabled: true,
@@ -529,6 +555,7 @@ export function resolveAdvisorConfig(raw: unknown): ResolvedAdvisorConfig {
     ...resolvedBase,
     callTimeoutMinutes: normalized.callTimeoutMinutes ?? 10,
     historyMaxTokens: normalized.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS,
+    cacheWarmSeconds: normalized.cacheWarmSeconds ?? DEFAULT_CACHE_WARM_SECONDS,
     reviewEveryTurns: normalized.reviewEveryTurns ?? 1,
     reviewEverySteps: normalized.reviewEverySteps ?? 5,
     enabled: false,

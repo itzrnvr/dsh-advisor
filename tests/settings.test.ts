@@ -71,6 +71,7 @@ describe('plain-value entry (integration harness form, behavior identical to tod
       maxDeltaMessages: 60,
       callTimeoutMinutes: 10,
       historyMaxTokens: 1_000_000,
+      cacheWarmSeconds: 240,
       reviewEveryTurns: 1,
       reviewEverySteps: 5,
       proseFallback: false,

@@ -254,6 +254,15 @@ export interface AdvisorRuntimeOptions {
    * trim rewrites the cached prefix at the cut. 0 disables history entirely.
    */
   readonly historyMaxTokens?: number
+  /**
+   * Prompt-cache warm window in seconds (fork addition, config key
+   * `cacheWarmSeconds`; 0 = off). Reviews run inside the `agent/pre-step`
+   * gate, so a long tool execution emits no review at all and the provider's
+   * prefix cache can expire before the next one. Past this window the runtime
+   * refreshes the prefix with a NOTE-LESS probe — it enqueues no delta,
+   * appends no history and delivers nothing, so it cannot affect note order.
+   */
+  readonly cacheWarmSeconds?: number
   /** The llm service (`ctx.llm`); injectable for tests. */
   readonly llm: AdvisorLlm
   /**
@@ -326,6 +335,22 @@ const MAX_CONSECUTIVE_DROPS = 3
  * a full re-prefill, which is the cost the history exists to remove.
  */
 const ADVISOR_HISTORY_MAX_TOKENS_DEFAULT = DEFAULT_HISTORY_MAX_TOKENS
+
+/**
+ * Prefixes smaller than this are cheaper to re-write than to keep warm: one
+ * warm probe costs a full (cached) prefill of the prefix, which only pays for
+ * itself when a cold re-write would cost more. 50k estimated tokens is well
+ * under the sizes where the 300s TTL starts dominating the bill (the measured
+ * session averaged 217k–321k).
+ */
+const CACHE_WARM_MIN_TOKENS = 50_000
+
+/**
+ * The warm probe's user text. It is never stored in history, never extracted
+ * as a note and never delivered — the call exists only to make the provider
+ * re-touch the prefix it already has.
+ */
+const CACHE_WARM_PROBE_TEXT = 'Continue.'
 /**
  * Non-empty assistant placeholder stored for a completed call whose reply had
  * no text (an EMPTY_RESPONSE). The turn WAS part of what the provider saw, so
@@ -776,6 +801,13 @@ export class AdvisorRuntime {
   private historyTokens = 0
   /** Configured history budget in estimated tokens (default 1M). */
   private readonly historyMaxTokens: number
+  /** Prompt-cache warm window (seconds); 0 disables the warm timer. */
+  private readonly cacheWarmSeconds: number
+  private warmTimer: ReturnType<typeof setInterval> | undefined
+  /** True while a warm probe is in flight — one at a time. */
+  private warming = false
+  /** Epoch-ms of the last request that touched the provider prefix. */
+  private lastPrefixTouchAt = 0
   /** Optional per-attempt trajectory sink (Advisor tab). */
   private readonly onTurn: ((record: AdvisorTurnRecord) => void) | undefined
   /** Optional full-trace sink (expand-on-demand text, not the polled payload). */
@@ -828,6 +860,7 @@ export class AdvisorRuntime {
     this.callTimeoutMs = options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
     this.maxQueued = options.maxQueued ?? DEFAULT_MAX_QUEUED
     this.historyMaxTokens = options.historyMaxTokens ?? ADVISOR_HISTORY_MAX_TOKENS_DEFAULT
+    this.cacheWarmSeconds = options.cacheWarmSeconds ?? 0
     this.onTurn = options.onTurn
     this.onTrace = options.onTrace
     this.llm = options.llm
@@ -926,6 +959,7 @@ export class AdvisorRuntime {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.stopCacheWarm()
     this.controller.abort('advisor disposed')
     this.queue.length = 0
     this.consecutiveDrops = 0
@@ -941,6 +975,77 @@ export class AdvisorRuntime {
     if (this.disposed || this.state === 'halted') return
     this.state = 'running'
     this.kickDrain()
+  }
+
+  /**
+   * Arm the prompt-cache warm timer (idempotent). Started lazily after the
+   * first successful review: before that there is no provider-side prefix worth
+   * keeping warm, and the timer would only tick against an empty history.
+   */
+  private startCacheWarm(): void {
+    if (this.warmTimer !== undefined || this.disposed) return
+    if (!(this.cacheWarmSeconds > 0)) return
+    // Tick at a quarter of the window so a due warm lands comfortably inside a
+    // provider TTL equal to the window, never after it.
+    const tickMs = Math.max(30_000, Math.floor((this.cacheWarmSeconds * 1000) / 4))
+    const timer = setInterval(() => { void this.warmPrefixIfStale() }, tickMs)
+    // A cache refresh must never hold the host process open.
+    ;(timer as { unref?: () => void }).unref?.()
+    this.warmTimer = timer
+  }
+
+  private stopCacheWarm(): void {
+    if (this.warmTimer === undefined) return
+    clearInterval(this.warmTimer)
+    this.warmTimer = undefined
+  }
+
+  /**
+   * Refresh the provider's prefix cache without producing a note.
+   *
+   * Reviews are gated on `agent/pre-step`, so a long tool execution emits no
+   * review at all. When that run outlives the provider's prefix-cache TTL
+   * (300 s on DashScope) the next review re-writes the *entire* history instead
+   * of reading it — measured at 92% of one session's cache-write volume from 20
+   * late reviews. This probe re-touches the prefix in between.
+   *
+   * Ordering safety (the reason this is a probe and not a review): it enqueues
+   * no delta, takes nothing from the step clock, appends no history and emits
+   * no note, so it cannot move, duplicate or reorder a note in the session log.
+   * It is best-effort: every failure is swallowed at debug level.
+   */
+  private async warmPrefixIfStale(): Promise<void> {
+    if (this.disposed || this.warming) return
+    if (this.state === 'quota_exhausted' || this.state === 'halted') return
+    // A queued delta means a real review is about to run and will refresh the
+    // prefix itself; probing now would only add a redundant call.
+    if (this.queue.length > 0) return
+    if (this.lastPrefixTouchAt === 0) return
+    if (Date.now() - this.lastPrefixTouchAt < this.cacheWarmSeconds * 1000) return
+    const prefixTokens = this.estimateTextTokens(this.systemPrompt) + this.historyTokens
+    // Below the floor a cold re-write is cheaper than a warm prefill.
+    if (prefixTokens < CACHE_WARM_MIN_TOKENS) return
+    this.warming = true
+    const controller = new AbortController()
+    try {
+      const probe = createUserMessage({
+        content: [{ type: 'text', text: CACHE_WARM_PROBE_TEXT }],
+        source: { kind: 'user' },
+      })
+      const stream = this.llm.stream(this.buildOptions(probe, controller.signal, undefined))
+      const iterator = stream[Symbol.asyncIterator]()
+      // Prefill — and with it the cache touch — completes when the first chunk
+      // arrives. Stopping there keeps the probe's output cost at ~0 and never
+      // reaches the note-extraction path.
+      await raceIteratorNext(iterator, controller.signal)
+      this.lastPrefixTouchAt = Date.now()
+      this.logger.debug('advisor: prompt-cache warmed', { sessionId: this.sessionId, prefixTokens })
+    } catch (error) {
+      this.logger.debug('advisor: prompt-cache warm failed — ignored', { error })
+    } finally {
+      controller.abort('cache warm complete')
+      this.warming = false
+    }
   }
 
   /**
@@ -1295,6 +1400,11 @@ export class AdvisorRuntime {
       this.tokensPerChar = Math.min(1.5, Math.max(0.2, promptTokens / promptChars))
     }
     this.lastFullReply = text
+    // The provider just saw (and cached) this prefix for the first time or as
+    // an extension of the previous one: arm the warm clock. The timer starts
+    // lazily here — before the first review there is no prefix worth warming.
+    this.lastPrefixTouchAt = Date.now()
+    this.startCacheWarm()
     this.appendHistory(userText, userMessage, text)
     // stop | max-tokens | tool-calls: extract from the collected text (KD-2;
     // no retry on parse failures — the frame must simply be absent/valid).

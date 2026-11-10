@@ -49,6 +49,7 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
       maxDeltaMessages: 0,
       callTimeoutMinutes: 10, mainSessionOnly: true,
       historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 5,
+      cacheWarmSeconds: 240,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -71,6 +72,7 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
       maxDeltaMessages: 10,
       callTimeoutMinutes: 10, mainSessionOnly: true,
       historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 5,
+      cacheWarmSeconds: 240,
       proseFallback: true,
       nextPrompt: true,
       defaultEnabled: true,
@@ -80,10 +82,12 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
   it('keeps explicit cadence and history values over the schema defaults', () => {
     expect(unwrapAdvisorConfig(Config({
       historyMaxTokens: 5_000,
+      cacheWarmSeconds: 240,
       reviewEveryTurns: 4,
       reviewEverySteps: 0,
     }))).toMatchObject({
       historyMaxTokens: 5_000,
+      cacheWarmSeconds: 240,
       reviewEveryTurns: 4,
       reviewEverySteps: 0,
     })
@@ -91,10 +95,12 @@ describe('schema defaults (cordis Loader path, spec §5.1)', () => {
       provider: 'p',
       model: 'm',
       historyMaxTokens: 5_000,
+      cacheWarmSeconds: 240,
       reviewEveryTurns: 4,
       reviewEverySteps: 0,
     })).toMatchObject({
       historyMaxTokens: 5_000,
+      cacheWarmSeconds: 240,
       reviewEveryTurns: 4,
       reviewEverySteps: 0,
     })
@@ -210,6 +216,7 @@ describe('explicit model gate (S4 / spec §5.2)', () => {
       maxDeltaMessages: 0,
       callTimeoutMinutes: 10,
       historyMaxTokens: 1_000_000,
+      cacheWarmSeconds: 240,
       reviewEveryTurns: 1,
       reviewEverySteps: 5,
       proseFallback: true,
@@ -288,6 +295,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
       maxDeltaMessages: 0,
       callTimeoutMinutes: 10, mainSessionOnly: true,
       historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 5,
+      cacheWarmSeconds: 240,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -309,6 +317,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
       maxDeltaMessages: 0,
       callTimeoutMinutes: 10, mainSessionOnly: true,
       historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 5,
+      cacheWarmSeconds: 240,
       proseFallback: false,
       nextPrompt: true,
       defaultEnabled: true,
@@ -354,6 +363,7 @@ describe('strict schema — unknown keys rejected (spec §5.2)', () => {
       maxDeltaMessages: 10,
       callTimeoutMinutes: 10, mainSessionOnly: true,
       historyMaxTokens: 1_000_000, reviewEveryTurns: 1, reviewEverySteps: 5,
+      cacheWarmSeconds: 240,
       proseFallback: true,
       reasoningEffort: 'high',
       nextPrompt: true,

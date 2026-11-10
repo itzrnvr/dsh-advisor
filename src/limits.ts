@@ -28,3 +28,13 @@ export const DEFAULT_REVIEW_EVERY_TURNS = 1
  * mid-task, sparse enough that reviews never outpace real work).
  */
 export const DEFAULT_REVIEW_EVERY_STEPS = 5
+
+/**
+ * Default prompt-cache warm window in seconds (0 = off).
+ *
+ * Reviews are step-gated: the gate runs inside `agent/pre-step`, so a long tool
+ * execution emits no review at all. A provider prefix cache expires on its own
+ * TTL (300 s on DashScope), and the next review then re-writes the whole
+ * history instead of reading it. 240 s stays inside a 300 s TTL with margin.
+ */
+export const DEFAULT_CACHE_WARM_SECONDS = 240

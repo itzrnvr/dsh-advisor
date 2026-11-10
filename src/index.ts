@@ -72,7 +72,7 @@ import { findTraceEntry, renderTraceEntry } from './trace-entry.js'
 import { AttemptStore, SessionStateStore } from './persist.js'
 import { PromptLayerStore, workspaceKey } from './prompt-store.js'
 import { notesFromSessionEvents } from './seed.js'
-import { DEFAULT_HISTORY_MAX_TOKENS } from './limits.js'
+import { DEFAULT_CACHE_WARM_SECONDS, DEFAULT_HISTORY_MAX_TOKENS } from './limits.js'
 import { advisorSuggestionFace, NextPromptManager } from './next-prompt.js'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { AdvisorSessionOverrides, registerAdvisorCommands, summarizeSystemPrompt, validateAdvisorRule, ADVISOR_MODEL_VALIDATION_TIMEOUT_MS } from './commands.js'
@@ -290,6 +290,7 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // the fallback never feeds `undefined` into a runtime construction
       // constant or the runtime signature.
       historyMaxTokens: raw?.historyMaxTokens ?? DEFAULT_HISTORY_MAX_TOKENS,
+      cacheWarmSeconds: raw?.cacheWarmSeconds ?? DEFAULT_CACHE_WARM_SECONDS,
       reviewEveryTurns: raw?.reviewEveryTurns ?? 1,
       reviewEverySteps: raw?.reviewEverySteps ?? 5,
       // T1 (plan dsh-advisor-next-prompt-n12): the resolved contract types
@@ -650,6 +651,9 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       globalResolved.callTimeoutMinutes ?? 10,
       // History budget (estimated tokens) is likewise a construction constant.
       globalResolved.historyMaxTokens,
+      // Prompt-cache warm window is a timer window inside the runtime, so an
+      // edit must rebuild it like the other construction constants.
+      globalResolved.cacheWarmSeconds ?? DEFAULT_CACHE_WARM_SECONDS,
       // `nextPrompt` is deliberately ABSENT (plan dsh-advisor-next-prompt-n12,
       // T1 — config-key checklist seam 6): a `nextPrompt`-only edit must not
       // rebuild review runtimes. The prediction gate reads it live on every
@@ -707,6 +711,9 @@ export function apply(ctx: Context, config: AdvisorConfig) {
       // estimated tokens): the whole conversation resets when the next
       // exchange would cross it.
       historyMaxTokens: globalResolved.historyMaxTokens,
+      // Prompt-cache warm window (fork addition): keeps the reviewer prefix
+      // inside the provider's cache TTL across long tool runs. 0 = off.
+      cacheWarmSeconds: globalResolved.cacheWarmSeconds,
       llm: appRootLlm(),
       onNote: (note: AdviceNote, reviewedTurn?: number): boolean => {
         // Accepted notes only — the runtime's emission guard (T5) already

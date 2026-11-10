@@ -2083,3 +2083,99 @@ describe('AdvisorRuntime — evidence-based window guess (fork addition)', () =>
     expect(runtime.assumedContextTokens).toBe(4_096)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Prompt-cache warm (fork addition)
+//
+// Reviews are step-gated, so a long tool run emits none and the provider's
+// prefix cache can expire; the next review then re-writes the whole history.
+// The warm probe re-touches the prefix between reviews. It must be invisible to
+// the note pipeline: no delta, no history append, no note, no ordering change.
+// ---------------------------------------------------------------------------
+
+describe('AdvisorRuntime — prompt-cache warm probe', () => {
+  const bigDelta = (): Delta => delta('### Session update\n\n**user**: ' + 'x'.repeat(400_000))
+
+  it('re-touches a large prefix after the window without a note or history growth', async () => {
+    vi.useFakeTimers()
+    try {
+      const llm = new FakeLlm([
+        { chunks: textReply('{"note":"first","severity":"nit"}') },
+        { chunks: textReply('') },
+        { chunks: textReply('{"note":"second","severity":"nit"}') },
+      ])
+      const { runtime, notes } = makeRuntime(llm, { cacheWarmSeconds: 60 })
+
+      runtime.enqueue(bigDelta())
+      await runtime.waitForDrain()
+      expect(notes).toHaveLength(1)
+      expect(llm.calls).toHaveLength(1)
+      const review = llm.calls[0]!
+      expect(review.messages).toHaveLength(1)
+
+      // Tick = max(30s, window/4) = 30s; the window gate is 60s.
+      await vi.advanceTimersByTimeAsync(31_000)
+      expect(llm.calls).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(31_000)
+      expect(llm.calls).toHaveLength(2)
+
+      const probe = llm.calls[1]!
+      // Same provider route and prompt, one extra user turn (the probe text).
+      expect(probe.system).toBe(review.system)
+      expect(probe.provider).toBe(review.provider)
+      expect(probe.model).toBe(review.model)
+      expect(probe.sessionId).toBe(review.sessionId)
+      // history after review #1 = [delta, reply]; the probe extends it by one.
+      expect(probe.messages).toHaveLength(3)
+      expect(JSON.stringify(probe.messages.at(-1))).toContain('Continue.')
+      expect(notes).toHaveLength(1) // the probe emitted no note
+
+      // The probe appended NOTHING: the next real review extends the same
+      // history the probe saw, so it has the same message count.
+      runtime.enqueue(delta('### Session update\n\n**user**: keep going'))
+      await runtime.waitForDrain()
+      expect(llm.calls[2]!.messages).toHaveLength(probe.messages.length)
+      expect(JSON.stringify(llm.calls[2]!.messages.at(-1))).toContain('keep going')
+      expect(notes).toHaveLength(2)
+
+      runtime.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stays inert when cacheWarmSeconds is 0', async () => {
+    vi.useFakeTimers()
+    try {
+      const llm = new FakeLlm([{ chunks: textReply('{"note":"only","severity":"nit"}') }])
+      const { runtime, notes } = makeRuntime(llm, { cacheWarmSeconds: 0 })
+
+      runtime.enqueue(bigDelta())
+      await runtime.waitForDrain()
+      await vi.advanceTimersByTimeAsync(300_000)
+
+      expect(llm.calls).toHaveLength(1)
+      expect(notes).toHaveLength(1)
+      runtime.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('skips the probe below the warm minimum (a cold re-write is cheaper)', async () => {
+    vi.useFakeTimers()
+    try {
+      const llm = new FakeLlm([{ chunks: textReply('{"note":"small","severity":"nit"}') }])
+      const { runtime } = makeRuntime(llm, { cacheWarmSeconds: 60 })
+
+      runtime.enqueue(delta('### Session update\n\n**user**: tiny'))
+      await runtime.waitForDrain()
+      await vi.advanceTimersByTimeAsync(300_000)
+
+      expect(llm.calls).toHaveLength(1)
+      runtime.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
