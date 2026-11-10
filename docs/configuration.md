@@ -27,6 +27,7 @@
 | `callTimeoutMinutes` | number（整数 1–60） | `10` | 单次审阅模型调用的整次超时（分钟，fork 新增）。超时按 transient 处理：重试一次后丢弃该 delta；改值会重建该会话的 runtime 以生效。默认 10 分钟，取代上游固定 60 秒。 |
 | `mainSessionOnly` | boolean | `true` | 仅审阅顶层会话（fork 新增）：为 `true` 时跳过 `header.delegationDepth > 0` 的子代理会话（不建 runtime、不预测下一提示）；设为 `false` 可同时审阅子代理。 |
 | `historyMaxTokens` | number（整数 0–10,000,000） | `1000000` | 评审自身对话的追加式历史预算（估算 token，fork 新增）：历史让每次评审调用成为上一次调用的字节前缀延伸，provider 可复用 prompt cache。跨过预算整体重置对话（绝不裁剪——裁剪改写前缀、强制全量重填）；`0` = 不留历史（每次评审冷启动）。实际还会被所选模型的上下文窗口保守夹紧。 |
+| `cacheWarmSeconds` | number（整数 0–3600） | `240` | 前缀保温窗口（fork 新增）：评审跑在 `agent/pre-step` 门里，长时间工具执行期间不触发评审，一旦空档超过 provider 的 prefix-cache TTL（DashScope 为 300s），下一次评审会**重写**整段历史而不是读取它——实测单会话 61 次评审中 20 次超过 300s，占全部 cache-write 的 92%（均值 321k token/次）。窗口到期且前缀 ≥ 50k 估算 token 时，运行时用一次**不产出 note 的探针**重新触碰前缀：不排 delta、不占用 step 时钟、不追加历史、不投递，因此不会移动/重复/重排 note。`0` = 关闭。 |
 | `reviewEveryTurns` | number（整数 1–50） | `1` | 轮次时钟（fork 新增）：每完成第 N 个 stepped turn 评审一次。`1` = 每轮都评审（turn 结束后的评审 note 走 steer——空闲的 agent 会被唤醒）。 |
 | `reviewEverySteps` | number（整数 0–50） | `3` | 步序时钟 + 预步评审门（0.6.48）：每 N 个**完成**的模型 step 触发一次评审，并且**下一个 step 会等待评审落账**——note 直接提交进被 gate 的那个 step 自己的模型请求，agent 无法跑赢评审人，note 之间必然隔着真实工作。`0` = 关闭（只剩轮次时钟，note 全部 steer）。门的等待有界：`callTimeoutMinutes` 超时会 fail-open 放行 step，迟到的 note 走 steer。 |
 | `proseFallback` | boolean | `false` | Opt-in 散文容错（issue #102）：开启后，未产出有效 note（无可解析 JSON 帧，或帧的 note 为空/非法）但正文非空的回复经清理（trim → 剥外围 markdown 围栏 → 4,000 字符截断）作为 `severity: 'nit'` 的 note 走正常 guard/投递管线。可用的帧 note 始终优先；默认关闭时同样回复仍被丢弃。 |
@@ -49,6 +50,7 @@
     callTimeoutMinutes: 10      # 整数 1–60，默认 10 —— 审阅调用超时（分钟，fork 新增）；同时是有界 gate 等待的上限（fail-open）
     mainSessionOnly: true       # 布尔，默认 true —— 只审阅顶层会话（fork 新增）
     historyMaxTokens: 1000000   # 整数 ≥ 0，默认 1M —— 评审历史预算（估算 token，fork 新增）
+    cacheWarmSeconds: 240      # 整数 0–3600，默认 240 —— 前缀保温窗口（fork 新增；0 = 关闭）
     reviewEveryTurns: 1         # 整数 1–50，默认 1 —— 轮次时钟：每第 N 个完成的 turn 评审（fork 新增）
     reviewEverySteps: 3         # 整数 0–50，默认 3，0 = 关 —— 步序时钟 + 预步评审门（0.6.48）
     proseFallback: false        # 布尔，默认 false —— 无有效 note（含帧 note 为空/非法）时将散文回复作为 nit note 投递（opt-in）
@@ -156,7 +158,7 @@ Dropped: 3 empty (last 2026-09-29T08:15:42.000Z) — the model returned a comple
 
 ### Live 重应用
 
-每次 Loader 提交的 volatile 编辑（`loader/volatile-update`）经 `bridge.onChange` 重派生（`src/index.ts`）：`maxDeltaMessages` / 两个评审时钟（`setReviewCadence`）原地更新（observer）；每个会话 runtime 仅在其「运行影响签名」（provider / model / systemPrompt / proseFallback / reasoningEffort / callTimeoutMinutes / historyMaxTokens）变化时重建 —— 只改窗口/节奏的编辑不会中断在途调用或丢弃 backlog。S4 门禁每次读取都经解析器重放，配置编辑永远无法启动被门禁阻挡的模型调用。
+每次 Loader 提交的 volatile 编辑（`loader/volatile-update`）经 `bridge.onChange` 重派生（`src/index.ts`）：`maxDeltaMessages` / 两个评审时钟（`setReviewCadence`）原地更新（observer）；每个会话 runtime 仅在其「运行影响签名」（provider / model / systemPrompt / proseFallback / reasoningEffort / callTimeoutMinutes / historyMaxTokens / cacheWarmSeconds）变化时重建 —— 只改窗口/节奏的编辑不会中断在途调用或丢弃 backlog。S4 门禁每次读取都经解析器重放，配置编辑永远无法启动被门禁阻挡的模型调用。
 
 `defaultEnabled`（GitHub issue #124）**不是** runtime 构造常量、不进入运行影响签名：`onChange` 先按有效开关对候选会话做 reconcile——编辑后 `!effectiveEnabled(sessionId)` 的会话直接 `disposeRuntime`（live 切到 `false` 时，正在运行的会话立即停止评审）；切回 `true` 时，仍持有 override / runtime 的会话经候选循环恢复，而没有 runtime、也没有 override 的会话在**下一个事件**（`agent/created` 或下一条 delta）时重新创建 runtime。已写入的显式 `/advisor off` override 仍然优先于持久化默认值。
 
