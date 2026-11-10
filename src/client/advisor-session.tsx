@@ -30,7 +30,8 @@
  * falsely claiming continuous synchronization.
  */
 
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { AdvisorSessionMenuState, AdvisorSessionModelController, AdvisorSettingsState, AdvisorSettingsStore } from './advisor-store.ts'
@@ -84,6 +85,30 @@ export function AdvisorSessionAction(props: AdvisorSessionActionProps): ReactNod
   const epoch = useRefreshSignal((s) => s.epoch)
   const directoryState = useDirectory((s) => s)
   const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const [anchorRect, setAnchorRect] = useState<{ top: number, left: number } | null>(null)
+  // The panel is portaled to document.body (see the render below): position
+  // it under the trigger. Re-measured on open, on resize and on scroll
+  // (capture phase so it catches scrolls of any ancestor, incl. the header).
+  useEffect(() => {
+    if (!open) return
+    const measure = (): void => {
+      const rect = triggerRef.current?.getBoundingClientRect()
+      if (rect === undefined) return
+      setAnchorRect({
+        top: Math.round(rect.bottom + 6),
+        // Right-align with the trigger's right edge, clamped to the viewport.
+        left: Math.max(8, Math.round(rect.right - 320)),
+      })
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    window.addEventListener('scroll', measure, true)
+    return () => {
+      window.removeEventListener('resize', measure)
+      window.removeEventListener('scroll', measure, true)
+    }
+  }, [open])
   // The staged pin selection is LOCAL user input (never seeded from the
   // snapshot — the effective pair is displayed as text above; a stale host
   // pair must not look like staged edits).
@@ -205,6 +230,7 @@ export function AdvisorSessionAction(props: AdvisorSessionActionProps): ReactNod
       {/* Neutral closed label: the plugin name only — a closed action claims
           no model and no continuous synchronization. */}
       <button
+        ref={triggerRef}
         type="button"
         className={styles.trigger}
         aria-expanded={open}
@@ -214,15 +240,21 @@ export function AdvisorSessionAction(props: AdvisorSessionActionProps): ReactNod
       >
         {t('sessionTrigger')}
       </button>
-      {open
-        ? (
-            <div className={styles.panel} role="dialog" aria-label={t('sessionModelHeading')}>
+      {open && anchorRect !== null
+        ? createPortal(
+            <div
+              className={styles.panel}
+              role="dialog"
+              aria-label={t('sessionModelHeading')}
+              style={{ top: anchorRect.top, left: anchorRect.left }}
+            >
               <p className={styles.panelHeading}>{t('sessionModelHeading')}</p>
               {directoryState.providers.length === 0 && directoryState.status === 'ready' && !state.unavailable
                 ? <p className={styles.mutedLine}>{t('noProviders')}</p>
                 : null}
               {body}
-            </div>
+            </div>,
+            document.body,
           )
         : null}
     </div>

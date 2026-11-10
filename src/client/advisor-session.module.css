@@ -38,19 +38,18 @@
   outline-offset: 1px;
 }
 
-/* Wrapper anchoring the popover under the trigger (the header action cell is
-   the positioning context). */
+/* Wrapper for the trigger; the popover anchor coordinates are computed from
+   the trigger's rect at open time (the panel renders in document.body). */
 .anchor {
-  position: relative;
   display: inline-flex;
 }
 
-/* The open panel: a bordered popover card above the header's z-plane. */
+/* The open panel is portaled to document.body and positioned with fixed
+   coordinates under the trigger (the shell clips the header cell's overflow,
+   so an absolutely-positioned panel was invisible there). */
 .panel {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 30;
+  position: fixed;
+  z-index: 9999;
   width: 300px;
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 12px;
